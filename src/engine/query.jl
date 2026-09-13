@@ -19,8 +19,8 @@ A geometry prepared once for querying.
 
 - `prepared`: the `RelateNG` form of `geom`, lifted to the unit sphere.
 - `cap`: bounds the geometry for tree pruning.
-- `arcs`: boundary arcs for the border sandwich; `edges`: an [`ArcTree`](@ref)
-  over them for the descent's frontier.
+- `arcs`: boundary arcs for the border sandwich, in the leaf order of `edges`,
+  an [`ArcTree`](@ref) over them for the descent's frontier.
 """
 struct GeometryTarget{P,G,A,E} <: QueryTarget
     prepared::P
@@ -30,8 +30,10 @@ struct GeometryTarget{P,G,A,E} <: QueryTarget
     edges::E
 end
 
-GeometryTarget(prepared, geom, cap::Cap, arcs) =
-    GeometryTarget(prepared, geom, cap, arcs, _arc_tree(arcs))
+function GeometryTarget(prepared, geom, cap::Cap, arcs)
+    edges = _arc_tree(arcs)
+    return GeometryTarget(prepared, geom, cap, edges === nothing ? arcs : edges.data, edges)
+end
 
 """
     CapTarget(cap)
@@ -55,8 +57,7 @@ function _query_target(geom)
     spherical = _to_unit_sphere(geom)
     prepared = GO.prepare(GO.RelateNG(; manifold=GO.Spherical()), spherical)
     arcs = _boundary_arcs(spherical)
-    return GeometryTarget(prepared, spherical, _geometry_cap(prepared, spherical),
-        arcs, _arc_tree(arcs))
+    return GeometryTarget(prepared, spherical, _geometry_cap(prepared, spherical), arcs)
 end
 
 _query_target(::Nothing) = throw(ArgumentError(
@@ -294,88 +295,95 @@ end
     return max(best, sqrt(max(0.0, 1.0 - cn * cn / arc.nn)))
 end
 
+const ArcExtent = Extents.Extent{(:X, :Y, :Z),NTuple{3,Tuple{Float64,Float64}}}
 """
-    ArcTree(arcs)
+    ArcTree
 
-The boundary arcs, Morton-sorted under a binary tree of caps.
+A packed R-tree over the target's boundary arcs, one exact 3-D box per arc.
 
-- The descent narrows a frontier of tree nodes cap by cap.
+- Built by `GeometryOps.FlexibleRTrees.RTree`; `data` holds the
+  arcs in leaf order, so leaf slot `k` is `data[k]`.
+- The descent narrows a frontier of [`ArcNode`](@ref)s box by box.
 - An empty frontier under a convex cap proves that cap free of the boundary.
 """
-struct ArcTree
-    arcs::Vector{BoundaryArc}
-    caps::Vector{Cap}
-    first::Vector{Int}
-    last::Vector{Int}
-    left::Vector{Int}
-    right::Vector{Int}
-end
+const ArcTree = GO.FlexibleRTrees.RTree{GO.FlexibleRTrees.Unsorted,ArcExtent,
+    Vector{BoundaryArc},Base.OneTo{Int}}
+"""
+    ArcNode
 
-const ARC_TREE_LEAF_SIZE = 8
+One node of an [`ArcTree`](@ref): the tree, its 0-based level, its index in that
+level, and its box. Frontiers are vectors of these.
+"""
+const ArcNode = GO.FlexibleRTrees.RTreeNode{ArcTree,ArcExtent}
 
-function ArcTree(arcs::Vector{BoundaryArc})
-    caps = [points_cap((a.a, a.b)) for a in arcs]
-    order = sortperm([_morton_key(c.point) for c in caps])
-    tree = ArcTree(arcs[order], Cap[], Int[], Int[], Int[], Int[])
-    _arc_node!(tree, caps[order], 1, length(arcs))
-    return tree
-end
+const ARC_TREE_CAPACITY = 8
 
-function _arc_node!(tree::ArcTree, caps::Vector{Cap}, lo::Int, hi::Int)
-    n = length(tree.caps) + 1
-    push!(tree.caps, full_sphere_cap())
-    push!(tree.first, lo)
-    push!(tree.last, hi)
-    push!(tree.left, 0)
-    push!(tree.right, 0)
-    if hi - lo < ARC_TREE_LEAF_SIZE
-        tree.caps[n] = _merge_range(caps, lo, hi)
-    else
-        mid = (lo + hi) ÷ 2
-        l = _arc_node!(tree, caps, lo, mid)
-        r = _arc_node!(tree, caps, mid + 1, hi)
-        tree.left[n] = l
-        tree.right[n] = r
-        tree.caps[n] = Extents.union(tree.caps[l], tree.caps[r])
-    end
-    return n
+# Sorting the arcs once up front lets the tree alias its leaf order, so the
+# sandwich reads `data` sequentially and never goes through a permutation.
+function _arc_tree(arcs::Vector{BoundaryArc})
+    isempty(arcs) && return nothing
+    extents = ArcExtent[GO.UnitSpherical.spherical_arc_extent(a.a, a.b) for a in arcs]
+    order = GO.FlexibleRTrees.loadorder(GO.FlexibleRTrees.STR(), extents, ARC_TREE_CAPACITY)
+    return GO.FlexibleRTrees.RTree(GO.FlexibleRTrees.Unsorted(), arcs[order];
+        nodecapacity=ARC_TREE_CAPACITY, extents=extents[order])
 end
 
 _arc_tree(::Nothing) = nothing
-_arc_tree(arcs::Vector{BoundaryArc}) = ArcTree(arcs)
+
+_root_node(tree::ArcTree) = ArcNode(tree, 0, 1, Extents.extent(tree))
 
 _target_edges(::QueryTarget) = nothing
 _target_edges(target::GeometryTarget) = target.edges
 
-# Narrow frontier node `n` to `cap`. A node smaller than the cap is kept whole
-# (splitting costs more than it excludes); a leaf survives only if an arc can
-# reach the cap by exact distance.
-function _edge_frontier!(out::Vector{Int}, tree::ArcTree, n::Int, cap, threshold::Float64)
-    Extents.intersects(tree.caps[n], cap) || return out
-    if tree.left[n] == 0
-        for k in tree.first[n]:tree.last[n]
-            if _arc_cos_distance(tree.arcs[k], cap.point) >= threshold
-                push!(out, n)
+# The leaf slots under `node`: packing unions consecutive runs of the capacity,
+# so every subtree is one contiguous run of `data`.
+function _arc_range(node::ArcNode)
+    tree = node.tree
+    span = tree.nodecapacity^(length(tree.levels) - node.level)
+    return ((node.index - 1) * span + 1):min(node.index * span, length(tree.data))
+end
+
+# Narrow frontier node `node` to `cap`. A node smaller than the cap is kept
+# whole (splitting costs more than it excludes); a leaf survives only if an arc
+# can reach the cap by exact distance.
+function _edge_frontier!(out::Vector{ArcNode}, node::ArcNode, cap, threshold::Float64)
+    Extents.intersects(cap, node.extent) || return out
+    if STI.isleaf(node)
+        arcs = node.tree.data
+        for k in _arc_range(node)
+            if _arc_cos_distance(arcs[k], cap.point) >= threshold
+                push!(out, node)
                 break
             end
         end
-    elseif tree.caps[n].radius > cap.radius
-        _edge_frontier!(out, tree, tree.left[n], cap, threshold)
-        _edge_frontier!(out, tree, tree.right[n], cap, threshold)
+    elseif _box_half_diagonal(node.extent) > Float64(cap.radius)
+        for i in 1:STI.nchild(node)
+            _edge_frontier!(out, STI.getchild(node, i), cap, threshold)
+        end
     else
-        push!(out, n)
+        push!(out, node)
     end
     return out
 end
 
-function _narrow!(out::Vector{Int}, tree::ArcTree, frontier::Vector{Int}, cap)
+# The box overshoots the node's chord diameter by up to `sqrt(3)`, so this
+# splits some nodes already smaller than the cap: extra work, never a lost arc.
+@inline function _box_half_diagonal(ext::ArcExtent)
+    dx = ext.X[2] - ext.X[1]
+    dy = ext.Y[2] - ext.Y[1]
+    dz = ext.Z[2] - ext.Z[1]
+    return 0.5 * sqrt(dx * dx + dy * dy + dz * dz)
+end
+
+function _narrow!(out::Vector{ArcNode}, frontier::Vector{ArcNode}, cap)
     empty!(out)
-    # One cosine per cap. The subtracted ulp keeps the widening conservative at
-    # radii so small that `cos` of the widened radius rounds back to `cos(r)`.
-    threshold = cos(min(Float64(pi),
-        Float64(cap.radius) * (1 + SANDWICH_SLACK))) - 1e-15
-    for n in frontier
-        _edge_frontier!(out, tree, n, cap, threshold)
+    # The widened cap serves both the box test and the exact leaf test. The
+    # subtracted ulp keeps the widening conservative at radii so small that
+    # `cos` of the widened radius rounds back to `cos(r)`.
+    wide = SphericalCap(cap.point, min(Float64(pi), Float64(cap.radius) * (1 + SANDWICH_SLACK)))
+    threshold = wide.radiuslike - 1e-15
+    for node in frontier
+        _edge_frontier!(out, node, wide, threshold)
     end
     return out
 end
@@ -397,13 +405,14 @@ end
 
 # The same verdict from the frontier's arcs alone: an arc excluded at an
 # ancestor cap cannot reach a cell inside it.
-function _sandwich(tree::ArcTree, frontier::Vector{Int}, centroid, ring)
+function _sandwich(tree::ArcTree, frontier::Vector{ArcNode}, centroid, ring)
     bounds = _sandwich_bounds(centroid, ring)
     bounds === nothing && return 0
     cos_out, cos_in = bounds
     best = -1.0
-    for n in frontier, k in tree.first[n]:tree.last[n]
-        value = _arc_cos_distance(tree.arcs[k], centroid)
+    arcs = tree.data
+    for node in frontier, k in _arc_range(node)
+        value = _arc_cos_distance(arcs[k], centroid)
         value > cos_in && return 1
         best = max(best, value)
     end
@@ -688,8 +697,10 @@ end
 function _query_indices(grid::AbstractGrid, pred::QueryPredicate, target::QueryTarget)
     ncells(grid) == 0 && return Int[]
     out = Int[]
-    _descend!(out, _query_tree(grid), grid, pred, target, Int[1], Int[],
-        Vector{Int}[], 1)
+    edges = _target_edges(target)
+    frontier = edges === nothing ? ArcNode[] : ArcNode[_root_node(edges)]
+    _descend!(out, _query_tree(grid), grid, pred, target, frontier, ArcNode[],
+        Vector{ArcNode}[], 1)
     return sort!(out)
 end
 
@@ -709,13 +720,13 @@ end
 # and holds every descendant (covering law), so an empty frontier lets one real
 # descendant centroid decide the node; the cap centre may lie outside and is
 # never the witness. `buffers[depth]` never aliases a live ancestor's frontier.
-function _descend!(out, node, grid, pred, target, frontier::Vector{Int},
-        scratch::Vector{Int}, buffers::Vector{Vector{Int}}, depth::Int)
+function _descend!(out, node, grid, pred, target, frontier::Vector{ArcNode},
+        scratch::Vector{ArcNode}, buffers::Vector{Vector{ArcNode}}, depth::Int)
     extent = STI.node_extent(node)
     Extents.intersects(target.cap, extent) || return nothing
     edges = _target_edges(target)
     if edges !== nothing && Float64(extent.radius) < Float64(pi) / 2
-        frontier = _narrow!(_depth_buffer(buffers, depth), edges, frontier, extent)
+        frontier = _narrow!(_depth_buffer(buffers, depth), frontier, extent)
         if isempty(frontier)
             index = _witness_index(node)
             index == 0 && return nothing
@@ -739,9 +750,9 @@ function _descend!(out, node, grid, pred, target, frontier::Vector{Int},
 end
 
 # Grown on demand: a descent touches as many depths as the tree is deep.
-function _depth_buffer(buffers::Vector{Vector{Int}}, depth::Int)
+function _depth_buffer(buffers::Vector{Vector{ArcNode}}, depth::Int)
     while length(buffers) < depth
-        push!(buffers, Int[])
+        push!(buffers, ArcNode[])
     end
     return buffers[depth]
 end
@@ -821,7 +832,7 @@ end
 # guard); an empty frontier lets the centroid decide, else the survivors feed
 # the sandwich.
 function _cell_matches(pred::DE9IM.DE9IMPredicate, target::GeometryTarget, grid, c,
-        frontier::Vector{Int}, scratch::Vector{Int}, capped::Bool)
+        frontier::Vector{ArcNode}, scratch::Vector{ArcNode}, capped::Bool)
     # One cap serves both the prune and the narrowing, so a system with an
     # analytical `cell_cap` decides most cells without a boundary at all.
     cap = cell_cap(grid, c)
@@ -829,7 +840,7 @@ function _cell_matches(pred::DE9IM.DE9IMPredicate, target::GeometryTarget, grid,
     edges = target.edges
     edges === nothing && return _matches(pred, target, grid, c)
     Float64(cap.radius) < Float64(pi) / 2 || return _matches(pred, target, grid, c)
-    _narrow!(scratch, edges, frontier, cap)
+    _narrow!(scratch, frontier, cap)
     centroid = cell_centroid(grid, c)
     if isempty(scratch)
         return _accepts_interior(pred) &&
@@ -844,14 +855,14 @@ end
 # Every other pair — `CentroidCovered`, and any predicate against a cap — reads
 # a centroid or the cap itself, so the frontier has nothing to narrow.
 function _cell_matches(pred, target::QueryTarget, grid, c,
-        ::Vector{Int}, ::Vector{Int}, capped)
+        ::Vector{ArcNode}, ::Vector{ArcNode}, capped)
     capped || Extents.intersects(target.cap, cell_cap(grid, c)) || return false
     return _matches(pred, target, grid, c)
 end
 
 # The exact tests for a cell the boundary does reach, with the ring in hand.
 function _matches_near(::DE9IM.Intersects, target::GeometryTarget, grid, c, centroid, ring,
-        frontier::Vector{Int})
+        frontier::Vector{ArcNode})
     GO.relate_predicate(target.prepared, GO.pred_contains(), centroid) && return true
     verdict = _sandwich(target.edges, frontier, centroid, ring)
     verdict == 0 || return verdict > 0
@@ -859,11 +870,11 @@ function _matches_near(::DE9IM.Intersects, target::GeometryTarget, grid, c, cent
 end
 
 function _matches_near(::DE9IM.Within, target::GeometryTarget, grid, c, centroid, ring,
-        ::Vector{Int})
+        ::Vector{ArcNode})
     GO.relate_predicate(target.prepared, GO.pred_intersects(), centroid) || return false
     return GO.relate_predicate(target.prepared, GO.pred_contains(), _ring_polygon(ring))
 end
 
 _matches_near(pred::DE9IM.DE9IMPredicate, target::GeometryTarget, grid, c, centroid, ring,
-        ::Vector{Int}) = GO.relate_predicate(target.prepared, _converse_predicate(pred),
+        ::Vector{ArcNode}) = GO.relate_predicate(target.prepared, _converse_predicate(pred),
     _ring_polygon(ring))

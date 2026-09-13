@@ -11,13 +11,9 @@ Extract cell values as NamedTuple rows.
 - `skipmissing=true` drops missing rows; `flatten=false` groups non-point
   rows by feature.
 """
-function extract(A::Union{DD.AbstractDimArray,DD.AbstractDimStack}, data;
-        geometrycolumn=nothing, names=nothing, name=names, skipmissing=false,
-        flatten=true, id=false, geometry=true, index=false, boundary=:center,
-        shape=nothing, atol=nothing, threaded=false, progress=true, kw...)
-    _raster_check_keywords(kw)
-    boundary = _raster_boundary(boundary)
-    shape = _raster_shape(shape)
+function extract(A::Union{DD.AbstractDimArray,DD.AbstractDimStack}, data; names=nothing, name=names,
+        skipmissing=false, flatten=true, id=false, geometry=true, index=false, atol=nothing, kw...)
+    (; boundary, shape, geometrycolumn, threaded) = _raster_options(; kw...)
     geoms = _raster_geometries(data; geometrycolumn)
     layers = _raster_extract_layers(A, name)
     grid = _raster_grid(first(values(layers)))
@@ -37,7 +33,8 @@ function extract(A::Union{DD.AbstractDimArray,DD.AbstractDimStack}, data;
         return filter(row -> !any(k -> _raster_extract_missing(row[k], missingvals[k]), keys(layers)), rows)
     end
     allpoints = all(g -> _raster_absent(g) || _raster_ispoint(g), geoms)
-    return flatten || allpoints ? reduce(vcat, groups; init=NamedTuple[]) : groups
+    flatten || allpoints || return groups
+    return isempty(groups) ? NamedTuple[] : reduce(vcat, groups)
 end
 
 _raster_ispoint(g) = GI.trait(g) isa GI.AbstractPointTrait

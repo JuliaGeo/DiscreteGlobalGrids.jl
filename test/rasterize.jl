@@ -89,6 +89,14 @@ import GeoInterface as GI
     @test missdest[ip] === true
     @test missdest[iq] === missing
     @test DD.name(DGG.rasterize(sum, points; to=grid, fill=1, name=:burn)) == :burn
+    # Masks broadcast the cell-axis coverage over the other dimensions.
+    maskedcube = DGG.mask(cube; with=[p])
+    @test size(maskedcube) == size(cube)
+    @test all(==(9), parent(maskedcube)[:, ip, :]) && all(ismissing, parent(maskedcube)[:, iq, :])
+    @test count(ismissing, DGG.mask(cube; with=[p], invert=true)) == 6
+    @test count(DGG.missingmask([p]; to=template) .=== true) == 6
+    cubestack = DGG.mask(DD.DimStack((a=cube, b=cube)); with=[q], missingval=(a=-1, b=missing))
+    @test count(==(-1), cubestack[:a]) == count(ismissing, cubestack[:b]) == length(cube) - 6
     @test isequal(DGG.rasterize(sum, points; to=grid, fill=[2,4,8], threaded=true), dest)
 end
 end

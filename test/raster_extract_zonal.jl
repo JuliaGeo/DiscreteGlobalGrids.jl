@@ -12,6 +12,8 @@ import GeoInterface as GI
         (DD.Ti(1:2),DGG.Cells(DGG.CellLookup(grid)),DD.Dim{:Band}(1:3)); name=:temperature)
     rows = DGG.extract(cube,[p,q]; id=true,index=true)
     @test length(rows)==2
+    @test isconcretetype(eltype(rows))
+    @test isconcretetype(eltype(DGG.extract(cube[Ti=1,Band=1],[p,q]; skipmissing=true)))
     @test rows[1].index==ip
     @test rows[1].geometry==(10.0,25.0)
     @test parent(rows[1].temperature)==parent(cube)[:,ip,:]

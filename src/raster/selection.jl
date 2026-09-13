@@ -87,7 +87,6 @@ function _raster_indices(grid::AbstractGrid, geom; boundary=:center, shape=nothi
         end
         return sort!(unique!(out))
     end
-    _raster_empty_geometry(geom) && return Int[]
     trait isa GI.LinearRingTrait && (geom = _raster_ring_line(geom))
     # A line has no inside, so every boundary rule asks the same question of it.
     pred = trait isa Union{GI.PolygonTrait,GI.MultiPolygonTrait} ?

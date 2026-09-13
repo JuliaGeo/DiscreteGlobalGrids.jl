@@ -58,6 +58,47 @@ end
         if GO.UnitSpherical.spherical_distance(DGG.cell_centroid(grid, DGG.cellindex(grid, i)),
             target.cap.point) <= 0.3]
 
+    # Two parts with a gap between them: an edge invented from the last vertex
+    # of one ring to the first of the next would accept cells in that gap.
+    parts = GI.MultiPolygon([GI.Polygon([box(-40.0, 10.0, 6.0)]),
+                             GI.Polygon([box(40.0, 10.0, 6.0)])])
+    target = DGG.Engine._query_target(parts)
+    for pred in (DE9IM.Intersects(nothing), DGG.Engine.CentroidCovered())
+        hits = DGG.Engine._query_indices(grid, pred, target)
+        @test hits == oracle(grid, target, pred)
+        @test !isempty(hits)
+    end
+
+    # Copernicus tiles bring their own cursor, so the descent's node arms have to
+    # answer for a tree that is neither the hierarchical cursor nor an IndexTree.
+    copdem = DGG.levelgrid(DGG.CopernicusDEMSystem(90), 0)
+    @test typeof(DGG.Engine._query_tree(copdem)) == typeof(DGG.treeify(copdem))
+    target = DGG.Engine._query_target(GI.Polygon([box(10.0, 20.0, 10.0)]))
+    for pred in (DE9IM.Intersects(nothing), DGG.Engine.CentroidCovered())
+        hits = DGG.Engine._query_indices(copdem, pred, target)
+        @test hits == oracle(copdem, target, pred)
+        @test !isempty(hits)
+    end
+
+    # Stored cells of two levels are the IndexTree's case. Its nodes carry the
+    # whole subtree window, which is what the bulk accept appends and the witness
+    # reads; a window narrowed to the node's own leaf block would lose cells.
+    centre = DGG.Fallbacks.unit_point(10.0, 20.0)
+    near(g) = [DGG.cellindex(g, i) for i in 1:DGG.ncells(g)
+               if GO.UnitSpherical.spherical_distance(
+                   DGG.cell_centroid(g, DGG.cellindex(g, i)), centre) < deg2rad(10)]
+    h3 = DGG.H3System()
+    stored = DGG._RasterStoredGrid(h3, vcat(near(DGG.levelgrid(h3, 2)),
+                                            near(DGG.levelgrid(h3, 3))))
+    @test DGG.Engine._query_tree(stored) isa DGG.Engine.IndexTreeNode
+    target = DGG.Engine._query_target(GI.Polygon([box(10.0, 20.0, 4.0)]))
+    for pred in (DE9IM.Intersects(nothing), DE9IM.Within(nothing),
+            DGG.Engine.CentroidCovered())
+        hits = DGG.Engine._query_indices(stored, pred, target)
+        @test hits == oracle(stored, target, pred)
+        @test !isempty(hits)
+    end
+
     # A one-point part is a boundary point of its own; the frontier keeps it.
     arcs = DGG.Engine._boundary_arcs(OnePointLine())
     @test length(arcs) == 1 && arcs[1].a == arcs[1].b

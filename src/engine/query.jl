@@ -88,25 +88,15 @@ function _extent_target(ext::Extents.Extent)
     end
     x0 <= x1 || throw(ArgumentError(
         "extent X bounds must be ascending; an antimeridian-crossing box is two boxes"))
-    steps = max(1, ceil(Int, (x1 - x0) / EXTENT_STEP_DEGREES))
+    # Counter-clockwise seen from outside, sampled in lon/lat so parallels stay
+    # parallels. A polar edge lifts to one repeated vertex, kept once.
+    box = Extents.Extent(X=(x0, x1), Y=(y0 <= -89.999 ? -90.0 : y0, y1 >= 89.999 ? 90.0 : y1))
+    outline = GO.segmentize(GO.Planar(), GO.extent_to_polygon(box); max_distance=EXTENT_STEP_DEGREES)
     points = USPoint[]
-    # Counter-clockwise seen from outside: east along the south edge, north,
-    # west along the north edge, south. A polar edge collapses to one vertex.
-    if y0 <= -89.999
-        push!(points, unit_point(0.0, -90.0))
-    else
-        for k in 0:steps
-            push!(points, unit_point(x0 + (x1 - x0) * k / steps, y0))
-        end
+    for p in GI.getpoint(outline)
+        q = unit_point(GI.x(p), GI.y(p))
+        (isempty(points) || q != last(points)) && push!(points, q)
     end
-    if y1 >= 89.999
-        push!(points, unit_point(0.0, 90.0))
-    else
-        for k in steps:-1:0
-            push!(points, unit_point(x0 + (x1 - x0) * k / steps, y1))
-        end
-    end
-    push!(points, points[1])
     return GI.Polygon([GI.LinearRing(points)])
 end
 

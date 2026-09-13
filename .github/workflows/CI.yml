@@ -40,9 +40,6 @@ jobs:
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
-      - name: Test conformance package
-        if: matrix.version == '1.12'
-        run: julia --project=lib/DiscreteGlobalGridsConformanceTesting -e 'using Pkg; Pkg.test()'
       - uses: julia-actions/julia-processcoverage@v1
         with:
           directories: src
@@ -51,6 +48,45 @@ jobs:
         with:
           files: lcov.info
           slug: JuliaGeo/DiscreteGlobalGrids.jl
+
+  subpackages:
+    # Each lib/ package has its own test project; running them here rather
+    # than as steps of the main job keeps them off its critical path.
+    name: ${{ matrix.package }} - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    env:
+      # The regridding suite compares threaded weight assembly against serial,
+      # which only compares two things above one thread.
+      JULIA_NUM_THREADS: '2'
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - DiscreteGlobalGridsConformanceTesting
+          - DiscreteGlobalGridsVisualization
+          - GlobalRegridding
+        os:
+          - ubuntu-latest
+          - macos-latest
+        include:
+          # Makie needs a GL stack and an X server on Linux even for
+          # CairoMakie-only tests, because GeoMakie may still load GLMakie.
+          # Every package gets it so the job stays one shape.
+          - os: ubuntu-latest
+            prefix: xvfb-run -s '-screen 0 1024x768x24'
+    steps:
+      - name: Install binary dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xorg-dev mesa-utils xvfb libgl1 freeglut3-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev
+      - uses: actions/checkout@v6
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.12'
+      - uses: julia-actions/cache@v3
+      - name: Test ${{ matrix.package }}
+        run: ${{ matrix.prefix }} julia --project=lib/${{ matrix.package }} -e 'using Pkg; Pkg.test()'
+        env:
+          DISPLAY: ':0'
 
   conformance-fallbacks:
     # The conformance suite's default mode tests what a system implemented; this

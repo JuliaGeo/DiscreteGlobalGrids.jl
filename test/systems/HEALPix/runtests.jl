@@ -431,48 +431,60 @@ end
     # The cap's radius is the farthest corner's distance times
     # `1 + CORNER_CAP_MARGIN`, so its soundness is the claim that the distance
     # from the centre over the whole chart square — interior and edges — peaks
-    # at a corner. A 65 x 65 chart lattice per pixel checks that claim, plus the
-    # margin's premise: away from the corners the lattice stays below the
-    # corner by more than twice the margin. Scaling the radius by `1 - 1e-3`
-    # fails the first check at every level.
+    # at a corner. A 65 x 65 chart lattice plus the 32-sample boundary checks
+    # that claim per pixel: exactly at levels 0-12, and to within a hundredth of
+    # the margin at the deep levels, where the excess over the chord-derived
+    # radius is rounding. A margin of zero fails at level 29; a dropped corner
+    # fails the radius identity.
     #
     # `pixel_sample(level, 256)` is every pixel at levels 0-2 and a seeded draw
-    # above; the pole pixels and the `jr = 1, 3` branch lines of every face are
-    # added by hand, since those are where the chart changes formula.
+    # above; the four corner pixels of every face, pole pixels among them, are
+    # added by hand, since a face corner is where the chart changes formula.
     m = 64
     worst_overshoot = -Inf
-    worst_excess = -Inf
-    best_far = 0.0
+    worst_excess_exact = -Inf
+    worst_excess_deep = -Inf
     max_radius = 0.0
-    for level in vcat(0:6, 8, 10, 12)
+    for level in vcat(0:6, 8, 10, 12, 16, 20, 24, 29)
         nside = 1 << level
         ids = Set(pixel_sample(level, 256))
         for f in 0:11, ix in (0, nside - 1)
             push!(ids, HP.xyf_to_nested(ix, ix, f, nside))
             push!(ids, HP.xyf_to_nested(ix, nside - 1 - ix, f, nside))
         end
+        excess = -Inf
         for p in ids
             ix, iy, f = HP.nested_to_xyf(p, nside)
             cap = node_extent(SYS, LevelIndex(level, p))
             @test cap == DGG.Fallbacks.cell_cap(levelgrid(SYS, level), LevelIndex(level, p))
             max_radius = max(max_radius, cap.radius)
             centre = HP.pixel_center(ix, iy, f, nside)
-            dcorner = maximum(q -> US.spherical_distance(centre, q),
-                HP.pixel_corners(ix, iy, f, nside))
+            corners = HP.pixel_corners(ix, iy, f, nside)
+            dchord = maximum(q -> DGG.Fallbacks._chord_angle(centre, q), corners)
+            @test cap.radius == nextfloat(dchord * (1 + HP.CORNER_CAP_MARGIN))
+            # The exactness claim compares one metric with itself; the margin
+            # claim is against the radius the cap is built from.
+            dcorner = level <= 12 ? maximum(q -> US.spherical_distance(centre, q), corners) : dchord
+            samples = HP._perimeter_points(ix, iy, f, nside, 8)
             for i in 0:m, j in 0:m
-                q = HP.xyf_to_point((ix + i / m) / nside, (iy + j / m) / nside, f)
+                push!(samples, HP.xyf_to_point((ix + i / m) / nside, (iy + j / m) / nside, f))
+            end
+            for q in samples
                 d = US.spherical_distance(centre, q)
                 worst_overshoot = max(worst_overshoot, d - cap.radius)
-                worst_excess = max(worst_excess, d / dcorner - 1)
-                nearcorner = (i <= 2 || i >= m - 2) && (j <= 2 || j >= m - 2)
-                nearcorner || (best_far = max(best_far, d / dcorner))
+                excess = max(excess, d / dcorner - 1)
             end
         end
+        if level <= 12
+            worst_excess_exact = max(worst_excess_exact, excess)
+        else
+            worst_excess_deep = max(worst_excess_deep, excess)
+        end
     end
-    @info "corner_cap vs dense chart lattice" worst_overshoot worst_excess best_far max_radius
-    @test worst_overshoot < 0                 # every lattice point inside the cap
-    @test worst_excess <= 0                   # the corner is the maximum
-    @test best_far < 1 - 2 * HP.CORNER_CAP_MARGIN
+    @info "corner_cap vs dense chart lattice" worst_overshoot worst_excess_exact worst_excess_deep max_radius
+    @test worst_overshoot < 0                 # every sample inside the cap
+    @test worst_excess_exact <= 0             # the corner is the maximum
+    @test worst_excess_deep < HP.CORNER_CAP_MARGIN / 100
     @test max_radius <= π / 2                 # geodesically convex, as the harness asserts
 end
 

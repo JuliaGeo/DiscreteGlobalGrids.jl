@@ -279,16 +279,12 @@ function chart_perimeter(chart, ix::Integer, iy::Integer, face::Integer,
 end
 
 """
-    sampled_cap(center, pts) -> SphericalCap
     sampled_cap(center, chart, ix, iy, face, nside, nseg) -> SphericalCap
 
-A cap about `center` covering the region whose perimeter `pts` samples: the
-sampled maximum radius, plus half the largest gap between consecutive samples,
-plus one outward ULP.
-
-The second form is the same cap over [`chart_perimeter`](@ref)'s samples,
-streamed through the running maxima as each is produced, so a cap costs no
-vector. The two forms agree bit for bit.
+A cap about `center` covering the region whose perimeter the
+[`chart_perimeter`](@ref) samples trace: the sampled maximum radius, plus half
+the largest gap between consecutive samples, plus one outward ULP. The samples
+stream through the running maxima as they are produced, so a cap costs no vector.
 
 For a chart-square cell this bounds the whole subtree, since children tile the
 parent's square exactly and the distance from the centre is maximised on the
@@ -296,18 +292,6 @@ perimeter — in fact at a corner, and every corner is a sample. `gap/2` is
 conservative measured slack rather than a formal Lipschitz bound, because `gap`
 is a geodesic chord rather than chart-edge arc length.
 """
-function sampled_cap(center, pts)
-    rmax = 0.0
-    gap = 0.0
-    prev = pts[end]
-    for p in pts
-        rmax = max(rmax, US.spherical_distance(center, p))
-        gap = max(gap, US.spherical_distance(prev, p))
-        prev = p
-    end
-    return _sampled_cap(center, rmax, gap)
-end
-
 function sampled_cap(center, chart, ix::Integer, iy::Integer, face::Integer,
         nside::Integer, nseg::Integer)
     x0 = Int64(ix)
@@ -325,17 +309,8 @@ function sampled_cap(center, chart, ix::Integer, iy::Integer, face::Integer,
         prev = p
     end
     gap = max(gap, US.spherical_distance(prev, first))
-    return _sampled_cap(center, rmax, gap)
+    return SphericalCap(center, nextfloat(min(Float64(π), rmax + gap / 2)))
 end
-
-_sampled_cap(center, rmax::Float64, gap::Float64) =
-    SphericalCap(center, nextfloat(min(Float64(π), rmax + gap / 2)))
-
-# Cap predicates measure `acos(dot)`, and a dot of rounded unit vectors is off by
-# up to `k` ulp (three products, two sums), which reads a true angle `θ` as up to
-# `sqrt(θ^2 + 2k·eps)`. A radius carrying that headroom keeps a nanoradian cell
-# measured inside its own cap; 4 is 3 ulp plus one in hand.
-const DOT_ULPS = 4
 
 # The angle between unit vectors from their chord, which keeps full precision
 # at nanoradian scale; `acos(dot)` has no digits below `sqrt(eps)`.
@@ -350,8 +325,8 @@ end
     corner_cap(center, chart, ix, iy, face, nside, margin) -> SphericalCap
 
 A cap about `center` from four chart evaluations: the farthest corner's angle
-scaled by `1 + margin`, widened by the `acos(dot)` measurement headroom
-`DOT_ULPS` sets, plus one outward ULP.
+scaled by `1 + margin`, plus one outward ULP. Past `π/2` the cap is the full
+sphere, where a vertex bound would stop containing the arcs between vertices.
 
 Sound for a chart whose distance from the cell centre peaks at a corner of the
 chart square; the system that calls it owns that argument and the `margin` it
@@ -367,9 +342,9 @@ function corner_cap(center, chart, ix::Integer, iy::Integer, face::Integer,
         u, v = _perimeter_uv(x0, y0, nside, 1, k)
         rmax = max(rmax, _chord_angle(center, chart(u, v, face)))
     end
-    r = rmax * (1 + margin)
-    radius = sqrt(r * r + 2 * DOT_ULPS * eps(1.0))
-    return SphericalCap(center, nextfloat(min(Float64(π), radius)))
+    radius = rmax * (1 + margin)
+    radius > Float64(π) / 2 && return full_sphere_cap()
+    return SphericalCap(center, nextfloat(radius))
 end
 
 """

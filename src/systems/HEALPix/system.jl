@@ -141,11 +141,11 @@ end
 # ===========================================================================
 
 # Relative margin on the farthest-corner radius. The distance from
-# `pixel_center` over a pixel's chart square peaks at a corner: `corner_cap
-# covers the pixel` reproduces this on a dense chart lattice at levels 0-12,
-# where the best lattice point away from the corners stays at least 1.4% below
-# the corner. 1/128 keeps half of that gap in hand.
-const CORNER_CAP_MARGIN = 1 / 128
+# `pixel_center` over a pixel's chart square peaks at a corner: on a dense chart
+# lattice the excess over the corner is exactly zero at levels 0-12 and at most
+# 3.9e-8 down to level 29, the rounding floor of nanoradian pixels. 2^-16 is
+# 400x that floor; `corner_cap covers the pixel` pins both numbers.
+const CORNER_CAP_MARGIN = 2.0^-16
 
 """
     _subtree_cap(ix, iy, face, nside) -> SphericalCap
@@ -164,7 +164,7 @@ _subtree_cap(ix::Integer, iy::Integer, face::Integer, nside::Integer) =
 
 Return the pixel's subtree cap. Nested children exactly partition the parent, so
 no generic inflation is required; the radius is the farthest corner's distance
-plus `CORNER_CAP_MARGIN`.
+scaled by `1 + CORNER_CAP_MARGIN`.
 
 The geometry nests; the caps do not. A child's own cap is recentred on the child
 and may reach outside this one, which the covering law permits — it bounds

@@ -17,22 +17,22 @@ abstract type QueryTarget end
 
 A geometry prepared once for querying.
 
-- `prepared`: the `RelateNG` form of `geom`, lifted to the unit sphere.
+- `prepared`: the `RelateNG` form of `geom`; its spherical kernel reads 2-D
+  coordinates as lon/lat degrees and 3-D coordinates as unit-sphere xyz.
 - `cap`: bounds the geometry for tree pruning.
 - `arcs`: boundary arcs for the border sandwich, in the leaf order of `edges`,
   an [`ArcTree`](@ref) over them for the descent's frontier.
 """
-struct GeometryTarget{P,G,A,E} <: QueryTarget
+struct GeometryTarget{P,A,E} <: QueryTarget
     prepared::P
-    geom::G
     cap::Cap
     arcs::A
     edges::E
 end
 
-function GeometryTarget(prepared, geom, cap::Cap, arcs)
+function GeometryTarget(prepared, cap::Cap, arcs)
     edges = _arc_tree(arcs)
-    return GeometryTarget(prepared, geom, cap, edges === nothing ? arcs : edges.data, edges)
+    return GeometryTarget(prepared, cap, edges === nothing ? arcs : edges.data, edges)
 end
 
 """
@@ -50,41 +50,21 @@ _query_target(x::US.SphericalCap) = CapTarget(SphericalCap(
 
 _query_target(x::Extents.Extent) = _query_target(_extent_target(x))
 
+const TargetTrait = Union{GI.PointTrait,GI.MultiPointTrait,GI.LineStringTrait,
+    GI.LinearRingTrait,GI.MultiLineStringTrait,GI.PolygonTrait,GI.MultiPolygonTrait}
+
 function _query_target(geom)
-    GI.isgeometry(geom) || GI.trait(geom) !== nothing || throw(ArgumentError(
-        "a query target must be a GeoInterface geometry, an Extents.Extent or a " *
-        "SphericalCap; got $(typeof(geom))"))
-    spherical = _to_unit_sphere(geom)
-    prepared = GO.prepare(GO.RelateNG(; manifold=GO.Spherical()), spherical)
-    arcs = _boundary_arcs(spherical)
-    return GeometryTarget(prepared, spherical, _geometry_cap(prepared, spherical), arcs)
+    GI.trait(geom) isa TargetTrait || throw(ArgumentError(
+        "a query target must be a point, line, polygon, multi-geometry, " *
+        "Extents.Extent or SphericalCap; got $(typeof(geom))"))
+    prepared = GO.prepare(GO.RelateNG(; manifold=GO.Spherical()), geom)
+    points = USPoint[]
+    arcs = _boundary_arcs!(BoundaryArc[], points, GI.trait(geom), geom)
+    return GeometryTarget(prepared, _geometry_cap(prepared, geom, points), arcs)
 end
 
 _query_target(::Nothing) = throw(ArgumentError(
     "the predicate carries no target; write e.g. `Intersects(geometry)`"))
-
-# The target's coordinates on the unit sphere, once, at the boundary of the
-# call: 2-D coordinates are lon/lat degrees, 3-D coordinates are xyz as-is.
-# Rebuilt through GeoInterface so that any input geometry type lands in the
-# concrete form the spherical kernels want.
-_to_unit_sphere(geom) = _to_unit_sphere(GI.trait(geom), geom)
-_to_unit_sphere(::GI.PointTrait, geom) = query_point(geom)
-_to_unit_sphere(::GI.MultiPointTrait, geom) =
-    GI.MultiPoint([query_point(p) for p in GI.getpoint(geom)])
-_to_unit_sphere(::GI.LineStringTrait, geom) =
-    GI.LineString([query_point(p) for p in GI.getpoint(geom)])
-_to_unit_sphere(::GI.LinearRingTrait, geom) =
-    GI.LinearRing([query_point(p) for p in GI.getpoint(geom)])
-_to_unit_sphere(::GI.MultiLineStringTrait, geom) =
-    GI.MultiLineString([_to_unit_sphere(GI.LineStringTrait(), l) for l in GI.getgeom(geom)])
-_to_unit_sphere(::GI.PolygonTrait, geom) =
-    GI.Polygon([GI.LinearRing([query_point(p) for p in GI.getpoint(r)])
-                for r in GI.getring(geom)])
-_to_unit_sphere(::GI.MultiPolygonTrait, geom) =
-    GI.MultiPolygon([_to_unit_sphere(GI.PolygonTrait(), p) for p in GI.getpolygon(geom)])
-_to_unit_sphere(t, geom) = throw(ArgumentError(
-    "query targets of trait $t are not supported; pass a point, line, polygon, " *
-    "multi-geometry, Extents.Extent or SphericalCap"))
 
 # How finely a lon/lat box outline is sampled before becoming a spherical
 # polygon. Its edges are great-circle arcs, so a parallel has to be densified
@@ -135,21 +115,19 @@ end
 # decided at the cap antipode. Wider caps or an interior antipode use the full
 # sphere.
 
-function _geometry_cap(prepared, geom)
-    points = USPoint[]
-    for p in GI.getpoint(geom)
-        push!(points, query_point(p))
-    end
+# `points` are the vertices the arc walk lifted, in `GI.getpoint` order; a
+# geometry without arcs (a bare ring) is lifted here.
+_geometry_cap(prepared, geom) = _geometry_cap(prepared, geom, USPoint[])
+
+function _geometry_cap(prepared, geom, points::Vector{USPoint})
+    GI.trait(geom) isa GI.PointTrait && return SphericalCap(query_point(geom), 0.0)
+    isempty(points) && (points = USPoint[query_point(p) for p in GI.getpoint(geom)])
     cap = points_cap(points)
     cap.radius >= Float64(pi) && return full_sphere_cap()
     antipode = USPoint(-cap.point[1], -cap.point[2], -cap.point[3])
     GO.relate_predicate(prepared, GO.pred_intersects(), antipode) && return full_sphere_cap()
     return cap
 end
-
-# A point target has no interior to test the antipode against.
-_geometry_cap(_, geom::GO.UnitSphericalPoint) = SphericalCap(
-    USPoint(geom[1], geom[2], geom[3]), 0.0)
 
 # Border sandwich: `d` (centroid to target boundary) against `r_out` (farthest
 # vertex) and `r_in` (nearest edge great circle), both slackened by
@@ -182,54 +160,57 @@ function BoundaryArc(a::USPoint, b::USPoint)
 end
 
 # Enumerate every topological-boundary arc, including holes and all multipart
-# rings. Return `nothing` when the geometry cannot provide a safe boundary set.
-# Rings are walked one at a time (`GI.getring`, not `GI.getpoint`): an edge
-# invented between consecutive points of two different rings is a wrong accept.
-_boundary_arcs(geom) = _boundary_arcs!(BoundaryArc[], GI.trait(geom), geom)
+# rings, lifting each vertex once into `points` on the way. Return `nothing`
+# when the geometry cannot provide a safe boundary set. Rings are walked one
+# at a time (`GI.getring`, not `GI.getpoint`): an edge invented between
+# consecutive points of two different rings is a wrong accept.
+_boundary_arcs(geom) = _boundary_arcs!(BoundaryArc[], USPoint[], GI.trait(geom), geom)
 
-_boundary_arcs!(arcs, ::Any, geom) = nothing
+_boundary_arcs!(arcs, points, ::Any, geom) = nothing
 
-function _boundary_arcs!(arcs, ::GI.PolygonTrait, geom)
-    _rings_arcs!(arcs, geom)
+function _boundary_arcs!(arcs, points, ::GI.PolygonTrait, geom)
+    _rings_arcs!(arcs, points, geom)
     return _finish_arcs!(arcs)
 end
 
-function _boundary_arcs!(arcs, ::GI.MultiPolygonTrait, geom)
+function _boundary_arcs!(arcs, points, ::GI.MultiPolygonTrait, geom)
     for poly in GI.getpolygon(geom)
-        _rings_arcs!(arcs, poly)
+        _rings_arcs!(arcs, points, poly)
     end
     return _finish_arcs!(arcs)
 end
 
-function _boundary_arcs!(arcs, ::GI.LineStringTrait, geom)
-    _chain_arcs!(arcs, geom, false)
+function _boundary_arcs!(arcs, points, ::GI.LineStringTrait, geom)
+    _chain_arcs!(arcs, points, geom, false)
     return _finish_arcs!(arcs)
 end
 
-function _boundary_arcs!(arcs, ::GI.MultiLineStringTrait, geom)
+function _boundary_arcs!(arcs, points, ::GI.MultiLineStringTrait, geom)
     for line in GI.getgeom(geom)
-        _chain_arcs!(arcs, line, false)
+        _chain_arcs!(arcs, points, line, false)
     end
     return _finish_arcs!(arcs)
 end
 
-function _boundary_arcs!(arcs, ::GI.PointTrait, geom)
+function _boundary_arcs!(arcs, points, ::GI.PointTrait, geom)
     point = query_point(geom)
+    push!(points, point)
     push!(arcs, BoundaryArc(point, point))
     return _finish_arcs!(arcs)
 end
 
-function _boundary_arcs!(arcs, ::GI.MultiPointTrait, geom)
+function _boundary_arcs!(arcs, points, ::GI.MultiPointTrait, geom)
     for p in GI.getpoint(geom)
         point = query_point(p)
+        push!(points, point)
         push!(arcs, BoundaryArc(point, point))
     end
     return _finish_arcs!(arcs)
 end
 
-function _rings_arcs!(arcs, poly)
+function _rings_arcs!(arcs, points, poly)
     for r in GI.getring(poly)
-        _chain_arcs!(arcs, r, true)
+        _chain_arcs!(arcs, points, r, true)
     end
     return arcs
 end
@@ -238,12 +219,13 @@ end
 # to the first vertex, which a polygon ring always has whether or not its
 # coordinates repeat it (a duplicated closing vertex just makes that edge
 # degenerate, and degenerate arcs are handled).
-function _chain_arcs!(arcs, chain, close::Bool)
+function _chain_arcs!(arcs, points, chain, close::Bool)
     first_point = nothing
     previous = nothing
     count = 0
     for p in GI.getpoint(chain)
         point = query_point(p)
+        push!(points, point)
         count += 1
         previous === nothing ? (first_point = point) :
         push!(arcs, BoundaryArc(previous, point))

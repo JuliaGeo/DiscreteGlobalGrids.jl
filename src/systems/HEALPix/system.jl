@@ -140,10 +140,10 @@ end
 # node_extent — the subtree cap
 # ===========================================================================
 
-# Relative margin on the farthest-corner radius. The centre's distance over the
-# chart square peaks at a corner: a dense lattice shows zero excess at levels
-# 0-12 and at most 3.9e-8 to level 29 (nanoradian rounding); 2^-16 is 400x that.
-# Pinned by the `corner_cap covers the pixel` testset.
+# Relative margin on the farthest-corner spherical_distance angle. The centre's
+# distance over the chart square peaks at a corner: a dense lattice shows zero
+# excess at levels 0-12 and at most 3.9e-8 to level 29 (nanoradian rounding);
+# 2^-16 is 400x that. Pinned by the `corner_cap covers the pixel` testset.
 const CORNER_CAP_MARGIN = 2.0^-16
 
 """

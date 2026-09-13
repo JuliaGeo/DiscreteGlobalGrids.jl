@@ -267,7 +267,6 @@ end
     return max(best, sqrt(max(0.0, 1.0 - cn * cn / arc.nn)))
 end
 
-const ArcExtent = Extents.Extent{(:X, :Y, :Z),NTuple{3,Tuple{Float64,Float64}}}
 """
     ArcTree
 
@@ -278,7 +277,7 @@ A packed R-tree over the target's boundary arcs, one exact 3-D box per arc.
 - The descent narrows a frontier of [`ArcNode`](@ref)s box by box.
 - An empty frontier under a convex cap proves that cap free of the boundary.
 """
-const ArcTree = GO.FlexibleRTrees.RTree{GO.FlexibleRTrees.Unsorted,ArcExtent,
+const ArcTree = GO.FlexibleRTrees.RTree{GO.FlexibleRTrees.Unsorted,XYZExtent,
     Vector{BoundaryArc},Base.OneTo{Int}}
 """
     ArcNode
@@ -286,7 +285,7 @@ const ArcTree = GO.FlexibleRTrees.RTree{GO.FlexibleRTrees.Unsorted,ArcExtent,
 One node of an [`ArcTree`](@ref): the tree, its 0-based level, its index in that
 level, and its box. Frontiers are vectors of these.
 """
-const ArcNode = GO.FlexibleRTrees.RTreeNode{ArcTree,ArcExtent}
+const ArcNode = GO.FlexibleRTrees.RTreeNode{ArcTree,XYZExtent}
 
 const ARC_TREE_CAPACITY = 8
 
@@ -294,7 +293,7 @@ const ARC_TREE_CAPACITY = 8
 # sandwich reads `data` sequentially and never goes through a permutation.
 function _arc_tree(arcs::Vector{BoundaryArc})
     isempty(arcs) && return nothing
-    extents = ArcExtent[GO.UnitSpherical.spherical_arc_extent(a.a, a.b) for a in arcs]
+    extents = XYZExtent[GO.UnitSpherical.spherical_arc_extent(a.a, a.b) for a in arcs]
     order = GO.FlexibleRTrees.loadorder(GO.FlexibleRTrees.STR(), extents, ARC_TREE_CAPACITY)
     return GO.FlexibleRTrees.RTree(GO.FlexibleRTrees.Unsorted(), arcs[order];
         nodecapacity=ARC_TREE_CAPACITY, extents=extents[order])
@@ -302,18 +301,8 @@ end
 
 _arc_tree(::Nothing) = nothing
 
-_root_node(tree::ArcTree) = ArcNode(tree, 0, 1, Extents.extent(tree))
-
 _target_edges(::QueryTarget) = nothing
 _target_edges(target::GeometryTarget) = target.edges
-
-# The leaf slots under `node`: packing unions consecutive runs of the capacity,
-# so every subtree is one contiguous run of `data`.
-function _arc_range(node::ArcNode)
-    tree = node.tree
-    span = tree.nodecapacity^(length(tree.levels) - node.level)
-    return ((node.index - 1) * span + 1):min(node.index * span, length(tree.data))
-end
 
 # Narrow frontier node `node` to `cap`. A node smaller than the cap is kept
 # whole (splitting costs more than it excludes); a leaf survives only if an arc
@@ -322,12 +311,14 @@ function _edge_frontier!(out::Vector{ArcNode}, node::ArcNode, cap, threshold::Fl
     Extents.intersects(cap, node.extent) || return out
     if STI.isleaf(node)
         arcs = node.tree.data
-        for k in _arc_range(node)
+        for k in _leaf_range(node)
             if _arc_cos_distance(arcs[k], cap.point) >= threshold
                 push!(out, node)
                 break
             end
         end
+    # The box overshoots the node's chord diameter by up to `sqrt(3)`, so this
+    # splits some nodes already smaller than the cap: extra work, never a lost arc.
     elseif _box_half_diagonal(node.extent) > Float64(cap.radius)
         for i in 1:STI.nchild(node)
             _edge_frontier!(out, STI.getchild(node, i), cap, threshold)
@@ -336,15 +327,6 @@ function _edge_frontier!(out::Vector{ArcNode}, node::ArcNode, cap, threshold::Fl
         push!(out, node)
     end
     return out
-end
-
-# The box overshoots the node's chord diameter by up to `sqrt(3)`, so this
-# splits some nodes already smaller than the cap: extra work, never a lost arc.
-@inline function _box_half_diagonal(ext::ArcExtent)
-    dx = ext.X[2] - ext.X[1]
-    dy = ext.Y[2] - ext.Y[1]
-    dz = ext.Z[2] - ext.Z[1]
-    return 0.5 * sqrt(dx * dx + dy * dy + dz * dz)
 end
 
 function _narrow!(out::Vector{ArcNode}, frontier::Vector{ArcNode}, cap)
@@ -383,7 +365,7 @@ function _sandwich(tree::ArcTree, frontier::Vector{ArcNode}, centroid, ring)
     cos_out, cos_in = bounds
     best = -1.0
     arcs = tree.data
-    for node in frontier, k in _arc_range(node)
+    for node in frontier, k in _leaf_range(node)
         value = _arc_cos_distance(arcs[k], centroid)
         value > cos_in && return 1
         best = max(best, value)
@@ -680,7 +662,7 @@ end
 # level-less grid (stored cells of mixed levels) fits only the index tree.
 function _query_tree(grid::AbstractGrid)
     (system(grid) === nothing || level(grid) === nothing) &&
-        return IndexTreeNode(IndexTree(grid), 1)
+        return IndexTreeNode(IndexTree(grid))
     tree = treeify(grid)
     tree isa HierarchicalGridCursor || return tree
     return HierarchicalGridCursor(grid;
@@ -741,9 +723,8 @@ end
 
 _first_hit(index::Int) = GO.LoopStateMachine.Action(:full_return, index)
 
-# An index-tree node's stored window spans its whole subtree, leaf or not.
-_node_window(node::IndexTreeNode) = @view node.tree.order[
-    node.tree.node_first[node.index]:node.tree.node_last[node.index]]
+# An index-tree node's leaf run spans its whole subtree, leaf or not.
+_node_window(node::IndexTreeNode) = @view node.tree.rtree.indices[_leaf_range(node.node)]
 
 _witness_index(node::IndexTreeNode) =
     (window = _node_window(node); isempty(window) ? 0 : first(window))
@@ -754,22 +735,11 @@ _emit!(out, node::IndexTreeNode) = (append!(out, _node_window(node)); nothing)
 
 _emit!(out, node) = (STI.depth_first_search(Base.Fix1(push!, out), Returns(true), node); nothing)
 
-# One leaf scan per tree kind: the cursor leaves the cap to `_cell_matches`,
-# the index tree stores it, and any other tree lists its leaf caps.
+# One leaf scan per tree kind: the cursor leaves the cap to `_cell_matches`;
+# any other tree lists its leaf extents.
 function _leaf_scan!(out, node::HierarchicalGridCursor, grid, pred, target, frontier, scratch, interior::Bool)
     for index in node_indices(node)
         _cell_matches(pred, target, grid, cellindex(grid, index), frontier, scratch, interior) &&
-            push!(out, index)
-    end
-    return nothing
-end
-
-function _leaf_scan!(out, node::IndexTreeNode, grid, pred, target, frontier, scratch, interior::Bool)
-    tree = node.tree
-    for k in tree.node_first[node.index]:tree.node_last[node.index]
-        interior || Extents.intersects(target.cap, tree.caps[k]) || continue
-        index = tree.order[k]
-        _cell_matches(pred, target, grid, cellindex(grid, index), frontier, scratch, true) &&
             push!(out, index)
     end
     return nothing

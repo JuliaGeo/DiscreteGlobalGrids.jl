@@ -54,6 +54,11 @@ end
 
 _raster_function_init(::Type{T}) where {T} = (S = Base.nonmissingtype(T); S === Union{} ? 0 : zero(S))
 function _raster_burn(data, geoms, fill, reducer, op, init, ::Type{T}) where {T}
+    # `count` is a function fill that ignores the feature values entirely.
+    reducer === count && ((fill, init, reducer) = (_count_fill, 0, nothing))
+    fill isa _RasterUnset && throw(ArgumentError("fill is required except for count"))
+    length(geoms) > 1 && reducer === nothing && op === nothing && !(fill isa Function) &&
+        throw(ArgumentError("multiple features require a reducer, op, or function fill"))
     fill isa Function && return _FunctionFill(fill), (init isa _RasterUnset ? _raster_function_init(T) : init)
     values = _raster_fills(data, fill, length(geoms))
     op === nothing && (op = _reduce_op(reducer))
@@ -95,11 +100,9 @@ function _raster_burn!(A, axis, inc, burn, init, mv, threaded)
     return A
 end
 
-function _raster_check_fill(fill, reducer, op, n)
-    fill isa _RasterUnset && throw(ArgumentError("fill is required except for count"))
-    n > 1 && reducer === nothing && op === nothing && !(fill isa Function) &&
-        throw(ArgumentError("multiple features require a reducer, op, or function fill"))
-end
+# A reducer already names the fold; `op` would name a second one.
+_raster_check_reducer(reducer, op) = reducer === nothing || op === nothing ||
+    throw(ArgumentError("Pass either a reducer or op=..., not both"))
 
 # --- rasterize --------------------------------------------------------------
 
@@ -118,26 +121,29 @@ Burn spherical geometries into a Cells array.
 - `init`, `eltype`, `missingval` set the cell state; mutable values are copied per cell.
 - `threaded` parallelises cell writes; a custom `op`, reducer, or fill function
   also needs `threadsafe=true`.
+- An output element type the fold does not infer costs one extra fold per
+  touched cell to learn it, so pass `eltype=` for mutating custom reducers.
 """
 rasterize(reducer::Function, data; kw...) = rasterize(data; reducer, kw...)
 function rasterize(data; to, fill=_RASTER_UNSET, reducer=nothing, op=nothing,
         init=_RASTER_UNSET, eltype=nothing, missingval=_RASTER_UNSET, level=nothing,
         threadsafe=false, name=nothing, metadata=nothing, kw...)
-    (; boundary, shape, geometrycolumn, threaded) = _raster_options(; kw...)
-    geoms = _raster_geometries(data; geometrycolumn)
-    fill isa Tuple && all(x -> x isa Symbol, fill) && (fill = NamedTuple{fill}(fill))
+    _raster_check_reducer(reducer, op)
+    geoms, opts = _raster_inputs(data; kw...)
+    threaded = opts.threaded
+    fill = _raster_layerfill(fill)
     layer(key, target, selections) = _rasterize_layer(data, geoms, selections, target...;
         fill=_raster_layerkw(fill, key), reducer, op, init=_raster_layerkw(init, key),
         outtype=_raster_layerkw(eltype, key), missingval=_raster_layerkw(missingval, key),
         threaded, threadsafe, name=key === nothing ? name : key, metadata)
     if to isa DD.AbstractDimStack
-        level === nothing || throw(ArgumentError("level is only valid with a system destination"))
+        level === nothing || throw(ArgumentError(_RASTER_LEVEL_MESSAGE))
         layers = _raster_eachlayer((key, A, sel) -> layer(key, _raster_target(A), sel), to, geoms;
-            boundary, shape, keys=fill isa NamedTuple ? keys(fill) : keys(to))
+            opts.boundary, opts.shape, keys=fill isa NamedTuple ? keys(fill) : keys(to))
         return _raster_stack(to, layers; metadata)
     end
     target = _raster_target(to; level)
-    selections = _raster_selections(target[1], geoms; boundary, shape)
+    selections = _raster_selections(target[1], geoms; opts.boundary, opts.shape)
     fill isa NamedTuple || return layer(nothing, target, selections)
     return _raster_stack(to, NamedTuple{keys(fill)}(map(key -> layer(key, target, selections), keys(fill))); metadata)
 end
@@ -146,11 +152,9 @@ function _rasterize_layer(data, geoms, selections, grid, dims, template; fill, r
         outtype, missingval, threaded, threadsafe, name, metadata)
     if reducer === Statistics.mean && op === nothing
         return _rasterize_mean(data, geoms, selections, grid, dims, template; fill, init, outtype, missingval, threaded, threadsafe, name, metadata)
-    elseif reducer === count
-        missingval isa Union{_RasterUnset,Nothing} && (missingval = 0)
-        fill, init, reducer = _count_fill, 0, nothing
+    elseif reducer === count && missingval isa Union{_RasterUnset,Nothing}
+        missingval = 0
     end
-    _raster_check_fill(fill, reducer, op, length(geoms))
     mv = _raster_missing(missingval, template)
     burn, init = _raster_burn(data, geoms, fill, reducer, op, init, typeof(mv))
     inc = _RasterIncidence(ncells(grid), selections)
@@ -185,25 +189,25 @@ Update selected cells in place; untouched cells keep their values.
 rasterize!(reducer::Function, A, data; kw...) = rasterize!(A, data; reducer, kw...)
 function rasterize!(A::DD.AbstractDimArray, data; fill=_RASTER_UNSET, reducer=nothing, op=nothing,
         init=_RASTER_UNSET, missingval=_raster_missingval(A), threadsafe=false, kw...)
-    (; boundary, shape, geometrycolumn, threaded) = _raster_options(; kw...)
-    geoms = _raster_geometries(data; geometrycolumn)
-    selections = _raster_selections(_raster_grid(A), geoms; boundary, shape)
-    return _rasterize_into!(A, data, geoms, selections; fill, reducer, op, init, missingval, threaded, threadsafe)
+    _raster_check_reducer(reducer, op)
+    geoms, opts = _raster_inputs(data; kw...)
+    selections = _raster_selections(_raster_grid(A), geoms; opts.boundary, opts.shape)
+    return _rasterize_into!(A, data, geoms, selections; fill, reducer, op, init, missingval,
+        threaded=opts.threaded, threadsafe)
 end
 function rasterize!(st::DD.AbstractDimStack, data; fill=_RASTER_UNSET, reducer=nothing, op=nothing,
         init=_RASTER_UNSET, missingval=_RASTER_UNSET, threadsafe=false, kw...)
-    (; boundary, shape, geometrycolumn, threaded) = _raster_options(; kw...)
-    geoms = _raster_geometries(data; geometrycolumn)
-    fill isa Tuple && all(x -> x isa Symbol, fill) && (fill = NamedTuple{fill}(fill))
-    _raster_eachlayer(st, geoms; boundary, shape) do key, A, selections
+    _raster_check_reducer(reducer, op)
+    geoms, opts = _raster_inputs(data; kw...)
+    fill = _raster_layerfill(fill)
+    _raster_eachlayer(st, geoms; opts.boundary, opts.shape) do key, A, selections
         _rasterize_into!(A, data, geoms, selections; fill=_raster_layerkw(fill, key), reducer, op,
-            init=_raster_layerkw(init, key), missingval=_raster_layermissing(A, missingval, key), threaded, threadsafe)
+            init=_raster_layerkw(init, key), missingval=_raster_layermissing(A, missingval, key),
+            threaded=opts.threaded, threadsafe)
     end
     return st
 end
 function _rasterize_into!(A, data, geoms, selections; fill, reducer, op, init, missingval, threaded, threadsafe)
-    reducer === count && ((fill, init, reducer) = (_count_fill, 0, nothing))
-    _raster_check_fill(fill, reducer, op, length(geoms))
     burn, init = _raster_burn(data, geoms, fill, reducer, op, init, Base.eltype(A))
     axis = _raster_dimnum(A)
     inc = _RasterIncidence(size(A, axis), selections)
@@ -214,9 +218,8 @@ end
 
 # Coverage of `A`'s cell axis by `data`, shaped to broadcast over the whole array.
 function _raster_covered(A, data; invert=false, kw...)
-    (; boundary, shape, geometrycolumn) = _raster_options(; kw...)
-    selections = _raster_selections(_raster_grid(A), _raster_geometries(data; geometrycolumn); boundary, shape)
-    return _raster_covered(A, selections, invert)
+    geoms, opts = _raster_inputs(data; kw...)
+    return _raster_covered(A, _raster_selections(_raster_grid(A), geoms; opts.boundary, opts.shape), invert)
 end
 function _raster_mask(to, level, ::Type{T}, name, missingval) where {T}
     _, dims, template = _raster_target(to; level)
@@ -225,10 +228,12 @@ end
 
 """`boolmask(data; to, invert=false, kw...)` marks cells covered by any geometry."""
 boolmask(data; to, level=nothing, kw...) = boolmask!(_raster_mask(to, level, Bool, :boolmask, nothing), data; kw...)
+"""`boolmask!(A, data; invert=false, kw...)` overwrites `A` with that coverage."""
 boolmask!(A::DD.AbstractDimArray, data; kw...) = (parent(A) .= _raster_covered(A, data; kw...); A)
 
 """`missingmask(data; to, kw...)` is `true` on covered cells and `missing` elsewhere."""
 missingmask(data; to, level=nothing, kw...) = missingmask!(_raster_mask(to, level, Union{Missing,Bool}, :missingmask, missing), data; kw...)
+"""`missingmask!(A, data; kw...)` overwrites `A` with that coverage and `missing`."""
 missingmask!(A::DD.AbstractDimArray, data; kw...) = (parent(A) .= ifelse.(_raster_covered(A, data; kw...), true, missing); A)
 
 """`mask(A; with, missingval=missing, invert=false, kw...)` replaces uncovered cells."""
@@ -236,6 +241,7 @@ function mask(A::DD.AbstractDimArray; with, missingval=_raster_missingval(A), kw
     T = promote_type(Base.eltype(A), typeof(missingval))
     return mask!(_raster_rebuild(A, Array{T}(parent(A)), DD.dims(A); missingval); with, missingval, kw...)
 end
+"""`mask!(A; with, missingval, invert=false, kw...)` replaces uncovered cells in place."""
 mask!(A::DD.AbstractDimArray; with, missingval=_raster_missingval(A), kw...) =
     _raster_mask!(A, _raster_covered(A, with; kw...), missingval)
 _raster_mask!(A, keep, missingval) = (parent(A) .= _raster_keep.(keep, parent(A), Ref(missingval)); A)
@@ -249,8 +255,8 @@ function mask(st::DD.AbstractDimStack; with, missingval=_RASTER_UNSET, kw...)
     return mask!(_raster_stack(st, NamedTuple{keys(st)}(copied)); with, missingval, kw...)
 end
 function mask!(st::DD.AbstractDimStack; with, missingval=_RASTER_UNSET, invert=false, kw...)
-    (; boundary, shape, geometrycolumn) = _raster_options(; kw...)
-    _raster_eachlayer(st, _raster_geometries(with; geometrycolumn); boundary, shape) do key, A, selections
+    geoms, opts = _raster_inputs(with; kw...)
+    _raster_eachlayer(st, geoms; opts.boundary, opts.shape) do key, A, selections
         _raster_mask!(A, _raster_covered(A, selections, invert), _raster_layermissing(A, missingval, key))
     end
     return st

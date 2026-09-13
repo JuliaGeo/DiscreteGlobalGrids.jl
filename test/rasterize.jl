@@ -76,7 +76,7 @@ import GeoInterface as GI
     DGG.rasterize!(sum, numeric, [p,p]; fill=[3,4])
     @test numeric[ip] == 11
     @test DGG.rasterize(sum, [p,p]; to=grid, fill=Int8[100,100])[ip] === 200
-    @test DGG.rasterize(sum, [p,p]; to=grid, op=*, fill=[3,4])[ip] == 12
+    @test DGG.rasterize([p,p]; to=grid, op=*, fill=[3,4])[ip] == 12
     table = (geometry=points, population=[2,4,8], area=[1,1,1])
     @test DGG.rasterize(sum, table; to=grid, fill=:population)[ip] == 6
     tablelayers = DGG.rasterize(sum, table; to=grid, fill=(:population,:area))
@@ -99,5 +99,39 @@ import GeoInterface as GI
     cubestack = DGG.mask(DD.DimStack((a=cube, b=cube)); with=[q], missingval=(a=-1, b=missing))
     @test count(==(-1), cubestack[:a]) == count(ismissing, cubestack[:b]) == length(cube) - 6
     @test isequal(DGG.rasterize(sum, points; to=grid, fill=[2,4,8], threaded=true), dest)
+    @test_throws ArgumentError DGG.rasterize(sum, points; to=grid, fill=1, op=+)
+    @test_throws ArgumentError DGG.rasterize!(sum, dest, points; fill=1, op=+)
+end
+
+@testset "shape overrides, system levels and threadsafe folds" begin
+    sys = DGG.HEALPixSystem()
+    grid = DGG.levelgrid(sys, 3)
+    ring = [(3.7, 11.3), (28.9, 11.3), (28.9, 37.1), (3.7, 37.1), (3.7, 11.3)]
+    poly = GI.Polygon([GI.LinearRing(ring)])
+
+    border = DGG._raster_indices(grid, poly; shape=:line)
+    touched = DGG._raster_indices(grid, poly; boundary=:intersects)
+    interior = DGG._raster_indices(grid, poly; boundary=:inside)
+    @test !isempty(border) && !isempty(interior)
+    @test issubset(border, touched)
+    @test isempty(intersect(border, interior))
+
+    vertexcells = sort!(unique!([DGG.localindex(grid, DGG.cellat(grid, x, y)) for (x, y) in ring]))
+    @test DGG._raster_indices(grid, poly; shape=:point) == vertexcells
+    @test_throws ArgumentError DGG._raster_indices(grid, poly; shape=:blob)
+
+    points = [GI.Point((10.0, 25.0)), GI.Point((10.0, 25.0)), GI.Point((-130.0, -35.0))]
+    @test isequal(DGG.rasterize(count, points; to=sys, level=3),
+                  DGG.rasterize(count, points; to=grid))
+    @test_throws ArgumentError DGG.rasterize(count, points; to=sys)
+    @test_throws ArgumentError DGG.rasterize(count, points; to=grid, level=3)
+    # Multi-order cell sets hold cells of several levels and are not destinations.
+    set = DGG.MultiOrderCellSet(sys, [DGG.cellindex(grid, 1)], [1], trues(1), 3)
+    @test_throws ArgumentError DGG.rasterize(count, points; to=set)
+
+    weighted(a, b) = a + 2b
+    serial = DGG.rasterize(points; to=grid, op=weighted, fill=[2, 4, 8])
+    @test isequal(DGG.rasterize(points; to=grid, op=weighted, fill=[2, 4, 8],
+        threaded=true, threadsafe=true), serial)
 end
 end

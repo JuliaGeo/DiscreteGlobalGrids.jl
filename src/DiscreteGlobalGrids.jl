@@ -461,6 +461,19 @@ public cap_inflation
 # Caught, not called.
 public NeighborCallbackError
 
+# The raster verbs. Rasters.jl owns the same ten names, so callers spell them
+# qualified and neither package shadows the other on `using`.
+public rasterize
+public rasterize!
+public extract
+public zonal
+public mask
+public mask!
+public boolmask
+public boolmask!
+public missingmask
+public missingmask!
+
 # --- Query predicates (DE9IM.jl types, our semantics) ----------------------
 export DE9IMPredicate
 export Intersects, Disjoint, Contains, Within, Covers, CoveredBy

@@ -108,9 +108,8 @@ end
     almost_antipodal_prepared = prepare(almost_antipodal)
     @test GO.relate_predicate(almost_antipodal_prepared.prepared,
         GO.pred_intersects(), DGG.cell_polygon(grid, DGG.cellindex(grid, 416)))
-    @test DGG._raster_indices(grid, almost_antipodal; boundary=:intersects) ==
-        [162, 163, 165, 166, 168, 170, 173, 174, 185, 187, 188, 191,
-         234, 237, 238, 385, 389, 406, 411, 412, 416, 432, 435, 436, 450]
+    @test check_selection(grid, almost_antipodal, :intersects;
+        label="almost antipodal equator line")
 
     # The cells at indices 71 and 74 have (0, 0) as a vertex. Each therefore
     # contains a boundary point of this tiny hole and cannot be wholly inside
@@ -123,8 +122,8 @@ end
         @test !GO.relate_predicate(with_hole_prepared.prepared,
             GO.pred_contains(), DGG.cell_polygon(grid, DGG.cellindex(grid, i)))
     end
-    @test DGG._raster_indices(grid, with_equatorial_hole; boundary=:inside) ==
-        [66, 67, 69, 72, 73, 76, 78, 79]
+    @test check_selection(grid, with_equatorial_hole, :inside;
+        label="equatorial hole")
 end
 
 @testset "raster geometry regressions" begin

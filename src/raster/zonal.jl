@@ -6,6 +6,8 @@ Reduce the selected cells of each zone; selection runs once per zone.
 - `spatialslices=true` reduces the cell dimension for every other slice;
   `false` reduces the whole selected cube; a tuple names the dimensions to
   reduce and must include the cell dimension.
+- `spatialslices=false` answers an array with a plain `Vector`, one entry per
+  zone, and a stack with a `NamedTuple` of those vectors.
 - Several zones append `Dim{:Zone}`; a single geometry returns its result.
 - Zones outside the holding return `missing`. `emptyval` replaces empty
   slices; without it `f` receives an empty iterator.
@@ -13,17 +15,16 @@ Reduce the selected cells of each zone; selection runs once per zone.
 """
 function zonal(f, A::Union{DD.AbstractDimArray,DD.AbstractDimStack}; of,
         spatialslices=true, skipmissing=true, emptyval=_RASTER_UNSET, threaded=true, kw...)
-    (; boundary, shape, geometrycolumn) = _raster_options(; kw...)
-    geoms = _raster_geometries(of; geometrycolumn)
+    geoms, opts = _raster_inputs(of; kw...)
     single = _raster_issingle(of)
     if A isa DD.AbstractDimStack
-        layers = _raster_eachlayer(A, geoms; boundary, shape) do _, layer, selections
-            _raster_zonal(f, layer, geoms, selections, single; spatialslices, skipmissing, emptyval, shape, threaded)
+        layers = _raster_eachlayer(A, geoms; opts.boundary, opts.shape) do _, layer, selections
+            _raster_zonal(f, layer, geoms, selections, single; spatialslices, skipmissing, emptyval, opts.shape, threaded)
         end
         return all(x -> x isa DD.AbstractDimArray, layers) ? _raster_stack(A, layers) : layers
     end
-    selections = _raster_selections(_raster_grid(A), geoms; boundary, shape)
-    return _raster_zonal(f, A, geoms, selections, single; spatialslices, skipmissing, emptyval, shape, threaded)
+    selections = _raster_selections(_raster_grid(A), geoms; opts.boundary, opts.shape)
+    return _raster_zonal(f, A, geoms, selections, single; spatialslices, skipmissing, emptyval, opts.shape, threaded)
 end
 
 function _raster_zonal(f, A, geoms, selections, single; spatialslices, skipmissing, emptyval, shape, threaded)
@@ -41,10 +42,13 @@ function _raster_zonal(f, A, geoms, selections, single; spatialslices, skipmissi
         vals = skipmissing ? Iterators.filter(v -> !_raster_ismissing(v, mv), x) : x
         return emptyval isa _RasterUnset || !isempty(vals) ? f(vals) : _raster_copy(emptyval)
     end
+    # Only a partial holding can place a zone outside the data, so only then is
+    # the second `:intersects` selection worth its cost.
+    partial = _raster_ispartial(grid)
     zones = _raster_map(eachindex(geoms), threaded) do j
         indices = selections[j]
         # Empty membership is a sub-cell zone, unless the zone lies outside this holding.
-        if isempty(indices) && !_raster_empty_geometry(geoms[j]) &&
+        if isempty(indices) && partial && !_raster_empty_geometry(geoms[j]) &&
                 isempty(_raster_indices(grid, geoms[j]; boundary=:intersects, shape))
             return isempty(kept) ? missing : fill(missing, map(length, kept))
         end

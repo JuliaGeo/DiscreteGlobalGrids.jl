@@ -277,8 +277,9 @@ the cursor's leaf level, so code that needs a bound over what lies *below* a lea
 """
 function STI.node_extent(cursor::HierarchicalGridCursor)
     _issynthetic(cursor) && return full_sphere_cap()
-    # A node at the leaf level IS one cell, and its tight cap is both sound and
-    # strictly better than the subtree-covering `node_extent`.
+    # A node at the leaf level is one cell, so its own `cell_cap` is sound: a
+    # boundary-derived cap is tighter than the subtree cap, and an analytical
+    # one may coincide with it (HEALPix).
     cursor.level >= cursor.leaf_level && return cell_cap(cursor.grid, cursor.id)
     count = _stored_count(cursor)
     if 0 < count <= STORED_UNION_CAP_LIMIT && count < _subtree_count(cursor)

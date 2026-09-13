@@ -21,7 +21,8 @@ import GeoInterface as GI
     @test DGG.zonal(sum,cube;of=extent,spatialslices=false)==sum(cube[:,DGG._raster_indices(grid,extent),:])
     pole = DGG.Extents.Extent(X=(-180.0,180.0),Y=(70.0,90.0))
     poleids = DGG._raster_indices(grid,pole)
-    @test poleids==[i for i in 1:DGG.ncells(grid) if DGG._raster_center(grid,i)[2]>=70]
+    # A full-longitude polar extent selects exactly the cells whose centroid latitude reaches it.
+    @test poleids==[i for i in 1:DGG.ncells(grid) if asind(DGG.cell_centroid(grid,DGG.cellindex(grid,i))[3])>=70]
     ids = DGG._raster_indices(grid,poly)
     zones = DGG.zonal(sum,cube;of=[poly,p],threaded=false)
     @test size(zones)==(2,3,2)

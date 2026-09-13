@@ -55,6 +55,7 @@ symbols for several layers, a NamedTuple of layer fills, or a function updating
 the current cell. Except for `count`, `fill` is required. Multiple features
 need a reducer, binary `op`, or function fill. Input order is preserved.
 `init`, `eltype`, and `missingval` can be supplied for custom cell types.
+`mean` is `sum ./ count`, as in Rasters: `init` joins the sum, not the count.
 
 Here is the vector-valued pattern from Rasters' crazy rasterization tutorial:
 
@@ -113,8 +114,9 @@ The initial compatibility reference is Rasters v0.15. Geometry selection uses
 a spherical grid/edge dual-tree traversal with prepared point location,
 conservative subtree acceptance, and exact leaf predicates. Common reducers
 stream accumulators; arbitrary iterable reducers gather ordered values.
-Threading uses disjoint output ownership and serial fallback for unsafe custom
-operations. `threadsafe=true` opts a custom in-place operation into threading.
+Threading uses disjoint output ownership; built-in reducers and operations run
+threaded, and a custom `op`, reducer, or fill function runs serially unless
+`threadsafe=true`.
 
 `progress` and `verbose` are accepted compatibility controls; this version does
 not display progress bars. File output (`filename`, `suffix`, `force`), raster

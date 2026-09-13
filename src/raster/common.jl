@@ -30,9 +30,15 @@ function _raster_column(data, name; geometrycolumn=nothing)
         cols = Tables.columns(data)
         name === nothing || return collect(Tables.getcolumn(cols, name))
         names = Tables.columnnames(cols)
-        gc = geometrycolumn === nothing ? (:geometry in names ? :geometry : :geom in names ? :geom : nothing) : geometrycolumn
-        gc === nothing && throw(ArgumentError("Specify geometrycolumn for a table without a :geometry column"))
-        gc isa Tuple && return map(tuple, (Tables.getcolumn(cols, c) for c in gc)...)
+        gc = geometrycolumn
+        if gc === nothing
+            candidates = (something(GI.geometrycolumns(data), ())..., :geom)
+            k = findfirst(in(names), candidates)
+            k === nothing && throw(ArgumentError("Specify geometrycolumn for a table without a :geometry column"))
+            gc = candidates[k]
+        end
+        # A row with a missing coordinate is a missing geometry, as in Rasters.
+        gc isa Tuple && return map((xs...) -> any(ismissing, xs) ? missing : xs, (Tables.getcolumn(cols, c) for c in gc)...)
         return collect(Tables.getcolumn(cols, gc))
     end
     (_raster_issingle(data) || data === missing || data === nothing) && return [_raster_value(data, name)]
@@ -100,8 +106,9 @@ function _raster_grid(d::DD.Dimension)
     return _raster_grid(l)
 end
 _raster_grid(A::DD.AbstractDimArray) = _raster_grid(DD.dims(A)[_raster_dimnum(A)])
+_raster_iscelldim(d) = DD.lookup(d) isa AbstractCellLookup
 function _raster_dimnum(dims::Tuple)
-    found = findall(d -> DD.lookup(d) isa AbstractCellLookup, dims)
+    found = DD.dimnum(dims, _raster_iscelldim)
     length(found) == 1 || throw(ArgumentError("Expected exactly one DGGS cell dimension, found $(length(found))"))
     return only(found)
 end
@@ -185,8 +192,7 @@ function _raster_eachlayer(f, st::DD.AbstractDimStack, geoms; boundary, shape, k
     return NamedTuple{keys}(layers)
 end
 
-# In-place work over disjoint indices, and typed results per chunk; the
-# concatenation is the one runtime-typed step of the threaded `map`.
+# In-place work over disjoint indices.
 function _raster_foreach(f, indices, threaded)
     if threaded && Threads.nthreads() > 1
         Threads.@threads :dynamic for k in eachindex(indices)
@@ -197,13 +203,8 @@ function _raster_foreach(f, indices, threaded)
     end
     return nothing
 end
-function _raster_map(f, xs, threaded)
-    nchunks = threaded ? min(Threads.nthreads(), length(xs)) : 1
-    nchunks > 1 || return map(f, xs)
-    chunks = Iterators.partition(xs, cld(length(xs), nchunks))
-    tasks = [Threads.@spawn(map(f, chunk)) for chunk in chunks]
-    return reduce(vcat, map(t -> fetch(t)::AbstractVector, tasks))
-end
+# The threaded path reduces over spawned chunks, so an empty range takes the serial one.
+_raster_map(f, xs, threaded) = GOCore._maptasks(f, xs, GOCore.booltype(threaded && !isempty(xs)))
 
 # --- outputs ----------------------------------------------------------------
 
@@ -214,13 +215,14 @@ function _raster_missing(missingval, template)
     return mv === nothing ? missing : mv
 end
 _raster_ismissing(x, sentinel) = ismissing(x) || (sentinel !== nothing && isequal(x, sentinel))
-function _raster_rebuild(template, data, dims; name=nothing, metadata=nothing, missingval=_RASTER_UNSET)
-    template === nothing && return DD.DimArray(data, dims; name=something(name, :layer), metadata=something(metadata, DD.NoMetadata()))
-    return DD.rebuild(template; data, dims, name=something(name, DD.name(template)),
-        metadata=something(metadata, DD.metadata(template)))
-end
+# `name`/`metadata` left `nothing` take the template's; `missingval` is a Rasters field.
+_raster_rebuild(::Nothing, data, dims; name=nothing, metadata=nothing, missingval=nothing) =
+    DD.DimArray(data, dims; name=something(name, :layer), metadata=something(metadata, DD.NoMetadata()))
+_raster_rebuild(template, data, dims; name=nothing, metadata=nothing, missingval=nothing) =
+    DD.rebuild(template; data, dims, name=something(name, DD.name(template)), metadata=something(metadata, DD.metadata(template)))
 function _raster_stack(template, layers::NamedTuple; metadata=nothing)
     labelled = template isa Union{DD.AbstractDimArray,DD.AbstractDimStack}
-    meta = metadata === nothing ? (labelled ? DD.metadata(template) : DD.NoMetadata()) : metadata
+    meta = something(metadata, labelled ? DD.metadata(template) : DD.NoMetadata())
+    template isa DD.AbstractDimStack && return DD.rebuild_from_arrays(template, layers; metadata=meta)
     return DD.DimStack(layers; metadata=meta, refdims=labelled ? DD.refdims(template) : ())
 end

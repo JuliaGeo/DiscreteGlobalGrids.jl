@@ -55,8 +55,6 @@ function _raster_empty_geometry(geom)
     end
     GI.isempty(geom) && return true
     trait isa GI.PointTrait && return false
-    # Flattening getpoint can fail for a polygon with no rings. Count its
-    # points through the ring hierarchy before asking for coordinates.
     trait isa Union{GI.PolygonTrait,GI.MultiPolygonTrait} && return GI.npoint(geom) == 0
     return isempty(GI.getpoint(geom))
 end

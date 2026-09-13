@@ -51,7 +51,7 @@ function _raster_zonal(f, A, geoms, selections, single; spatialslices, skipmissi
                 isempty(_raster_indices(grid, geoms[j]; boundary=:intersects, shape))
             return isempty(kept) ? missing : fill(missing, map(length, kept))
         end
-        zone = view(A, ntuple(i -> i == d ? indices : Colon(), ndims(A))...)
+        zone = view(A, DD.rebuild(celldim, indices))
         isempty(kept) && return reducer(zone)
         return map(reducer, eachslice(zone; dims=kept))
     end

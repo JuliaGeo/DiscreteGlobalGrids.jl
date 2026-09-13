@@ -45,7 +45,7 @@ function _raster_row(layers, grid, g, j, i; id, geometry, index)
     return merge(id ? (; id=j) : (;), geometry ? (; geometry=coord) : (;),
         index ? (; index=something(i, missing)) : (;), vals)
 end
-_raster_point_tuple(p) = GI.ncoord(p) == 3 ? (GI.x(p), GI.y(p), GI.z(p)) : (GI.x(p), GI.y(p))
+_raster_point_tuple(p) = GI.is3d(p) ? (GI.x(p), GI.y(p), GI.z(p)) : (GI.x(p), GI.y(p))
 
 function _raster_extract_layers(A::DD.AbstractDimArray, name)
     n = name === nothing ? DD.name(A) : name
@@ -58,9 +58,6 @@ function _raster_extract_layers(A::DD.AbstractDimStack, name)
     isempty(names) && throw(ArgumentError("Select at least one stack layer"))
     return NamedTuple{names}(Tuple(A[k] for k in names))
 end
-function _raster_extract_value(A, i)
-    d = _raster_dimnum(A)
-    return ndims(A) == 1 ? A[i] : view(A, ntuple(k -> k == d ? i : Colon(), ndims(A))...)
-end
+_raster_extract_value(A, i) = ndims(A) == 1 ? A[i] : view(A, DD.rebuild(DD.dims(A)[_raster_dimnum(A)], i))
 _raster_extract_missing(v::DD.AbstractDimArray, mv) = any(x -> _raster_ismissing(x, mv), v)
 _raster_extract_missing(v, mv) = _raster_ismissing(v, mv)

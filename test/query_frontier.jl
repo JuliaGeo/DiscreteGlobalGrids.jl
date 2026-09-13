@@ -1,0 +1,66 @@
+module QueryFrontierTests
+using Test
+import DiscreteGlobalGrids as DGG
+import DiscreteGlobalGrids.DE9IM as DE9IM
+import GeoInterface as GI
+import GeometryOps as GO
+
+# GeoInterface's wrapper refuses a one-point line; this one stands for it.
+struct OnePointLine end
+GI.geomtrait(::OnePointLine) = GI.LineStringTrait()
+GI.ncoord(::GI.LineStringTrait, ::OnePointLine) = 2
+GI.npoint(::GI.LineStringTrait, ::OnePointLine) = 1
+GI.getpoint(::GI.LineStringTrait, ::OnePointLine) = ((12.0, 20.0),)
+GI.getpoint(::GI.LineStringTrait, ::OnePointLine, i) = (12.0, 20.0)
+
+box(x, y, r) = GI.LinearRing([(x-r, y-r), (x+r, y-r), (x+r, y+r), (x-r, y+r), (x-r, y-r)])
+
+# Brute force over every cell: the descent's bulk accept and prune must agree
+# with the exact predicate asked of each cell polygon or centroid.
+function oracle(grid, target, pred)
+    ask(c) = pred isa DGG.Engine.CentroidCovered ?
+        GO.relate_predicate(target.prepared, GO.pred_intersects(), DGG.cell_centroid(grid, c)) :
+        GO.relate_predicate(target.prepared, DGG.Engine._converse_predicate(pred), DGG.cell_polygon(grid, c))
+    return [i for i in 1:DGG.ncells(grid) if ask(DGG.cellindex(grid, i))]
+end
+
+@testset "query frontier" begin
+    # Children overhang parents here, so a node's cap centre is not a witness.
+    grid = DGG.levelgrid(DGG.H3System(), 2)
+    holed = GI.Polygon([box(10.0, 20.0, 30.0), box(10.0, 20.0, 8.0)])
+    target = DGG.Engine._query_target(holed)
+    @test target.edges isa DGG.Engine.ArcTree
+    for pred in (DE9IM.Intersects(nothing), DE9IM.Within(nothing), DE9IM.CoveredBy(nothing),
+            DGG.Engine.CentroidCovered())
+        hits = DGG.Engine._query_indices(grid, pred, target)
+        @test hits == oracle(grid, target, pred)
+        @test !isempty(hits)
+    end
+    # Cells deep inside the box are boundary-free, and none of them contains it.
+    @test isempty(DGG.Engine._query_indices(grid, DE9IM.Contains(nothing), target))
+    @test DGG.Engine._query_indices(grid, DE9IM.Touches(nothing), target) ==
+        oracle(grid, target, DE9IM.Touches(nothing))
+
+    # A target wider than a hemisphere has no bounding cap; only the frontier
+    # prunes.
+    wide = GI.Polygon([box(0.0, 0.0, 80.0)])
+    target = DGG.Engine._query_target(wide)
+    @test target.cap.radius >= pi
+    for pred in (DE9IM.Intersects(nothing), DE9IM.Within(nothing), DGG.Engine.CentroidCovered())
+        @test DGG.Engine._query_indices(grid, pred, target) == oracle(grid, target, pred)
+    end
+
+    # A cap target never narrows the frontier; the centroid rule reads the cap.
+    cap = GO.UnitSpherical.SphericalCap(DGG.Fallbacks.unit_point(10.0, 20.0), 0.3)
+    target = DGG.Engine._query_target(cap)
+    hits = DGG.Engine._query_indices(grid, DGG.Engine.CentroidCovered(), target)
+    @test hits == [i for i in 1:DGG.ncells(grid)
+        if GO.UnitSpherical.spherical_distance(DGG.cell_centroid(grid, DGG.cellindex(grid, i)),
+            target.cap.point) <= 0.3]
+
+    # A one-point part is a boundary point of its own; the frontier keeps it.
+    arcs = DGG.Engine._boundary_arcs(OnePointLine())
+    @test length(arcs) == 1 && arcs[1].a == arcs[1].b
+end
+
+end

@@ -12,6 +12,7 @@ using DiscreteGlobalGrids
 @testset "DiscreteGlobalGrids.jl" begin
     include("raster_selection.jl")
     include("raster_geometry_regressions.jl")
+    include("query_frontier.jl")
     include("rasterize.jl")
     include("raster_extract_zonal.jl")
     include("partitioning/runtests.jl")

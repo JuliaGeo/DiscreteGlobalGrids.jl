@@ -6,6 +6,10 @@ import DiscreteGlobalGrids as DGG
 import GeoInterface as GI
 import GeometryOps as GO
 
+# The oracle is GeometryOps' spherical RelateNG asked of every cell, no tree.
+prepare(geometry) = (; prepared = DGG.Engine._query_target(geometry).prepared,
+    polygon = GI.trait(geometry) isa Union{GI.PolygonTrait,GI.MultiPolygonTrait})
+
 function oracle_indices(prepared, grid, boundary)
     out = Int[]
     for i in 1:DGG.ncells(grid)
@@ -14,16 +18,16 @@ function oracle_indices(prepared, grid, boundary)
         c = DGG.cellindex(grid, i)
         geometry = prepared.polygon && boundary === :center ?
             DGG.cell_centroid(grid, c) : DGG.cell_polygon(grid, c)
-        GO.relate_predicate(prepared.target.prepared, predicate, geometry) && push!(out, i)
+        GO.relate_predicate(prepared.prepared, predicate, geometry) && push!(out, i)
     end
     return out
 end
 
 function check_selection(grid, geometry, boundary; label="")
-    prepared = DGG._prepare_raster_geometry(geometry)
+    prepared = prepare(geometry)
     prefix = "$label $(typeof(DGG.system(grid))) level $(DGG.level(grid)) $boundary"
     actual = try
-        DGG._raster_indices(grid, prepared; boundary)
+        DGG._raster_indices(grid, geometry; boundary)
     catch exception
         error("$prefix accelerated selection threw $(sprint(showerror, exception))")
     end
@@ -101,8 +105,8 @@ end
     # +6.39° latitude and 163.98° to 172.79° longitude.
     grid = DGG.levelgrid(DGG.IGeo7System(), 2)
     almost_antipodal = GI.LineString([(0.0, 0.0), (179.999999, 0.0)])
-    almost_antipodal_prepared = DGG._prepare_raster_geometry(almost_antipodal)
-    @test GO.relate_predicate(almost_antipodal_prepared.target.prepared,
+    almost_antipodal_prepared = prepare(almost_antipodal)
+    @test GO.relate_predicate(almost_antipodal_prepared.prepared,
         GO.pred_intersects(), DGG.cell_polygon(grid, DGG.cellindex(grid, 416)))
     @test DGG._raster_indices(grid, almost_antipodal; boundary=:intersects) ==
         [162, 163, 165, 166, 168, 170, 173, 174, 185, 187, 188, 191,
@@ -114,9 +118,9 @@ end
     # chords have a singular projection into the XY plane.
     grid = DGG.levelgrid(DGG.HEALPixSystem(), 2)
     with_equatorial_hole = deterministic_geometries()[5]
-    with_hole_prepared = DGG._prepare_raster_geometry(with_equatorial_hole)
+    with_hole_prepared = prepare(with_equatorial_hole)
     for i in (71, 74)
-        @test !GO.relate_predicate(with_hole_prepared.target.prepared,
+        @test !GO.relate_predicate(with_hole_prepared.prepared,
             GO.pred_contains(), DGG.cell_polygon(grid, DGG.cellindex(grid, i)))
     end
     @test DGG._raster_indices(grid, with_equatorial_hole; boundary=:inside) ==

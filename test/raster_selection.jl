@@ -8,11 +8,15 @@ struct EmptyRasterLine end
 GI.geomtrait(::EmptyRasterLine) = GI.LineStringTrait()
 GI.getpoint(::GI.LineStringTrait, ::EmptyRasterLine) = ()
 
+# The oracle is GeometryOps' spherical RelateNG asked of every cell, no tree.
+prepare(geometry) = (; prepared = DGG.Engine._query_target(geometry).prepared,
+    polygon = GI.trait(geometry) isa Union{GI.PolygonTrait,GI.MultiPolygonTrait})
+
 function oracle_match(prep, grid, i, boundary)
     c = DGG.cellindex(grid,i)
     geom = prep.polygon && boundary === :center ? DGG.cell_centroid(grid,c) : DGG.cell_polygon(grid,c)
     predicate = prep.polygon && boundary === :inside ? GO.pred_contains() : GO.pred_intersects()
-    return GO.relate_predicate(prep.target.prepared, predicate, geom)
+    return GO.relate_predicate(prep.prepared, predicate, geom)
 end
 
 box(x, y, r) = GI.Polygon([GI.LinearRing([(x-r,y-r),(x+r,y-r),
@@ -29,10 +33,10 @@ box(x, y, r) = GI.Polygon([GI.LinearRing([(x-r,y-r),(x+r,y-r),
                     GI.Polygon([GI.LinearRing([(-120.,75.),(0.,75.),(120.,75.),(-120.,75.)])]),
                     GI.Polygon([GI.LinearRing([(-40.,-40.),(40.,-40.),(40.,40.),(-40.,40.),(-40.,-40.)]),
                         GI.LinearRing([(-5.,-5.),(-5.,5.),(5.,5.),(5.,-5.),(-5.,-5.)])]))
-                prep = DGG._prepare_raster_geometry(geometry)
+                prep = prepare(geometry)
                 selections = Dict{Symbol,Vector{Int}}()
                 for boundary in (:inside, :center, :intersects)
-                    actual = DGG._raster_indices(grid, prep; boundary)
+                    actual = DGG._raster_indices(grid, geometry; boundary)
                     oracle = [i for i in 1:DGG.ncells(grid)
                         if oracle_match(prep, grid, i, boundary)]
                     @test actual == oracle
@@ -44,12 +48,12 @@ box(x, y, r) = GI.Polygon([GI.LinearRing([(x-r,y-r),(x+r,y-r),
             end
             partial = DGG.PartialGrid(sys, lev, [DGG.cellindex(grid,i) for i in 1:2:DGG.ncells(grid)])
             geom = box(12.,20.,24.)
-            prep = DGG._prepare_raster_geometry(geom)
-            @test DGG._raster_indices(partial, prep) == [i for i in 1:DGG.ncells(partial)
+            prep = prepare(geom)
+            @test DGG._raster_indices(partial, geom) == [i for i in 1:DGG.ncells(partial)
                 if oracle_match(prep, partial, i, :center)]
             roots = collect(DGG.rootcells(sys))
             stored = DGG._RasterStoredGrid(sys, [first(DGG.children(sys, roots[2])), roots[1]])
-            @test DGG._raster_indices(stored, prep; boundary=:intersects) == [i for i in 1:2
+            @test DGG._raster_indices(stored, geom; boundary=:intersects) == [i for i in 1:2
                 if oracle_match(prep, stored, i, :intersects)]
             point = GI.Point((12.,20.))
             c = DGG.cellat(grid, 12., 20.)
@@ -59,7 +63,7 @@ box(x, y, r) = GI.Polygon([GI.LinearRing([(x-r,y-r),(x+r,y-r),
             @test isempty(DGG._raster_indices(grid, EmptyRasterLine()))
             @test_throws ArgumentError DGG._raster_indices(grid, point; boundary=:invalid)
             line = GI.LineString([(-40.,0.),(40.,0.)])
-            prep = DGG._prepare_raster_geometry(line)
+            prep = prepare(line)
             @test DGG._raster_indices(grid, line) == [i for i in 1:DGG.ncells(grid)
                 if oracle_match(prep, grid, i, :intersects)]
             # A coincident boundary is covered, and tiny enclosed polygons
@@ -77,9 +81,9 @@ box(x, y, r) = GI.Polygon([GI.LinearRing([(x-r,y-r),(x+r,y-r),
         grid = DGG.PartialGrid(sys, 1, ids)
         @test DGG.treeify(grid) isa DGG.TiledRasterCursor
         geom = box(6.9, 50.0, 0.25)
-        prep = DGG._prepare_raster_geometry(geom)
+        prep = prepare(geom)
         for boundary in (:center,:inside,:intersects)
-            @test DGG._raster_indices(grid, prep; boundary) ==
+            @test DGG._raster_indices(grid, geom; boundary) ==
                 [i for i in 1:DGG.ncells(grid)
                  if oracle_match(prep, grid, i, boundary)]
         end

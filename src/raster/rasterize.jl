@@ -113,16 +113,16 @@ Burn spherical geometries into a Cells array.
 
 - `fill`: a scalar, one value per feature, a property Symbol, a tuple of
   Symbols or NamedTuple for several layers, or a function updating each cell.
-- Multiple features need a `reducer`, binary `op`, or function fill; values
-  combine in input order. `count` needs no fill; `mean` is `sum ./ count`,
-  with `init` added to the sum.
-- `to`: grid, cell axis, dimensional array, or stack; the spatial result is
-  broadcast over the other dimensions.
+- Multiple features need a `reducer`, binary `op`, or function fill, applied in
+  input order.
+- `count` needs no fill; `mean` is `sum ./ count`, with `init` added to the sum.
+- `to`: grid, cell axis, dimensional array, or stack; the spatial result
+  broadcasts over the other dimensions.
 - `init`, `eltype`, `missingval` set the cell state; mutable values are copied per cell.
 - `threaded` parallelises cell writes; a custom `op`, reducer, or fill function
   also needs `threadsafe=true`.
-- An output element type the fold does not infer costs one extra fold per
-  touched cell to learn it, so pass `eltype=` for mutating custom reducers.
+- Pass `eltype=` for mutating custom reducers: an uninferred element type costs
+  one extra fold per touched cell.
 """
 rasterize(reducer::Function, data; kw...) = rasterize(data; reducer, kw...)
 function rasterize(data; to, fill=_RASTER_UNSET, reducer=nothing, op=nothing,
@@ -182,9 +182,8 @@ end
 
 Update selected cells in place; untouched cells keep their values.
 
-- Binary operations, streaming reducers, and function fills fold onto an
-  existing nonmissing value.
-- Gathering reducers such as `mean` replace the selected values.
+- Binary `op`, streaming reducers, and function fills fold onto an existing
+  nonmissing value; gathering reducers such as `mean` replace it.
 """
 rasterize!(reducer::Function, A, data; kw...) = rasterize!(A, data; reducer, kw...)
 function rasterize!(A::DD.AbstractDimArray, data; fill=_RASTER_UNSET, reducer=nothing, op=nothing,

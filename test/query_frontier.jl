@@ -93,9 +93,8 @@ end
         @test !isempty(hits)
     end
 
-    # Stored cells of two levels are the IndexTree's case. Its nodes carry the
-    # whole subtree window, which is what the bulk accept appends and the witness
-    # reads; a window narrowed to the node's own leaf block would lose cells.
+    # Mixed-level stored cells take the IndexTree, whose nodes must carry the
+    # whole subtree window (the bulk accept appends it, the witness reads it).
     centre = DGG.Fallbacks.unit_point(10.0, 20.0)
     near(g) = [DGG.cellindex(g, i) for i in 1:DGG.ncells(g)
                if GO.UnitSpherical.spherical_distance(

@@ -428,18 +428,13 @@ end
 # =========================================================================
 
 @testset "corner_cap covers the pixel" begin
-    # The cap's radius is the farthest corner's distance times
-    # `1 + CORNER_CAP_MARGIN`, so its soundness is the claim that the distance
-    # from the centre over the whole chart square — interior and edges — peaks
-    # at a corner. A 65 x 65 chart lattice plus the 32-sample boundary checks
-    # that claim per pixel: exactly at levels 0-12, and to within a hundredth of
-    # the margin at the deep levels, where the excess over the chord-derived
-    # radius is rounding. A margin of zero fails at level 29; a dropped corner
-    # fails the radius identity.
+    # Sound iff the centre's distance over the whole chart square peaks at a
+    # corner. A 65 x 65 lattice plus the 32-sample boundary checks that per
+    # pixel: exactly at levels 0-12, within a hundredth of the margin deeper
+    # (rounding). Mutants: zero margin fails at 29; a dropped corner, the identity.
     #
-    # `pixel_sample(level, 256)` is every pixel at levels 0-2 and a seeded draw
-    # above; the four corner pixels of every face, pole pixels among them, are
-    # added by hand, since a face corner is where the chart changes formula.
+    # `pixel_sample(level, 256)`: every pixel at levels 0-2, a seeded draw above.
+    # Every face's four corner pixels are added: the chart changes formula there.
     m = 64
     worst_overshoot = -Inf
     worst_excess_exact = -Inf

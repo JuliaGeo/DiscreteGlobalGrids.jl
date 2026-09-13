@@ -3,14 +3,13 @@
 
 Reduce the selected cells of each zone; selection runs once per zone.
 
-- `spatialslices=true` reduces the cell dimension for every other slice;
-  `false` reduces the whole selected cube; a tuple names the dimensions to
-  reduce and must include the cell dimension.
-- `spatialslices=false` answers an array with a plain `Vector`, one entry per
-  zone, and a stack with a `NamedTuple` of those vectors.
+- `spatialslices`: `true` reduces the cell dimension per other slice, `false`
+  the whole selected cube, a tuple those dimensions (cell dimension required).
+- `spatialslices=false` returns a `Vector` (one entry per zone) for an array
+  and a `NamedTuple` of such vectors for a stack.
 - Several zones append `Dim{:Zone}`; a single geometry returns its result.
-- Zones outside the holding return `missing`. `emptyval` replaces empty
-  slices; without it `f` receives an empty iterator.
+- Zones outside the holding give `missing`; `emptyval` replaces empty slices,
+  else `f` receives an empty iterator.
 - Means are unweighted cell means.
 """
 function zonal(f, A::Union{DD.AbstractDimArray,DD.AbstractDimStack}; of,

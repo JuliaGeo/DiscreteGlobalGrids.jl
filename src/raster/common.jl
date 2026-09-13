@@ -16,10 +16,11 @@ _raster_issingle(data) = _raster_isfeature(data) || GI.trait(data) isa GI.Abstra
 """
     _raster_geometries(data; geometrycolumn=nothing) -> Vector
 
-One geometry per feature, in input order: a geometry, feature, feature
-collection, extent, spherical cap, `missing`/`nothing`, a Tables table
-(`geometrycolumn` names the column or a coordinate-column tuple), or any
-iterable of these.
+One geometry per feature, in input order.
+
+- Accepts a geometry, feature, feature collection, extent, spherical cap,
+  `missing`/`nothing`, a Tables table, or any iterable of these.
+- `geometrycolumn` names a table's geometry column or a coordinate-column tuple.
 """
 _raster_geometries(data; geometrycolumn=nothing) = _raster_column(data, nothing; geometrycolumn)
 

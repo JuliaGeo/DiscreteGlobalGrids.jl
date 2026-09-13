@@ -100,9 +100,8 @@ end
     equator_prepared = GO.prepare(GO.RelateNG(; manifold=GO.Spherical()), equator)
     @test GO.relate_predicate(equator_prepared, GO.pred_intersects(), meridian)
 
-    # The unique minor arc runs east along the equator. Z7Cell("1006")
-    # (local index 416) straddles it: its vertices range from -6.39° to
-    # +6.39° latitude and 163.98° to 172.79° longitude.
+    # The minor arc runs east along the equator; Z7Cell("1006") (local index
+    # 416) straddles it, spanning ±6.39° latitude at 163.98°-172.79° longitude.
     grid = DGG.levelgrid(DGG.IGeo7System(), 2)
     almost_antipodal = GI.LineString([(0.0, 0.0), (179.999999, 0.0)])
     almost_antipodal_prepared = prepare(almost_antipodal)
@@ -111,10 +110,9 @@ end
     @test check_selection(grid, almost_antipodal, :intersects;
         label="almost antipodal equator line")
 
-    # The cells at indices 71 and 74 have (0, 0) as a vertex. Each therefore
-    # contains a boundary point of this tiny hole and cannot be wholly inside
-    # the polygon. This exercises spherical proper crossings whose endpoint
-    # chords have a singular projection into the XY plane.
+    # Cells 71 and 74 have (0, 0) as a vertex, a boundary point of the tiny hole,
+    # so neither is inside the polygon. Their edge chords project singularly
+    # into the XY plane, the proper-crossing case under test.
     grid = DGG.levelgrid(DGG.HEALPixSystem(), 2)
     with_equatorial_hole = deterministic_geometries()[5]
     with_hole_prepared = prepare(with_equatorial_hole)

@@ -140,20 +140,20 @@ end
 # node_extent — the subtree cap
 # ===========================================================================
 
-# Relative margin on the farthest-corner radius. The distance from
-# `pixel_center` over a pixel's chart square peaks at a corner: on a dense chart
-# lattice the excess over the corner is exactly zero at levels 0-12 and at most
-# 3.9e-8 down to level 29, the rounding floor of nanoradian pixels. 2^-16 is
-# 400x that floor; `corner_cap covers the pixel` pins both numbers.
+# Relative margin on the farthest-corner radius. The centre's distance over the
+# chart square peaks at a corner: a dense lattice shows zero excess at levels
+# 0-12 and at most 3.9e-8 to level 29 (nanoradian rounding); 2^-16 is 400x that.
+# Pinned by the `corner_cap covers the pixel` testset.
 const CORNER_CAP_MARGIN = 2.0^-16
 
 """
     _subtree_cap(ix, iy, face, nside) -> SphericalCap
 
-Return a cap for the pixel and its complete subtree: [`DGG.corner_cap`](@ref)
-about [`pixel_center`](@ref) with `CORNER_CAP_MARGIN`. Nested
-refinement exactly subdivides the parent's chart square, so bounding that
-square bounds every descendant in O(1).
+Return the cap for the pixel and its whole subtree, in O(1).
+
+- [`DGG.corner_cap`](@ref) about [`pixel_center`](@ref) with `CORNER_CAP_MARGIN`.
+- Nested refinement subdivides the parent's chart square exactly, so bounding
+  the square bounds every descendant.
 """
 _subtree_cap(ix::Integer, iy::Integer, face::Integer, nside::Integer) =
     DGG.corner_cap(pixel_center(ix, iy, face, nside), xyf_to_point,
@@ -162,13 +162,10 @@ _subtree_cap(ix::Integer, iy::Integer, face::Integer, nside::Integer) =
 """
     node_extent(HEALPixSystem(), c) -> SphericalCap
 
-Return the pixel's subtree cap. Nested children exactly partition the parent, so
-no generic inflation is required; the radius is the farthest corner's distance
-scaled by `1 + CORNER_CAP_MARGIN`.
+Return the pixel's subtree cap, `_subtree_cap`.
 
-The geometry nests; the caps do not. A child's own cap is recentred on the child
-and may reach outside this one, which the covering law permits — it bounds
-descendant polygons, not descendant bounds.
+- Caps do not nest: a child's cap is recentred and may reach outside this one,
+  which the covering law permits (it bounds descendant polygons, not caps).
 """
 function DGG.node_extent(::HEALPixSystem, c::DGG.LevelIndex)
     l = DGG.level(c)
@@ -180,10 +177,10 @@ end
 """
     cell_cap(grid::LevelGrid, c) -> SphericalCap
 
-The pixel's own cap, which is its subtree cap: the cap bounds the chart square,
-is geodesically convex (radius below `π/2`), and so contains every great-circle
-chord of [`cell_boundary`](@ref) as well. Built from the chart directly, with
-no boundary vector.
+The pixel's own cap, `_subtree_cap`, from four chart evaluations.
+
+- Bounds the chart square and is convex (radius below `π/2`), so it also holds
+  every great-circle chord of [`cell_boundary`](@ref).
 """
 function DGG.Fallbacks.cell_cap(g::LevelGrid, c::DGG.LevelIndex)
     nside = DGG.nside(DGG.level(c))

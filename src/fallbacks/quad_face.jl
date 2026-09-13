@@ -238,9 +238,8 @@ end
 # Chart-independent geometry
 # ===========================================================================
 
-# Chart coordinates of sample `k` (0-based, of `4nseg`) on the perimeter walk
-# `(x+,y+) → (x-,y+) → (x-,y-) → (x+,y-)`. One definition serves the boundary
-# vector and the streamed cap, so their sample arguments are bit-identical.
+# Sample `k` (0-based, of `4nseg`) of the perimeter walk `(x+,y+) → (x-,y+) →
+# (x-,y-) → (x+,y-)`; shared so boundary and cap samples are bit-identical.
 @inline function _perimeter_uv(x0::Int64, y0::Int64, n::Integer, nseg::Integer, k::Integer)
     e, i = divrem(k, nseg)
     t = i / nseg
@@ -281,16 +280,16 @@ end
 """
     sampled_cap(center, chart, ix, iy, face, nside, nseg) -> SphericalCap
 
-A cap about `center` covering the region whose perimeter the
-[`chart_perimeter`](@ref) samples trace: the sampled maximum radius, plus half
-the largest gap between consecutive samples, plus one outward ULP. The samples
-stream through the running maxima as they are produced, so a cap costs no vector.
+A cap about `center` covering the region the [`chart_perimeter`](@ref) samples
+trace.
 
-For a chart-square cell this bounds the whole subtree, since children tile the
-parent's square exactly and the distance from the centre is maximised on the
-perimeter — in fact at a corner, and every corner is a sample. `gap/2` is
-conservative measured slack rather than a formal Lipschitz bound, because `gap`
-is a geodesic chord rather than chart-edge arc length.
+- Radius: the sampled maximum, plus half the largest gap between consecutive
+  samples, plus one outward ULP; samples stream through running maxima, so no
+  vector is built.
+- Bounds the whole subtree of a chart-square cell: children tile the parent's
+  square and the centre's distance peaks at a corner, which is always a sample.
+- `gap/2` is measured slack, not a Lipschitz bound: `gap` is a geodesic chord,
+  not chart-edge arc length.
 """
 function sampled_cap(center, chart, ix::Integer, iy::Integer, face::Integer,
         nside::Integer, nseg::Integer)
@@ -324,14 +323,15 @@ end
 """
     corner_cap(center, chart, ix, iy, face, nside, margin) -> SphericalCap
 
-A cap about `center` from four chart evaluations: the farthest corner's angle
-scaled by `1 + margin`, plus one outward ULP. Past `π/2` the cap is the full
-sphere, where a vertex bound would stop containing the arcs between vertices.
+A cap about `center` from the four chart corners.
 
-Sound for a chart whose distance from the cell centre peaks at a corner of the
-chart square; the system that calls it owns that argument and the `margin` it
-justifies. Every descendant lies in the parent's square, so the cap bounds the
-subtree as [`sampled_cap`](@ref) does.
+- Radius: the farthest corner's angle times `1 + margin`, plus one outward ULP;
+  past `π/2` the full sphere, since a vertex bound then stops containing the
+  arcs between vertices.
+- Sound when the centre's distance over the cell peaks at a corner; the calling
+  system owns that argument and its `margin`.
+- Children tile the parent's square, so the cap bounds the whole subtree, as
+  [`sampled_cap`](@ref) does.
 """
 function corner_cap(center, chart, ix::Integer, iy::Integer, face::Integer,
         nside::Integer, margin::Float64)

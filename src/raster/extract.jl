@@ -3,13 +3,13 @@
 
 Extract cell values as NamedTuple rows.
 
-- Points use containing-cell lookup; lines intersect cells; polygons follow
+- Points use their containing cell; lines intersect cells; polygons follow
   `boundary` (`:center`, `:intersects`/`:touches`, `:inside`).
-- Rows carry `:geometry` (input point, or the cell representative lon/lat),
-  `id=true` the feature number, `index=true` the local cell-axis position.
+- Rows carry `:geometry` (the input point, else the cell's lon/lat), with
+  `id=true` the feature number and `index=true` the cell-axis position.
 - Unsampled dimensions stay labelled slices; `name` selects stack layers.
-- `skipmissing=true` drops missing rows — a row whose slice holds any missing
-  element counts as missing; `flatten=false` groups non-point rows by feature.
+- `skipmissing=true` drops rows whose slice holds any missing element;
+  `flatten=false` groups non-point rows by feature.
 """
 function extract(A::Union{DD.AbstractDimArray,DD.AbstractDimStack}, data; names=nothing, name=names,
         skipmissing=false, flatten=true, id=false, geometry=true, index=false, kw...)

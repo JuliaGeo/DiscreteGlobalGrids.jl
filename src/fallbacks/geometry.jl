@@ -259,12 +259,9 @@ function cell_extent(grid::AbstractGrid, c::AbstractCellIndex)
         lonmin = min(lonmin, lon)
         lonmax = max(lonmax, lon)
         # Arc bulge: the closing edge is included by the wrap-around index.
-        q = points[i == n ? 1 : i + 1]
-        elat = _arc_lat_extremes(p, q)
-        if elat !== nothing
-            latmin = min(latmin, elat[1])
-            latmax = max(latmax, elat[2])
-        end
+        zlo, zhi = US.spherical_arc_extent(p, points[i == n ? 1 : i + 1]).Z
+        latmin = min(latmin, asind(clamp(zlo, -1.0, 1.0)))
+        latmax = max(latmax, asind(clamp(zhi, -1.0, 1.0)))
     end
     # The closing edge's longitude step, which the loop above never took.
     delta = first_lon - previous_lon
@@ -289,40 +286,6 @@ function cell_extent(grid::AbstractGrid, c::AbstractCellIndex)
     end
     crosses && return Extents.Extent(X=(-180.0, 180.0), Y=(latmin, latmax))
     return Extents.Extent(X=(lonmin, lonmax), Y=(latmin, latmax))
-end
-
-# Great-circle latitude extrema on the minor arc `a -> b`, if present. For unit
-# normal `n`, candidates are `±normalize(z - (z ⋅ n)n)`.
-function _arc_lat_extremes(a, b)
-    nx = a[2] * b[3] - a[3] * b[2]
-    ny = a[3] * b[1] - a[1] * b[3]
-    nz = a[1] * b[2] - a[2] * b[1]
-    nn = nx * nx + ny * ny + nz * nz
-    nn <= 1e-24 && return nothing            # degenerate or antipodal edge
-    inv = 1.0 / sqrt(nn)
-    ux, uy, uz = nx * inv, ny * inv, nz * inv
-    # z - (z . u) u, the tangent direction of steepest latitude gain.
-    vx, vy, vz = -uz * ux, -uz * uy, 1.0 - uz * uz
-    vn = sqrt(vx * vx + vy * vy + vz * vz)
-    # `u` parallel to the pole means the arc's great circle IS the equator,
-    # where latitude is constant and there is no extreme to find.
-    vn <= 1e-12 && return nothing
-    px, py, pz = vx / vn, vy / vn, vz / vn
-    lo = nothing
-    hi = nothing
-    for s in (1.0, -1.0)
-        qx, qy, qz = s * px, s * py, s * pz
-        # `a -> q -> b` in the orientation of `n`.
-        ((a[2] * qz - a[3] * qy) * nx + (a[3] * qx - a[1] * qz) * ny +
-         (a[1] * qy - a[2] * qx) * nz) > 0 || continue
-        ((qy * b[3] - qz * b[2]) * nx + (qz * b[1] - qx * b[3]) * ny +
-         (qx * b[2] - qy * b[1]) * nz) > 0 || continue
-        lat = asind(clamp(qz, -1.0, 1.0))
-        lo = lo === nothing ? lat : min(lo, lat)
-        hi = hi === nothing ? lat : max(hi, lat)
-    end
-    lo === nothing && return nothing
-    return (lo, hi)
 end
 
 # ===========================================================================

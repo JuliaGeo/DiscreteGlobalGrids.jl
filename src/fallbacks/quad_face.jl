@@ -311,15 +311,6 @@ function sampled_cap(center, chart, ix::Integer, iy::Integer, face::Integer,
     return SphericalCap(center, nextfloat(min(Float64(π), rmax + gap / 2)))
 end
 
-# The angle between unit vectors from their chord, which keeps full precision
-# at nanoradian scale; `acos(dot)` has no digits below `sqrt(eps)`.
-@inline function _chord_angle(a, b)
-    dx = a[1] - b[1]
-    dy = a[2] - b[2]
-    dz = a[3] - b[3]
-    return 2 * asin(min(1.0, sqrt(dx * dx + dy * dy + dz * dz) / 2))
-end
-
 """
     corner_cap(center, chart, ix, iy, face, nside, margin) -> SphericalCap
 
@@ -340,7 +331,7 @@ function corner_cap(center, chart, ix::Integer, iy::Integer, face::Integer,
     rmax = 0.0
     for k in 0:3
         u, v = _perimeter_uv(x0, y0, nside, 1, k)
-        rmax = max(rmax, _chord_angle(center, chart(u, v, face)))
+        rmax = max(rmax, US.spherical_distance(center, chart(u, v, face)))
     end
     radius = rmax * (1 + margin)
     radius > Float64(π) / 2 && return full_sphere_cap()

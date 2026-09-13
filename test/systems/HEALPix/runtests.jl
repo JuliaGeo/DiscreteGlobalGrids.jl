@@ -455,11 +455,8 @@ end
             max_radius = max(max_radius, cap.radius)
             centre = HP.pixel_center(ix, iy, f, nside)
             corners = HP.pixel_corners(ix, iy, f, nside)
-            dchord = maximum(q -> DGG.Fallbacks._chord_angle(centre, q), corners)
-            @test cap.radius == nextfloat(dchord * (1 + HP.CORNER_CAP_MARGIN))
-            # The exactness claim compares one metric with itself; the margin
-            # claim is against the radius the cap is built from.
-            dcorner = level <= 12 ? maximum(q -> US.spherical_distance(centre, q), corners) : dchord
+            dcorner = maximum(q -> US.spherical_distance(centre, q), corners)
+            @test cap.radius == nextfloat(dcorner * (1 + HP.CORNER_CAP_MARGIN))
             samples = HP._perimeter_points(ix, iy, f, nside, 8)
             for i in 0:m, j in 0:m
                 push!(samples, HP.xyf_to_point((ix + i / m) / nside, (iy + j / m) / nside, f))

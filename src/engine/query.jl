@@ -545,9 +545,9 @@ function _matches(pred::DE9IM.Intersects, target::GeometryTarget, grid, c)
     return GO.relate_predicate(target.prepared, GO.pred_intersects(), _ring_polygon(ring))
 end
 
-# Assumes a cell's centroid lies inside its own cell.
-# A cell within the target holds its centroid inside it, so a centroid the
-# target does not even cover settles `Within` without the polygon test.
+# `cell_centroid` is contracted to lie strictly inside its own cell, so a cell
+# within the target holds its centroid inside it, and a centroid the target does
+# not even cover settles `Within` without the polygon test.
 function _matches(::DE9IM.Within, target::GeometryTarget, grid, c)
     _covers_centroid(target, grid, c) || return false
     return GO.relate_predicate(target.prepared, GO.pred_contains(), cell_polygon(grid, c))
@@ -633,9 +633,10 @@ geometry, an `Extents.Extent` in lon/lat degrees, or a
 `Disjoint` is computed as the full-grid complement of `Intersects` and cannot
 prune the output traversal.
 
-The traversal runs over [`treeify`](@ref)`(grid)`, so a system's own tree
-serves its queries; a grid that reports a system but no level (stored cells
-of mixed levels) gets an [`IndexTree`](@ref).
+The traversal runs over [`treeify`](@ref)`(grid)`, so a system's own tree serves
+its queries. A hierarchical cursor is rebuilt at the wider of the query's leaf
+bucket and the grid's own, so cap tests stay selective; a grid with no level
+(stored cells of mixed levels) gets the engine's index tree instead.
 
 Caps are handled without polygonization. `Within` uses the complement for caps
 wider than a hemisphere. `Intersects` conservatively accepts undecidable cap-

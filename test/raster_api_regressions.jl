@@ -136,8 +136,9 @@ GI.isempty(::EmptyPolygon) = true
         @test ismissing(inferred[iq])
         @test eltype(inferred) == Union{Missing, Int}
 
-        @test_throws ArgumentError DGG.rasterize(sum, [p]; to=a, fill=2,
+        @test_throws "longitude/latitude" DGG.rasterize(sum, [p]; to=a, fill=2,
             crs=RA.EPSG(4326))
+        @test DGG.rasterize(sum, [p]; to=a, fill=2, crs=nothing)[ip] == 2
         @test_throws ArgumentError DGG.rasterize(sum, [p]; to=a, fill=2,
             mappedcrs=RA.EPSG(4326))
     end

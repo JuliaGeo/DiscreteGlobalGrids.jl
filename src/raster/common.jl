@@ -37,7 +37,8 @@ function _raster_column(data, name; geometrycolumn=nothing)
     (_raster_issingle(data) || data === missing || data === nothing) && return [_raster_value(data, name)]
     GI.trait(data) isa GI.AbstractFeatureCollectionTrait && return [_raster_value(f, name) for f in GI.getfeature(data)]
     applicable(iterate, data) || throw(ArgumentError("Expected GeoInterface geometry/features or a Tables table, got $(typeof(data))"))
-    return reduce(vcat, [_raster_column(item, name) for item in data]; init=Union{}[])
+    parts = [_raster_column(item, name) for item in data]
+    return isempty(parts) ? Union{}[] : reduce(vcat, parts)
 end
 _raster_value(f, ::Nothing) = _raster_isfeature(f) ? GI.geometry(f) : f
 function _raster_value(f, name::Symbol)
@@ -68,8 +69,9 @@ _raster_copy(x) = isbits(x) ? x : deepcopy(x)
 
 # The selection keywords every verb shares; anything else is outside the in-memory API.
 function _raster_options(; boundary=:center, shape=nothing, geometrycolumn=nothing, threaded=false,
-        progress=true, verbose=true, kw...)
-    isempty(kw) || throw(ArgumentError("Unsupported keyword(s): $(join(keys(kw), ", ")); crs/mappedcrs, file output, res, size, and chunked execution are outside the in-memory API"))
+        progress=true, verbose=true, crs=nothing, mappedcrs=nothing, kw...)
+    isempty(kw) || throw(ArgumentError("Unsupported keyword(s): $(join(keys(kw), ", ")); file output, res, size, and chunked execution are outside the in-memory API"))
+    (crs === nothing && mappedcrs === nothing) || throw(ArgumentError("DGGS cell axes have intrinsic spherical coordinates; transform geometries to longitude/latitude before rasterization instead of setting crs/mappedcrs"))
     return (; boundary=_raster_boundary(boundary), shape=_raster_shape(shape), geometrycolumn, threaded)
 end
 
@@ -153,7 +155,7 @@ function _raster_destination(st::DD.AbstractDimStack)
     isempty(keys(st)) && throw(ArgumentError("An empty stack has no target grid"))
     return _raster_destination(st[first(keys(st))])
 end
-_raster_destination(g::AbstractGrid) = _raster_destination((_raster_celldim(g),))
+_raster_destination(g::AbstractGrid) = (g, (_raster_celldim(g),), nothing)
 _raster_destination(set::MultiOrderCellSet) = _raster_destination(_RasterStoredGrid(set.system, set.cells))
 _raster_destination(cv::AbstractCellVector) = _raster_destination(cv isa CellVector ? CellLookup(cv) : ChunkedCellLookup(cv))
 _raster_destination(l::_RasterCellLookup) = _raster_destination((Cells(l),))
@@ -212,16 +214,25 @@ function _raster_eachlayer(f, st::DD.AbstractDimStack, geoms; boundary, shape, k
     return NamedTuple{keys}(layers)
 end
 
-# Threads split the index range into chunks; `map` keeps each chunk's result
-# typed, and the concatenation is the one runtime-typed step.
+# In-place work over disjoint indices, and typed results per chunk; the
+# concatenation is the one runtime-typed step of the threaded `map`.
+function _raster_foreach(f, indices, threaded)
+    if threaded && Threads.nthreads() > 1
+        Threads.@threads :dynamic for k in eachindex(indices)
+            f(indices[k])
+        end
+    else
+        foreach(f, indices)
+    end
+    return nothing
+end
 function _raster_map(f, xs, threaded)
     nchunks = threaded ? min(Threads.nthreads(), length(xs)) : 1
     nchunks > 1 || return map(f, xs)
-    chunks = Iterators.partition(eachindex(xs), cld(length(xs), nchunks))
-    tasks = [Threads.@spawn(map(k -> f(xs[k]), chunk)) for chunk in chunks]
+    chunks = Iterators.partition(xs, cld(length(xs), nchunks))
+    tasks = [Threads.@spawn(map(f, chunk)) for chunk in chunks]
     return reduce(vcat, map(t -> fetch(t)::AbstractVector, tasks))
 end
-_raster_foreach(f, xs, threaded) = (_raster_map(k -> (f(k); nothing), xs, threaded); nothing)
 
 # --- outputs ----------------------------------------------------------------
 

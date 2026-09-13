@@ -37,8 +37,10 @@ function _raster_zonal(f, A, geoms, selections, single; spatialslices, skipmissi
     kept = DD.otherdims(A, reduced)
     mv = _raster_missingval(A)
     # One slice: drop missing values, then reduce or hand back `emptyval`.
-    reducer(x) = (vals = skipmissing ? Iterators.filter(v -> !_raster_ismissing(v, mv), x) : x;
-        emptyval isa _RasterUnset || !isempty(vals) ? f(vals) : _raster_copy(emptyval))
+    function reducer(x)
+        vals = skipmissing ? Iterators.filter(v -> !_raster_ismissing(v, mv), x) : x
+        return emptyval isa _RasterUnset || !isempty(vals) ? f(vals) : _raster_copy(emptyval)
+    end
     zones = _raster_map(eachindex(geoms), threaded) do j
         indices = selections[j]
         # Empty membership is a sub-cell zone, unless the zone lies outside this holding.

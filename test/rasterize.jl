@@ -10,6 +10,7 @@ import GeoInterface as GI
     q = GI.Point((-130.0, -35.0))
     points = [p, p, q]
     dest = DGG.rasterize(sum, points; to=grid, fill=[2, 4, 8])
+    @test DGG._raster_target(grid)[1] === grid
     ip = only(DGG._raster_indices(grid, p))
     iq = only(DGG._raster_indices(grid, q))
     @test dest[ip] == 6

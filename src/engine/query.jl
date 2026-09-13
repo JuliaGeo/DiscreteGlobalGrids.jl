@@ -743,17 +743,13 @@ end
 _witness_index(node::HierarchicalGridCursor) =
     (indices = node_indices(node); isempty(indices) ? 0 : first(indices))
 
+# Any other tree: the first leaf index the search reaches.
 function _witness_index(node)
-    if STI.isleaf(node)
-        cells = STI.child_indices_extents(node)
-        return isempty(cells) ? 0 : first(cells)[1]
-    end
-    for child in STI.getchild(node)
-        index = _witness_index(child)
-        index == 0 || return index
-    end
-    return 0
+    hit = STI.depth_first_search(_first_hit, Returns(true), node)
+    return hit isa GO.LoopStateMachine.Action ? hit.x : 0
 end
+
+_first_hit(index::Int) = GO.LoopStateMachine.Action(:full_return, index)
 
 # An index-tree node's stored window spans its whole subtree, leaf or not.
 _node_window(node::IndexTreeNode) = @view node.tree.order[
@@ -766,18 +762,7 @@ _emit!(out, node::HierarchicalGridCursor) = (append!(out, node_indices(node)); n
 
 _emit!(out, node::IndexTreeNode) = (append!(out, _node_window(node)); nothing)
 
-function _emit!(out, node)
-    if STI.isleaf(node)
-        for (index, _) in STI.child_indices_extents(node)
-            push!(out, index)
-        end
-    else
-        for child in STI.getchild(node)
-            _emit!(out, child)
-        end
-    end
-    return nothing
-end
+_emit!(out, node) = (STI.depth_first_search(Base.Fix1(push!, out), Returns(true), node); nothing)
 
 # One leaf scan per tree kind: the cursor leaves the cap to `_cell_matches`,
 # the index tree stores it, and any other tree lists its leaf caps.

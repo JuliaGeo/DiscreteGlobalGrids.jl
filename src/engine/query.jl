@@ -353,13 +353,9 @@ _target_edges(target::GeometryTarget) = target.edges
 # whole: splitting it costs more than the arcs it would exclude. A leaf is
 # settled by exact arc distance, so a frontier never holds an arc that cannot
 # reach the cap.
-function _edge_frontier!(out::Vector{Int}, tree::ArcTree, n::Int, cap)
+function _edge_frontier!(out::Vector{Int}, tree::ArcTree, n::Int, cap, threshold::Float64)
     Extents.intersects(tree.caps[n], cap) || return out
     if tree.left[n] == 0
-        # The subtracted ulp keeps the widening conservative at radii so small
-        # that `cos` of the widened radius rounds back to `cos(r)`.
-        threshold = cos(min(Float64(pi),
-            Float64(cap.radius) * (1 + SANDWICH_SLACK))) - 1e-15
         for k in tree.first[n]:tree.last[n]
             if _arc_cos_distance(tree.arcs[k], cap.point) >= threshold
                 push!(out, n)
@@ -367,8 +363,8 @@ function _edge_frontier!(out::Vector{Int}, tree::ArcTree, n::Int, cap)
             end
         end
     elseif tree.caps[n].radius > cap.radius
-        _edge_frontier!(out, tree, tree.left[n], cap)
-        _edge_frontier!(out, tree, tree.right[n], cap)
+        _edge_frontier!(out, tree, tree.left[n], cap, threshold)
+        _edge_frontier!(out, tree, tree.right[n], cap, threshold)
     else
         push!(out, n)
     end
@@ -377,8 +373,13 @@ end
 
 function _narrow!(out::Vector{Int}, tree::ArcTree, frontier::Vector{Int}, cap)
     empty!(out)
+    # The widened radius is a property of the cap, so its cosine is computed
+    # once here. The subtracted ulp keeps the widening conservative at radii so
+    # small that `cos` of the widened radius rounds back to `cos(r)`.
+    threshold = cos(min(Float64(pi),
+        Float64(cap.radius) * (1 + SANDWICH_SLACK))) - 1e-15
     for n in frontier
-        _edge_frontier!(out, tree, n, cap)
+        _edge_frontier!(out, tree, n, cap, threshold)
     end
     return out
 end
@@ -527,6 +528,8 @@ function _check_predicate(pred::DE9IM.DE9IMPredicate)
     return nothing
 end
 
+_ring_polygon(ring) = GI.Polygon([GI.LinearRing(ring)])
+
 # `Intersects` against a prepared geometry: the centroid fast accept, then the
 # border sandwich, then the exact polygon predicate. The other predicates go
 # straight to their exact test — a cell whose centroid is inside the target is
@@ -539,8 +542,7 @@ function _matches(pred::DE9IM.Intersects, target::GeometryTarget, grid, c)
         verdict = _sandwich(target.arcs, centroid, ring)
         verdict == 0 || return verdict > 0
     end
-    return GO.relate_predicate(target.prepared, GO.pred_intersects(),
-        GI.Polygon([GI.LinearRing(ring)]))
+    return GO.relate_predicate(target.prepared, GO.pred_intersects(), _ring_polygon(ring))
 end
 
 # Assumes a cell's centroid lies inside its own cell.
@@ -695,7 +697,8 @@ end
 function _query_indices(grid::AbstractGrid, pred::QueryPredicate, target::QueryTarget)
     ncells(grid) == 0 && return Int[]
     out = Int[]
-    _descend!(out, _query_tree(grid), grid, pred, target, Int[1], Int[])
+    _descend!(out, _query_tree(grid), grid, pred, target, Int[1], Int[],
+        Vector{Int}[], 1)
     return sort!(out)
 end
 
@@ -718,14 +721,16 @@ end
 # intersection by `node_extent`'s covering law. An empty frontier means no
 # boundary crosses that region, so one real descendant centroid decides the
 # whole node. The node's own cap centre need not lie in the region and is never
-# the witness. `_narrow!` empties its output first, so a frontier is never
-# narrowed into itself: each node gets a fresh vector, cells share `scratch`.
-function _descend!(out, node, grid, pred, target, frontier::Vector{Int}, scratch::Vector{Int})
+# the witness. A node narrows into `buffers[depth]`, which no live ancestor
+# frontier can alias because an ancestor narrowed at a smaller depth; cells
+# share `scratch`.
+function _descend!(out, node, grid, pred, target, frontier::Vector{Int},
+        scratch::Vector{Int}, buffers::Vector{Vector{Int}}, depth::Int)
     extent = STI.node_extent(node)
     Extents.intersects(target.cap, extent) || return nothing
     edges = _target_edges(target)
     if edges !== nothing && Float64(extent.radius) < Float64(pi) / 2
-        frontier = _narrow!(Int[], edges, frontier, extent)
+        frontier = _narrow!(_depth_buffer(buffers, depth), edges, frontier, extent)
         if isempty(frontier)
             index = _witness_index(node)
             index == 0 && return nothing
@@ -743,9 +748,17 @@ function _descend!(out, node, grid, pred, target, frontier::Vector{Int}, scratch
         return nothing
     end
     for child in STI.getchild(node)
-        _descend!(out, child, grid, pred, target, frontier, scratch)
+        _descend!(out, child, grid, pred, target, frontier, scratch, buffers, depth + 1)
     end
     return nothing
+end
+
+# Grown on demand: a descent touches as many depths as the tree is deep.
+function _depth_buffer(buffers::Vector{Vector{Int}}, depth::Int)
+    while length(buffers) < depth
+        push!(buffers, Int[])
+    end
+    return buffers[depth]
 end
 
 # The first cell under a node, or `0` for an empty one.
@@ -820,18 +833,18 @@ function _leaf_scan!(out, node, grid, pred, target, frontier, scratch, interior:
 end
 
 # One cell's answer; `capped` says the cell already passed the target-cap
-# prune. With an arc tree, the cell narrows the frontier to its own cap first:
-# no arc left means the cell is wholly inside or outside and its centroid
-# decides, and otherwise only the surviving arcs feed the sandwich.
+# prune. With an arc tree, the cell narrows the frontier to `cell_cap` first --
+# sound for any convex cap covering the cell, which is what the `pi/2` guard
+# below secures. No arc left means the cell is wholly inside or outside and its
+# centroid decides; otherwise only the surviving arcs feed the sandwich.
 function _cell_matches(pred::DE9IM.DE9IMPredicate, target::GeometryTarget, grid, c,
         frontier::Vector{Int}, scratch::Vector{Int}, capped::Bool)
-    # The cap prune goes first: systems with an analytical cap answer it
-    # without the boundary the frontier step needs.
-    capped || Extents.intersects(target.cap, cell_cap(grid, c)) || return false
+    # One cap serves both the prune and the narrowing, so a system with an
+    # analytical `cell_cap` decides most cells without a boundary at all.
+    cap = cell_cap(grid, c)
+    capped || Extents.intersects(target.cap, cap) || return false
     edges = target.edges
     edges === nothing && return _matches(pred, target, grid, c)
-    ring = closed_ring(cell_boundary(grid, c))
-    cap = points_cap(ring)
     Float64(cap.radius) < Float64(pi) / 2 || return _matches(pred, target, grid, c)
     _narrow!(scratch, edges, frontier, cap)
     centroid = cell_centroid(grid, c)
@@ -839,6 +852,9 @@ function _cell_matches(pred::DE9IM.DE9IMPredicate, target::GeometryTarget, grid,
         return _accepts_interior(pred) &&
                GO.relate_predicate(target.prepared, GO.pred_intersects(), centroid)
     end
+    # Most cells leave here with an empty frontier, so the ring is built only
+    # for the few the boundary actually reaches.
+    ring = closed_ring(cell_boundary(grid, c))
     return _matches_near(pred, target, grid, c, centroid, ring, scratch)
 end
 
@@ -856,17 +872,15 @@ function _matches_near(::DE9IM.Intersects, target::GeometryTarget, grid, c, cent
     GO.relate_predicate(target.prepared, GO.pred_contains(), centroid) && return true
     verdict = _sandwich(target.edges, frontier, centroid, ring)
     verdict == 0 || return verdict > 0
-    return GO.relate_predicate(target.prepared, GO.pred_intersects(),
-        GI.Polygon([GI.LinearRing(ring)]))
+    return GO.relate_predicate(target.prepared, GO.pred_intersects(), _ring_polygon(ring))
 end
 
 function _matches_near(::DE9IM.Within, target::GeometryTarget, grid, c, centroid, ring,
         ::Vector{Int})
     GO.relate_predicate(target.prepared, GO.pred_intersects(), centroid) || return false
-    return GO.relate_predicate(target.prepared, GO.pred_contains(),
-        GI.Polygon([GI.LinearRing(ring)]))
+    return GO.relate_predicate(target.prepared, GO.pred_contains(), _ring_polygon(ring))
 end
 
 _matches_near(pred::DE9IM.DE9IMPredicate, target::GeometryTarget, grid, c, centroid, ring,
         ::Vector{Int}) = GO.relate_predicate(target.prepared, _converse_predicate(pred),
-    GI.Polygon([GI.LinearRing(ring)]))
+    _ring_polygon(ring))

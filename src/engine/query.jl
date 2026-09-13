@@ -18,15 +18,20 @@ abstract type QueryTarget end
     GeometryTarget(geom)
 
 A prepared query target: the geometry lifted to the unit sphere once, a
-`RelateNG` preparation of it, a bounding cap for tree pruning, and its boundary
-arcs for the border sandwich.
+`RelateNG` preparation of it, a bounding cap for tree pruning, its boundary
+arcs for the border sandwich, and an [`ArcTree`](@ref) over those arcs for the
+descent's boundary frontier.
 """
-struct GeometryTarget{P,G,A} <: QueryTarget
+struct GeometryTarget{P,G,A,E} <: QueryTarget
     prepared::P
     geom::G
     cap::Cap
     arcs::A
+    edges::E
 end
+
+GeometryTarget(prepared, geom, cap::Cap, arcs) =
+    GeometryTarget(prepared, geom, cap, arcs, _arc_tree(arcs))
 
 """
     CapTarget(cap)
@@ -49,8 +54,9 @@ function _query_target(geom)
         "SphericalCap; got $(typeof(geom))"))
     spherical = _to_unit_sphere(geom)
     prepared = GO.prepare(GO.RelateNG(; manifold=GO.Spherical()), spherical)
+    arcs = _boundary_arcs(spherical)
     return GeometryTarget(prepared, spherical, _geometry_cap(prepared, spherical),
-        _boundary_arcs(spherical))
+        arcs, _arc_tree(arcs))
 end
 
 _query_target(::Nothing) = throw(ArgumentError(
@@ -239,13 +245,17 @@ end
 function _chain_arcs!(arcs, chain, close::Bool)
     first_point = nothing
     previous = nothing
+    count = 0
     for p in GI.getpoint(chain)
         point = query_point(p)
+        count += 1
         previous === nothing ? (first_point = point) :
         push!(arcs, BoundaryArc(previous, point))
         previous = point
     end
-    close && previous !== nothing && push!(arcs, BoundaryArc(previous, first_point))
+    # A one-point chain is that point; a degenerate arc keeps it in the set.
+    (close || count == 1) && previous !== nothing &&
+        push!(arcs, BoundaryArc(previous, first_point))
     return arcs
 end
 
@@ -289,9 +299,123 @@ end
     return max(best, sqrt(max(0.0, 1.0 - cn * cn / arc.nn)))
 end
 
+"""
+    ArcTree(arcs)
+
+The boundary arcs sorted by Morton key under a binary tree of caps. The descent
+carries a frontier of its nodes — the ones whose arcs may still reach the grid
+node in hand — and narrows it cap by cap. An empty frontier under a convex cap
+proves that cap free of the target's boundary.
+"""
+struct ArcTree
+    arcs::Vector{BoundaryArc}
+    caps::Vector{Cap}
+    first::Vector{Int}
+    last::Vector{Int}
+    left::Vector{Int}
+    right::Vector{Int}
+end
+
+const ARC_TREE_LEAF_SIZE = 8
+
+function ArcTree(arcs::Vector{BoundaryArc})
+    caps = [points_cap((a.a, a.b)) for a in arcs]
+    order = sortperm([_morton_key(c.point) for c in caps])
+    tree = ArcTree(arcs[order], Cap[], Int[], Int[], Int[], Int[])
+    _arc_node!(tree, caps[order], 1, length(arcs))
+    return tree
+end
+
+function _arc_node!(tree::ArcTree, caps::Vector{Cap}, lo::Int, hi::Int)
+    n = length(tree.caps) + 1
+    push!(tree.caps, full_sphere_cap())
+    push!(tree.first, lo)
+    push!(tree.last, hi)
+    push!(tree.left, 0)
+    push!(tree.right, 0)
+    if hi - lo < ARC_TREE_LEAF_SIZE
+        tree.caps[n] = _merge_range(caps, lo, hi)
+    else
+        mid = (lo + hi) ÷ 2
+        l = _arc_node!(tree, caps, lo, mid)
+        r = _arc_node!(tree, caps, mid + 1, hi)
+        tree.left[n] = l
+        tree.right[n] = r
+        tree.caps[n] = Extents.union(tree.caps[l], tree.caps[r])
+    end
+    return n
+end
+
+_arc_tree(::Nothing) = nothing
+_arc_tree(arcs::Vector{BoundaryArc}) = ArcTree(arcs)
+
+_target_edges(::QueryTarget) = nothing
+_target_edges(target::GeometryTarget) = target.edges
+
+# Narrow frontier node `n` to `cap`. A tree node smaller than the cap is kept
+# whole: splitting it costs more than the arcs it would exclude. A leaf is
+# settled by exact arc distance, so a frontier never holds an arc that cannot
+# reach the cap.
+function _edge_frontier!(out::Vector{Int}, tree::ArcTree, n::Int, cap)
+    Extents.intersects(tree.caps[n], cap) || return out
+    if tree.left[n] == 0
+        threshold = cos(min(Float64(pi),
+            Float64(cap.radius) * (1 + SANDWICH_SLACK) + 1e-12))
+        for k in tree.first[n]:tree.last[n]
+            if _arc_cos_distance(tree.arcs[k], cap.point) >= threshold
+                push!(out, n)
+                break
+            end
+        end
+    elseif tree.caps[n].radius > cap.radius
+        _edge_frontier!(out, tree, tree.left[n], cap)
+        _edge_frontier!(out, tree, tree.right[n], cap)
+    else
+        push!(out, n)
+    end
+    return out
+end
+
+function _narrow!(out::Vector{Int}, tree::ArcTree, frontier::Vector{Int}, cap)
+    empty!(out)
+    for n in frontier
+        _edge_frontier!(out, tree, n, cap)
+    end
+    return out
+end
+
 # `1` the cell provably meets the target, `-1` it provably does not, `0`
 # undecided — see the note above for why each arm is a proof.
 function _sandwich(arcs::Vector{BoundaryArc}, centroid, ring)
+    bounds = _sandwich_bounds(centroid, ring)
+    bounds === nothing && return 0
+    cos_out, cos_in = bounds
+    best = -1.0
+    for arc in arcs
+        value = _arc_cos_distance(arc, centroid)
+        value > cos_in && return 1          # d < r_in: a boundary point is inside the cell
+        best = max(best, value)
+    end
+    return best < cos_out ? -1 : 0          # d > r_out: no boundary point is near
+end
+
+# The same verdict from the frontier's arcs alone: an arc excluded at an
+# ancestor cap cannot reach a cell inside it.
+function _sandwich(tree::ArcTree, frontier::Vector{Int}, centroid, ring)
+    bounds = _sandwich_bounds(centroid, ring)
+    bounds === nothing && return 0
+    cos_out, cos_in = bounds
+    best = -1.0
+    for n in frontier, k in tree.first[n]:tree.last[n]
+        value = _arc_cos_distance(tree.arcs[k], centroid)
+        value > cos_in && return 1
+        best = max(best, value)
+    end
+    return best < cos_out ? -1 : 0
+end
+
+# `(cos r_out, cos r_in)` for one cell, or `nothing` past a quarter sphere.
+function _sandwich_bounds(centroid, ring)
     vertex = 0.0
     for p in ring
         vertex = max(vertex, US.spherical_distance(centroid, USPoint(p[1], p[2], p[3])))
@@ -300,7 +424,7 @@ function _sandwich(arcs::Vector{BoundaryArc}, centroid, ring)
     # A quarter sphere is where both the concavity argument for r_out and the
     # sin/cos comparisons below stop holding. No cell of any system in scope
     # comes near it, and giving up is free.
-    r_out < Float64(pi) / 2 || return 0
+    r_out < Float64(pi) / 2 || return nothing
     cos_out = cos(r_out)
     # Every edge has to be in the minimum or the bound could come out too
     # large, so the loop wraps rather than trusting the ring to repeat its
@@ -322,13 +446,7 @@ function _sandwich(arcs::Vector{BoundaryArc}, centroid, ring)
     # than the cap it sits in) keeps only the reject arm: `cos_in > 1` can never
     # be exceeded.
     cos_in = 0 < r_in < r_out ? cos(r_in * (1 - SANDWICH_SLACK)) : 2.0
-    best = -1.0
-    for arc in arcs
-        value = _arc_cos_distance(arc, centroid)
-        value > cos_in && return 1          # d < r_in: a boundary point is inside the cell
-        best = max(best, value)
-    end
-    return best < cos_out ? -1 : 0          # d > r_out: no boundary point is near
+    return (cos_out, cos_in)
 end
 
 # ===========================================================================
@@ -373,6 +491,31 @@ end
 # The per-cell exact tests
 # ===========================================================================
 
+"""
+    CentroidCovered()
+
+Internal predicate: the cell's centroid lies on or inside the target — the
+raster `boundary=:center` rule. A point rule rather than a DE9IM relation of
+the cell polygon, so `query`'s public predicate set leaves it out.
+"""
+struct CentroidCovered end
+
+const QueryPredicate = Union{DE9IM.DE9IMPredicate,CentroidCovered}
+
+# On a point, `pred_intersects` is `covers`, so a centroid on the boundary
+# counts; `pred_contains` would drop it.
+_covers_centroid(target::GeometryTarget, grid, c) =
+    GO.relate_predicate(target.prepared, GO.pred_intersects(), cell_centroid(grid, c))
+_covers_centroid(target::CapTarget, grid, c) = cap_contains(target.cap, cell_centroid(grid, c))
+
+_matches(::CentroidCovered, target::QueryTarget, grid, c) = _covers_centroid(target, grid, c)
+
+# A boundary-free cell inside the target meets it, lies within it and is covered
+# by it; it can contain, cover, touch, overlap or equal the target only through
+# a boundary it does not hold.
+_accepts_interior(::Union{DE9IM.Intersects,DE9IM.Within,DE9IM.CoveredBy,CentroidCovered}) = true
+_accepts_interior(::QueryPredicate) = false
+
 # Which `pred_*` functor answers the predicate with the TARGET prepared as the
 # `A` side. A DE9IM predicate wraps its second argument (`Intersects(t)` means
 # "cell intersects t"), so every asymmetric relation is spelled here as its
@@ -410,6 +553,13 @@ function _matches(pred::DE9IM.Intersects, target::GeometryTarget, grid, c)
     end
     return GO.relate_predicate(target.prepared, GO.pred_intersects(),
         GI.Polygon([GI.LinearRing(ring)]))
+end
+
+# A cell within the target holds its centroid inside it, so a centroid the
+# target does not even cover settles `Within` without the polygon test.
+function _matches(::DE9IM.Within, target::GeometryTarget, grid, c)
+    _covers_centroid(target, grid, c) || return false
+    return GO.relate_predicate(target.prepared, GO.pred_contains(), cell_polygon(grid, c))
 end
 
 _matches(pred::DE9IM.DE9IMPredicate, target::GeometryTarget, grid, c) =
@@ -492,6 +642,10 @@ geometry, an `Extents.Extent` in lon/lat degrees, or a
 `Disjoint` is computed as the full-grid complement of `Intersects` and cannot
 prune the output traversal.
 
+The traversal runs over [`treeify`](@ref)`(grid)`, so a system's own tree
+serves its queries; a grid that reports a system but no level (stored cells
+of mixed levels) gets an [`IndexTree`](@ref).
+
 Caps are handled without polygonization. `Within` uses the complement for caps
 wider than a hemisphere. `Intersects` conservatively accepts undecidable cap-
 centre containment. Cap targets support only `Intersects`, `Disjoint`, and
@@ -549,53 +703,180 @@ function _run_query(grid::AbstractGrid, ::DE9IM.Disjoint, target::QueryTarget)
     return sort!(out)
 end
 
-function _query_indices(grid::AbstractGrid, pred::DE9IM.DE9IMPredicate,
-        target::QueryTarget)
+function _query_indices(grid::AbstractGrid, pred::QueryPredicate, target::QueryTarget)
     ncells(grid) == 0 && return Int[]
     out = Int[]
-    _descend!(out, _query_tree(grid), grid, pred, target)
+    _descend!(out, _query_tree(grid), grid, pred, target, Int[1], Int[])
     return sort!(out)
 end
 
-_query_tree(grid::AbstractGrid) = system(grid) === nothing ?
-                                  IndexTreeNode(IndexTree(grid), 1) :
-                                  HierarchicalGridCursor(grid;
-    bucket_size=max(QUERY_BUCKET_SIZE, _grid_bucket_size(grid)))
+# `treeify`'s tree, with the cursor's leaf bucket widened for cap selectivity.
+# A level-less grid names stored cells of mixed levels, which only the index
+# tree can hold.
+function _query_tree(grid::AbstractGrid)
+    (system(grid) === nothing || level(grid) === nothing) &&
+        return IndexTreeNode(IndexTree(grid), 1)
+    return _rebucket(treeify(grid), QUERY_BUCKET_SIZE)
+end
 
-function _descend!(out, node, grid, pred, target)
+_rebucket(tree, ::Int) = tree
+_rebucket(c::HierarchicalGridCursor, bucket::Int) = typeof(c)(c.grid, c.system, c.top_level,
+    c.leaf_level, max(bucket, c.bucket_size), c.level, c.id, c.first_index, c.last_index,
+    c.complete_subtree, c.selection)
+
+# `frontier` holds the arc-tree nodes whose arcs may still reach this node.
+# Only a convex node cap narrows it: its intersection with every convex
+# ancestor cap is connected, and every descendant's geometry lies in that
+# intersection by `node_extent`'s covering law. An empty frontier means no
+# boundary crosses that region, so one real descendant centroid decides the
+# whole node. The node's own cap centre need not lie in the region and is never
+# the witness. `_narrow!` empties its output first, so a frontier is never
+# narrowed into itself: each node gets a fresh vector, cells share `scratch`.
+function _descend!(out, node, grid, pred, target, frontier::Vector{Int}, scratch::Vector{Int})
     extent = STI.node_extent(node)
     Extents.intersects(target.cap, extent) || return nothing
+    edges = _target_edges(target)
+    if edges !== nothing && Float64(extent.radius) < Float64(pi) / 2
+        frontier = _narrow!(Int[], edges, frontier, extent)
+        if isempty(frontier)
+            index = _witness_index(node)
+            index == 0 && return nothing
+            _accepts_interior(pred) && _covers_centroid(target, grid, cellindex(grid, index)) &&
+                _emit!(out, node)
+            return nothing
+        end
+    end
     if STI.isleaf(node)
         # A node whose whole extent sits inside the target's cap has no per-cell
         # cap prune left to win — every cell cap would pass — so it skips
         # straight to the exact tests.
         interior = Extents.contains(target.cap, extent)
-        _leaf_scan!(out, node, grid, pred, target, interior)
+        _leaf_scan!(out, node, grid, pred, target, frontier, scratch, interior)
         return nothing
     end
     for child in STI.getchild(node)
-        _descend!(out, child, grid, pred, target)
+        _descend!(out, child, grid, pred, target, frontier, scratch)
+    end
+    return nothing
+end
+
+# The first cell under a node, or `0` for an empty one.
+_witness_index(node::HierarchicalGridCursor) =
+    (indices = node_indices(node); isempty(indices) ? 0 : first(indices))
+
+function _witness_index(node)
+    if STI.isleaf(node)
+        cells = STI.child_indices_extents(node)
+        return isempty(cells) ? 0 : first(cells)[1]
+    end
+    for child in STI.getchild(node)
+        index = _witness_index(child)
+        index == 0 || return index
+    end
+    return 0
+end
+
+_emit!(out, node::HierarchicalGridCursor) = (append!(out, node_indices(node)); nothing)
+
+function _emit!(out, node)
+    if STI.isleaf(node)
+        for (index, _) in STI.child_indices_extents(node)
+            push!(out, index)
+        end
+    else
+        for child in STI.getchild(node)
+            _emit!(out, child)
+        end
     end
     return nothing
 end
 
 # The leaf scan, once per tree kind: the hierarchical cursor derives a cell's
-# cap from its boundary, the index tree has it stored.
-function _leaf_scan!(out, node::HierarchicalGridCursor, grid, pred, target, interior::Bool)
+# cap from its boundary, the index tree has it stored, and any other tree
+# lists its leaf caps.
+function _leaf_scan!(out, node::HierarchicalGridCursor, grid, pred, target, frontier, scratch, interior::Bool)
     for index in node_indices(node)
-        c = cellindex(grid, index)
-        interior || Extents.intersects(target.cap, cell_cap(grid, c)) || continue
-        _matches(pred, target, grid, c) && push!(out, index)
+        _cell_matches(pred, target, grid, cellindex(grid, index), frontier, scratch, interior) &&
+            push!(out, index)
     end
     return nothing
 end
 
-function _leaf_scan!(out, node::IndexTreeNode, grid, pred, target, interior::Bool)
+function _leaf_scan!(out, node::IndexTreeNode, grid, pred, target, frontier, scratch, interior::Bool)
     tree = node.tree
     for k in tree.node_first[node.index]:tree.node_last[node.index]
         interior || Extents.intersects(target.cap, tree.caps[k]) || continue
         index = tree.order[k]
-        _matches(pred, target, grid, cellindex(grid, index)) && push!(out, index)
+        _cell_matches(pred, target, grid, cellindex(grid, index), frontier, scratch, true) &&
+            push!(out, index)
     end
     return nothing
 end
+
+function _leaf_scan!(out, node, grid, pred, target, frontier, scratch, interior::Bool)
+    for (index, cap) in STI.child_indices_extents(node)
+        interior || Extents.intersects(target.cap, cap) || continue
+        _cell_matches(pred, target, grid, cellindex(grid, index), frontier, scratch, true) &&
+            push!(out, index)
+    end
+    return nothing
+end
+
+# One cell's answer; `capped` says the cell already passed the target-cap
+# prune. With an arc tree, the cell narrows the frontier to its own cap first:
+# no arc left means the cell is wholly inside or outside and its centroid
+# decides, and otherwise only the surviving arcs feed the sandwich.
+function _cell_matches(pred::DE9IM.DE9IMPredicate, target::GeometryTarget, grid, c,
+        frontier::Vector{Int}, scratch::Vector{Int}, capped::Bool)
+    edges = target.edges
+    if edges === nothing
+        capped || Extents.intersects(target.cap, cell_cap(grid, c)) || return false
+        return _matches(pred, target, grid, c)
+    end
+    # The cap prune goes first: systems with an analytical cap answer it
+    # without the boundary the frontier step needs.
+    capped || Extents.intersects(target.cap, cell_cap(grid, c)) || return false
+    ring = closed_ring(cell_boundary(grid, c))
+    cap = points_cap(ring)
+    Float64(cap.radius) < Float64(pi) / 2 || return _matches(pred, target, grid, c)
+    _narrow!(scratch, edges, frontier, cap)
+    centroid = cell_centroid(grid, c)
+    if isempty(scratch)
+        return _accepts_interior(pred) &&
+               GO.relate_predicate(target.prepared, GO.pred_intersects(), centroid)
+    end
+    return _matches_near(pred, target, grid, c, centroid, ring, scratch)
+end
+
+function _cell_matches(pred::CentroidCovered, target::QueryTarget, grid, c,
+        ::Vector{Int}, ::Vector{Int}, capped::Bool)
+    capped || Extents.intersects(target.cap, cell_cap(grid, c)) || return false
+    return _matches(pred, target, grid, c)
+end
+
+function _cell_matches(pred::DE9IM.DE9IMPredicate, target::CapTarget, grid, c,
+        ::Vector{Int}, ::Vector{Int}, capped::Bool)
+    capped || Extents.intersects(target.cap, cell_cap(grid, c)) || return false
+    return _matches(pred, target, grid, c)
+end
+
+# The exact tests for a cell the boundary does reach, with the ring in hand.
+function _matches_near(::DE9IM.Intersects, target::GeometryTarget, grid, c, centroid, ring,
+        frontier::Vector{Int})
+    GO.relate_predicate(target.prepared, GO.pred_contains(), centroid) && return true
+    verdict = _sandwich(target.edges, frontier, centroid, ring)
+    verdict == 0 || return verdict > 0
+    return GO.relate_predicate(target.prepared, GO.pred_intersects(),
+        GI.Polygon([GI.LinearRing(ring)]))
+end
+
+function _matches_near(::DE9IM.Within, target::GeometryTarget, grid, c, centroid, ring,
+        ::Vector{Int})
+    GO.relate_predicate(target.prepared, GO.pred_intersects(), centroid) || return false
+    return GO.relate_predicate(target.prepared, GO.pred_contains(),
+        GI.Polygon([GI.LinearRing(ring)]))
+end
+
+_matches_near(pred::DE9IM.DE9IMPredicate, target::GeometryTarget, grid, c, centroid, ring,
+        ::Vector{Int}) = GO.relate_predicate(target.prepared, _converse_predicate(pred),
+    GI.Polygon([GI.LinearRing(ring)]))

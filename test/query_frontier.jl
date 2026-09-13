@@ -15,6 +15,20 @@ GI.getpoint(::GI.LineStringTrait, ::OnePointLine, i) = (12.0, 20.0)
 
 box(x, y, r) = GI.LinearRing([(x-r, y-r), (x+r, y-r), (x+r, y+r), (x-r, y+r), (x-r, y-r)])
 
+# Cells of mixed levels: a grid that reports a system and no level, which is the
+# only shape the engine answers with an IndexTree.
+struct MixedLevelGrid{S,V} <: DGG.AbstractGrid
+    system::S
+    ids::V
+end
+DGG.system(g::MixedLevelGrid) = g.system
+DGG.ncells(g::MixedLevelGrid) = length(g.ids)
+DGG.cellindex(g::MixedLevelGrid, i::Int) = g.ids[i]
+for f in (:cell_boundary, :cell_centroid)
+    @eval DGG.$f(g::MixedLevelGrid, c::DGG.AbstractCellIndex) =
+        DGG.$f(DGG.levelgrid(g.system, DGG.level(c)), c)
+end
+
 # Brute force over every cell: the descent's bulk accept and prune must agree
 # with the exact predicate asked of each cell polygon or centroid.
 function oracle(grid, target, pred)
@@ -29,7 +43,6 @@ end
     grid = DGG.levelgrid(DGG.H3System(), 2)
     holed = GI.Polygon([box(10.0, 20.0, 30.0), box(10.0, 20.0, 8.0)])
     target = DGG.Engine._query_target(holed)
-    @test target.edges isa DGG.Engine.ArcTree
     for pred in (DE9IM.Intersects(nothing), DE9IM.Within(nothing), DE9IM.CoveredBy(nothing),
             DGG.Engine.CentroidCovered())
         hits = DGG.Engine._query_indices(grid, pred, target)
@@ -88,8 +101,8 @@ end
                if GO.UnitSpherical.spherical_distance(
                    DGG.cell_centroid(g, DGG.cellindex(g, i)), centre) < deg2rad(10)]
     h3 = DGG.H3System()
-    stored = DGG._RasterStoredGrid(h3, vcat(near(DGG.levelgrid(h3, 2)),
-                                            near(DGG.levelgrid(h3, 3))))
+    stored = MixedLevelGrid(h3, vcat(near(DGG.levelgrid(h3, 2)),
+                                     near(DGG.levelgrid(h3, 3))))
     @test DGG.Engine._query_tree(stored) isa DGG.Engine.IndexTreeNode
     target = DGG.Engine._query_target(GI.Polygon([box(10.0, 20.0, 4.0)]))
     for pred in (DE9IM.Intersects(nothing), DE9IM.Within(nothing),

@@ -8,13 +8,12 @@ Extract cell values as NamedTuple rows.
 - Rows carry `:geometry` (input point, or the cell representative lon/lat),
   `id=true` the feature number, `index=true` the local cell-axis position.
 - Unsampled dimensions stay labelled slices; `name` selects stack layers.
-- `skipmissing=true` drops missing rows; `flatten=false` groups non-point
-  rows by feature.
+- `skipmissing=true` drops missing rows — a row whose slice holds any missing
+  element counts as missing; `flatten=false` groups non-point rows by feature.
 """
 function extract(A::Union{DD.AbstractDimArray,DD.AbstractDimStack}, data; names=nothing, name=names,
-        skipmissing=false, flatten=true, id=false, geometry=true, index=false, atol=nothing, kw...)
-    (; boundary, shape, geometrycolumn, threaded) = _raster_options(; kw...)
-    geoms = _raster_geometries(data; geometrycolumn)
+        skipmissing=false, flatten=true, id=false, geometry=true, index=false, kw...)
+    geoms, opts = _raster_inputs(data; kw...)
     layers = _raster_extract_layers(A, name)
     grid = _raster_grid(first(values(layers)))
     axis = DD.lookup(first(values(layers)), _raster_dimnum(first(values(layers))))
@@ -23,9 +22,9 @@ function extract(A::Union{DD.AbstractDimArray,DD.AbstractDimStack}, data; names=
     reserved = ((id ? (:id,) : ())..., (geometry ? (:geometry,) : ())..., (index ? (:index,) : ())...)
     any(in(reserved), keys(layers)) && throw(ArgumentError("Layer names conflict with requested extraction fields"))
     missingvals = map(_raster_missingval, layers)
-    groups = _raster_map(eachindex(geoms), threaded) do j
+    groups = _raster_map(eachindex(geoms), opts.threaded) do j
         g = geoms[j]
-        indices = _raster_indices(grid, g; boundary, shape)
+        indices = _raster_indices(grid, g; opts.boundary, opts.shape)
         # A point or absent geometry always yields one row, missing-valued when it hits nothing.
         onerow = isempty(indices) && (_raster_ispoint(g) || _raster_absent(g))
         rows = [_raster_row(layers, grid, g, j, i; id, geometry, index) for i in (onerow ? Union{Nothing,Int}[nothing] : indices)]

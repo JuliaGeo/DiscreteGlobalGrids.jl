@@ -68,75 +68,46 @@ _raster_copy(x) = isbits(x) ? x : deepcopy(x)
 # --- keywords ---------------------------------------------------------------
 
 # The selection keywords every verb shares; anything else is outside the in-memory API.
-function _raster_options(; boundary=:center, shape=nothing, geometrycolumn=nothing, threaded=false,
+function _raster_options(; boundary=:center, shape=nothing, threaded=false,
         progress=true, verbose=true, crs=nothing, mappedcrs=nothing, kw...)
     isempty(kw) || throw(ArgumentError("Unsupported keyword(s): $(join(keys(kw), ", ")); file output, res, size, and chunked execution are outside the in-memory API"))
     (crs === nothing && mappedcrs === nothing) || throw(ArgumentError("DGGS cell axes have intrinsic spherical coordinates; transform geometries to longitude/latitude before rasterization instead of setting crs/mappedcrs"))
-    return (; boundary=_raster_boundary(boundary), shape=_raster_shape(shape), geometrycolumn, threaded)
+    return (; boundary=_raster_boundary(boundary), shape=_raster_shape(shape), threaded)
 end
+
+"""
+    _raster_inputs(data; geometrycolumn=nothing, kw...) -> (geoms, opts)
+
+One geometry per feature plus the shared `boundary`/`shape`/`threaded` options:
+the preamble every verb runs before it touches cells.
+"""
+_raster_inputs(data; geometrycolumn=nothing, kw...) =
+    (_raster_geometries(data; geometrycolumn), _raster_options(; kw...))
+
+# A tuple of Symbols names one layer per property.
+_raster_layerfill(fill) =
+    fill isa Tuple && all(x -> x isa Symbol, fill) ? NamedTuple{fill}(fill) : fill
 
 # --- targets ----------------------------------------------------------------
 
-# Stored cells keep their own order and, for mixed levels, their own levels;
-# `base` is the system those cells belong to, or a grid without a level.
-struct _RasterStoredGrid{B,V} <: AbstractGrid
-    base::B
-    ids::V
-end
-system(g::_RasterStoredGrid) = g.base isa AbstractHierarchicalGridSystem ? g.base : system(g.base)
-ncells(g::_RasterStoredGrid) = length(g.ids)
-cellindex(g::_RasterStoredGrid, i::Int) = g.ids[i]
-localindex(g::_RasterStoredGrid, c::AbstractCellIndex) = findfirst(==(c), g.ids)
-_raster_base(g::_RasterStoredGrid, c) = g.base isa AbstractHierarchicalGridSystem ? levelgrid(g.base, level(c)) : g.base
-for f in (:cell_boundary, :cell_centroid, :cell_area)
-    @eval $f(g::_RasterStoredGrid, c::AbstractCellIndex) = $f(_raster_base(g, c), c)
-end
-treeify(g::_RasterStoredGrid) = Engine.IndexTreeNode(Engine.IndexTree(g), 1)
-
-# Its cell axis keeps the grid so labelled views round-trip back to a target.
-struct _RasterStoredLookup{T,G} <: DD.Lookups.Lookup{T,1}
-    grid::G
-    data::Vector{T}
-end
-_RasterStoredLookup(g::_RasterStoredGrid) = _RasterStoredLookup(g, collect(g.ids))
-Base.parent(l::_RasterStoredLookup) = l.data
-Base.size(l::_RasterStoredLookup) = size(l.data)
-Base.getindex(l::_RasterStoredLookup, i::Int) = l.data[i]
-Base.IndexStyle(::Type{<:_RasterStoredLookup}) = IndexLinear()
-DD.Lookups.order(::_RasterStoredLookup) = DD.Lookups.Unordered()
-DD.Lookups.sampling(::_RasterStoredLookup) = DD.Lookups.Points()
-DD.Lookups.metadata(::_RasterStoredLookup) = DD.NoMetadata()
-DD.Dimensions.format(l::_RasterStoredLookup, ::Type, values, axis::AbstractRange) = l
-function DD.Lookups.rebuild(l::_RasterStoredLookup; data=parent(l), kw...)
-    data === parent(l) && return l
-    return _RasterStoredLookup(_RasterStoredGrid(l.grid.base, collect(data)))
-end
-for f in (:getindex, :view)
-    @eval Base.$f(l::_RasterStoredLookup, ::Colon) = l
-    @eval Base.$f(l::_RasterStoredLookup, i::AbstractVector{<:Integer}) = DD.Lookups.rebuild(l; data=parent(l)[i])
-end
-# SmallCollections indexes every AbstractVector with its own vectors; this breaks the tie.
-Base.getindex(l::_RasterStoredLookup, i::SmallCollections.AbstractFixedOrSmallOrPackedVector{<:Integer}) = l[collect(i)]
-
-const _RasterCellLookup = Union{AbstractCellLookup,_RasterStoredLookup}
+const _RASTER_LEVEL_MESSAGE = "level is only valid with a system destination"
 
 _raster_grid(l::AbstractCellLookup) = PartialGrid(parent(l))
-_raster_grid(l::_RasterStoredLookup) = l.grid
 function _raster_grid(d::DD.Dimension)
     l = DD.lookup(d)
-    l isa _RasterCellLookup || throw(ArgumentError("The spatial dimension must retain a DGGS cell lookup"))
+    l isa AbstractCellLookup || throw(ArgumentError("The spatial dimension must retain a DGGS cell lookup"))
     return _raster_grid(l)
 end
 _raster_grid(A::DD.AbstractDimArray) = _raster_grid(DD.dims(A)[_raster_dimnum(A)])
 function _raster_dimnum(dims::Tuple)
-    found = findall(d -> DD.lookup(d) isa _RasterCellLookup, dims)
+    found = findall(d -> DD.lookup(d) isa AbstractCellLookup, dims)
     length(found) == 1 || throw(ArgumentError("Expected exactly one DGGS cell dimension, found $(length(found))"))
     return only(found)
 end
 _raster_dimnum(A::DD.AbstractDimArray) = _raster_dimnum(DD.dims(A))
-_raster_celldim(g::_RasterStoredGrid) = Cells(_RasterStoredLookup(g))
-_raster_celldim(g::AbstractGrid) = level(g) === nothing ?
-    _raster_celldim(_RasterStoredGrid(g, [cellindex(g, i) for i in 1:ncells(g)])) : Cells(CellLookup(g))
+_raster_celldim(g::AbstractGrid) = Cells(CellLookup(g))
+
+_raster_ispartial(grid) = ncells(grid) < ncells(levelgrid(system(grid), level(grid)))
 
 """
     _raster_target(to; level=nothing) -> (grid, dims, template)
@@ -146,7 +117,7 @@ from (`nothing` when `to` is not an array).
 """
 function _raster_target(to; level=nothing)
     level === nothing && return _raster_destination(to)
-    to isa AbstractHierarchicalGridSystem || throw(ArgumentError("level is only valid with a system destination"))
+    to isa AbstractHierarchicalGridSystem || throw(ArgumentError(_RASTER_LEVEL_MESSAGE))
     return _raster_destination(levelgrid(to, level))
 end
 _raster_destination(::AbstractHierarchicalGridSystem) = throw(ArgumentError("A system destination needs level=..."))
@@ -156,9 +127,8 @@ function _raster_destination(st::DD.AbstractDimStack)
     return _raster_destination(st[first(keys(st))])
 end
 _raster_destination(g::AbstractGrid) = (g, (_raster_celldim(g),), nothing)
-_raster_destination(set::MultiOrderCellSet) = _raster_destination(_RasterStoredGrid(set.system, set.cells))
 _raster_destination(cv::AbstractCellVector) = _raster_destination(cv isa CellVector ? CellLookup(cv) : ChunkedCellLookup(cv))
-_raster_destination(l::_RasterCellLookup) = _raster_destination((Cells(l),))
+_raster_destination(l::AbstractCellLookup) = _raster_destination((Cells(l),))
 _raster_destination(d::DD.Dimension) = _raster_destination((d,))
 _raster_destination(dims::Tuple{Vararg{DD.Dimension}}) = (_raster_grid(dims[_raster_dimnum(dims)]), dims, nothing)
 _raster_destination(to) = throw(ArgumentError("to must name a DGGS grid, cell lookup, dimensions, or dimensional array"))

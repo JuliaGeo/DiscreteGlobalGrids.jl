@@ -51,10 +51,6 @@ box(x, y, r) = GI.Polygon([GI.LinearRing([(x-r,y-r),(x+r,y-r),
             prep = prepare(geom)
             @test DGG._raster_indices(partial, geom) == [i for i in 1:DGG.ncells(partial)
                 if oracle_match(prep, partial, i, :center)]
-            roots = collect(DGG.rootcells(sys))
-            stored = DGG._RasterStoredGrid(sys, [first(DGG.children(sys, roots[2])), roots[1]])
-            @test DGG._raster_indices(stored, geom; boundary=:intersects) == [i for i in 1:2
-                if oracle_match(prep, stored, i, :intersects)]
             point = GI.Point((12.,20.))
             c = DGG.cellat(grid, 12., 20.)
             @test DGG._raster_indices(grid, point) == [DGG.localindex(grid, c)]

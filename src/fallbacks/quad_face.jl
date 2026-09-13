@@ -238,6 +238,23 @@ end
 # Chart-independent geometry
 # ===========================================================================
 
+# Chart coordinates of sample `k` (0-based, of `4nseg`) on the perimeter walk
+# `(x+,y+) → (x-,y+) → (x-,y-) → (x+,y-)`. One definition serves the boundary
+# vector and the streamed cap, so their sample arguments are bit-identical.
+@inline function _perimeter_uv(x0::Int64, y0::Int64, n::Integer, nseg::Integer, k::Integer)
+    e, i = divrem(k, nseg)
+    t = i / nseg
+    if e == 0
+        return ((x0 + 1 - t) / n, (y0 + 1) / n)     # along y = (iy+1)/n
+    elseif e == 1
+        return (x0 / n, (y0 + 1 - t) / n)           # along x = ix/n
+    elseif e == 2
+        return ((x0 + t) / n, y0 / n)               # along y = iy/n
+    else
+        return ((x0 + 1) / n, (y0 + t) / n)         # along x = (ix+1)/n
+    end
+end
+
 """
     chart_perimeter(chart, ix, iy, face, nside, nseg) -> Vector{UnitSphericalPoint}
 
@@ -251,36 +268,27 @@ points, never its end vertex, so the next edge's start is not duplicated.
 """
 function chart_perimeter(chart, ix::Integer, iy::Integer, face::Integer,
         nside::Integer, nseg::Integer)
-    n = nside
     x0 = Int64(ix)
     y0 = Int64(iy)
     pts = Vector{USPoint}(undef, 4 * nseg)
-    k = 0
-    for i in 0:(nseg - 1)          # (x+,y+) -> (x-,y+), along y = (iy+1)/n
-        t = i / nseg
-        pts[k += 1] = chart((x0 + 1 - t) / n, (y0 + 1) / n, face)
-    end
-    for i in 0:(nseg - 1)          # (x-,y+) -> (x-,y-), along x = ix/n
-        t = i / nseg
-        pts[k += 1] = chart(x0 / n, (y0 + 1 - t) / n, face)
-    end
-    for i in 0:(nseg - 1)          # (x-,y-) -> (x+,y-), along y = iy/n
-        t = i / nseg
-        pts[k += 1] = chart((x0 + t) / n, y0 / n, face)
-    end
-    for i in 0:(nseg - 1)          # (x+,y-) -> (x+,y+), along x = (ix+1)/n
-        t = i / nseg
-        pts[k += 1] = chart((x0 + 1) / n, (y0 + t) / n, face)
+    for k in 0:(4 * nseg - 1)
+        u, v = _perimeter_uv(x0, y0, nside, nseg, k)
+        pts[k + 1] = chart(u, v, face)
     end
     return pts
 end
 
 """
     sampled_cap(center, pts) -> SphericalCap
+    sampled_cap(center, chart, ix, iy, face, nside, nseg) -> SphericalCap
 
 A cap about `center` covering the region whose perimeter `pts` samples: the
 sampled maximum radius, plus half the largest gap between consecutive samples,
 plus one outward ULP.
+
+The second form is the same cap over [`chart_perimeter`](@ref)'s samples,
+streamed through the running maxima as each is produced, so a cap costs no
+vector. The two forms agree bit for bit.
 
 For a chart-square cell this bounds the whole subtree, since children tile the
 parent's square exactly and the distance from the centre is maximised on the
@@ -297,8 +305,71 @@ function sampled_cap(center, pts)
         gap = max(gap, US.spherical_distance(prev, p))
         prev = p
     end
-    radius = min(Float64(π), rmax + gap / 2)
-    return SphericalCap(center, nextfloat(radius))
+    return _sampled_cap(center, rmax, gap)
+end
+
+function sampled_cap(center, chart, ix::Integer, iy::Integer, face::Integer,
+        nside::Integer, nseg::Integer)
+    x0 = Int64(ix)
+    y0 = Int64(iy)
+    u, v = _perimeter_uv(x0, y0, nside, nseg, 0)
+    first = chart(u, v, face)
+    rmax = US.spherical_distance(center, first)
+    gap = 0.0
+    prev = first
+    for k in 1:(4 * nseg - 1)
+        u, v = _perimeter_uv(x0, y0, nside, nseg, k)
+        p = chart(u, v, face)
+        rmax = max(rmax, US.spherical_distance(center, p))
+        gap = max(gap, US.spherical_distance(prev, p))
+        prev = p
+    end
+    gap = max(gap, US.spherical_distance(prev, first))
+    return _sampled_cap(center, rmax, gap)
+end
+
+_sampled_cap(center, rmax::Float64, gap::Float64) =
+    SphericalCap(center, nextfloat(min(Float64(π), rmax + gap / 2)))
+
+# Cap predicates measure `acos(dot)`, and a dot of rounded unit vectors is off by
+# up to `k` ulp (three products, two sums), which reads a true angle `θ` as up to
+# `sqrt(θ^2 + 2k·eps)`. A radius carrying that headroom keeps a nanoradian cell
+# measured inside its own cap; 4 is 3 ulp plus one in hand.
+const DOT_ULPS = 4
+
+# The angle between unit vectors from their chord, which keeps full precision
+# at nanoradian scale; `acos(dot)` has no digits below `sqrt(eps)`.
+@inline function _chord_angle(a, b)
+    dx = a[1] - b[1]
+    dy = a[2] - b[2]
+    dz = a[3] - b[3]
+    return 2 * asin(min(1.0, sqrt(dx * dx + dy * dy + dz * dz) / 2))
+end
+
+"""
+    corner_cap(center, chart, ix, iy, face, nside, margin) -> SphericalCap
+
+A cap about `center` from four chart evaluations: the farthest corner's angle
+scaled by `1 + margin`, widened by the `acos(dot)` measurement headroom
+`DOT_ULPS` sets, plus one outward ULP.
+
+Sound for a chart whose distance from the cell centre peaks at a corner of the
+chart square; the system that calls it owns that argument and the `margin` it
+justifies. Every descendant lies in the parent's square, so the cap bounds the
+subtree as [`sampled_cap`](@ref) does.
+"""
+function corner_cap(center, chart, ix::Integer, iy::Integer, face::Integer,
+        nside::Integer, margin::Float64)
+    x0 = Int64(ix)
+    y0 = Int64(iy)
+    rmax = 0.0
+    for k in 0:3
+        u, v = _perimeter_uv(x0, y0, nside, 1, k)
+        rmax = max(rmax, _chord_angle(center, chart(u, v, face)))
+    end
+    r = rmax * (1 + margin)
+    radius = sqrt(r * r + 2 * DOT_ULPS * eps(1.0))
+    return SphericalCap(center, nextfloat(min(Float64(π), radius)))
 end
 
 """

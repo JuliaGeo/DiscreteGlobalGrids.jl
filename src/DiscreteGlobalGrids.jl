@@ -162,7 +162,7 @@ using .Engine: SquareBandEngine, square_halo_engine, generic_halo_engine,
 # shared arithmetic and geometry their own files call.
 using .Fallbacks: nbasefaces, systemname, idname,
     subtree_curve, subtree_orientation,
-    nside, checked_id, chart_perimeter, sampled_cap,
+    nside, checked_id, chart_perimeter, sampled_cap, corner_cap,
     morton_encode, morton_decode
 
 # The Snyder/icosahedron basis IGeo7 and ISEA4R share, before either of them.

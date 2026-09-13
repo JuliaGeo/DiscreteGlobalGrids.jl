@@ -427,32 +427,53 @@ end
 # 5. Structural: the exact subtree cap
 # =========================================================================
 
-@testset "node_extent covers the true pixel, with margin" begin
-    # The conformance suite samples DESCENDANT VERTICES; this samples the
-    # continuous truth those vertices lie on, 32x finer than the cap is built
-    # from. A negative worst-overshoot means the cap is not merely passing the
-    # sampled law but bounding the real region.
+@testset "corner_cap covers the pixel" begin
+    # The cap's radius is the farthest corner's distance times
+    # `1 + CORNER_CAP_MARGIN`, so its soundness is the claim that the distance
+    # from the centre over the whole chart square — interior and edges — peaks
+    # at a corner. A 65 x 65 chart lattice per pixel checks that claim, plus the
+    # margin's premise: away from the corners the lattice stays below the
+    # corner by more than twice the margin. Scaling the radius by `1 - 1e-3`
+    # fails the first check at every level.
     #
-    # `pixel_sample(level, 512)` is every pixel at levels 0-2 (12, 48, 192) and
-    # a seeded 512-pixel draw at levels 3-6; the finer 256-per-edge perimeter
-    # below is what makes each sampled pixel's check sharp.
+    # `pixel_sample(level, 256)` is every pixel at levels 0-2 and a seeded draw
+    # above; the pole pixels and the `jr = 1, 3` branch lines of every face are
+    # added by hand, since those are where the chart changes formula.
+    m = 64
     worst_overshoot = -Inf
+    worst_excess = -Inf
+    best_far = 0.0
     max_radius = 0.0
-    for level in 0:6
+    for level in vcat(0:6, 8, 10, 12)
         nside = 1 << level
-        for p in pixel_sample(level, 512)
+        ids = Set(pixel_sample(level, 256))
+        for f in 0:11, ix in (0, nside - 1)
+            push!(ids, HP.xyf_to_nested(ix, ix, f, nside))
+            push!(ids, HP.xyf_to_nested(ix, nside - 1 - ix, f, nside))
+        end
+        for p in ids
             ix, iy, f = HP.nested_to_xyf(p, nside)
             cap = node_extent(SYS, LevelIndex(level, p))
+            @test cap == DGG.Fallbacks.cell_cap(levelgrid(SYS, level), LevelIndex(level, p))
             max_radius = max(max_radius, cap.radius)
-            for q in HP._perimeter_points(ix, iy, f, nside, 256)
-                worst_overshoot = max(worst_overshoot,
-                    US.spherical_distance(cap.point, q) - cap.radius)
+            centre = HP.pixel_center(ix, iy, f, nside)
+            dcorner = maximum(q -> US.spherical_distance(centre, q),
+                HP.pixel_corners(ix, iy, f, nside))
+            for i in 0:m, j in 0:m
+                q = HP.xyf_to_point((ix + i / m) / nside, (iy + j / m) / nside, f)
+                d = US.spherical_distance(centre, q)
+                worst_overshoot = max(worst_overshoot, d - cap.radius)
+                worst_excess = max(worst_excess, d / dcorner - 1)
+                nearcorner = (i <= 2 || i >= m - 2) && (j <= 2 || j >= m - 2)
+                nearcorner || (best_far = max(best_far, d / dcorner))
             end
         end
     end
-    @info "node_extent vs densely sampled true perimeter" worst_overshoot max_radius
-    @test worst_overshoot < 0            # strictly inside: slack never consumed
-    @test max_radius <= π / 2            # geodesically convex, as the harness asserts
+    @info "corner_cap vs dense chart lattice" worst_overshoot worst_excess best_far max_radius
+    @test worst_overshoot < 0                 # every lattice point inside the cap
+    @test worst_excess <= 0                   # the corner is the maximum
+    @test best_far < 1 - 2 * HP.CORNER_CAP_MARGIN
+    @test max_radius <= π / 2                 # geodesically convex, as the harness asserts
 end
 
 @testset "node_extent covers deep descendants" begin

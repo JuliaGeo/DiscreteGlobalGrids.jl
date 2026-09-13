@@ -144,8 +144,8 @@ rectangle exactly, so a cap covering that rectangle covers all descendants;
 radius.
 """
 _subtree_cap(ix::Integer, iy::Integer, diamond::Integer, nside::Integer) =
-    DGG.sampled_cap(cell_center(ix, iy, diamond, nside),
-        _perimeter_points(ix, iy, diamond, nside, CAP_EDGE_SEGMENTS))
+    DGG.sampled_cap(cell_center(ix, iy, diamond, nside), xyd_to_point,
+        ix, iy, diamond, nside, CAP_EDGE_SEGMENTS)
 
 """
     node_extent(ISEA4RSystem(), c) -> SphericalCap

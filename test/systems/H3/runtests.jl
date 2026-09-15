@@ -428,6 +428,16 @@ end
         @test typeof(DGG.children(S, c)) === SmallVector{7,H3.H3Cell}
         @test typeof(DGG.ring(grid, c, 1)) === Vector{H3.H3Cell}
         @test typeof(DGG.descendant_range(S, c, 7)) === UnitRange{Int}
+        # The `Val` forms keep the native order and change only the container:
+        # `6k` slots for a ring, `3k(k + 1)` for a disc, on the stack.
+        @test typeof(DGG.neighbors(grid, c, Val(2))) === SmallVector{18,H3.H3Cell}
+        @test typeof(DGG.ring(grid, c, Val(2))) === SmallVector{12,H3.H3Cell}
+        @test typeof(DGG.neighbors(grid, c, Val(3))) === SmallVector{36,H3.H3Cell}
+        @test typeof(DGG.ring(grid, c, Val(3))) === SmallVector{18,H3.H3Cell}
+        for k in 2:3, x in (c, pent)
+            @test collect(DGG.neighbors(grid, x, Val(k))) == DGG.neighbors(grid, x, k)
+            @test collect(DGG.ring(grid, x, Val(k))) == DGG.ring(grid, x, k)
+        end
 
         # And the no-allocation claims those docstrings make. Both the shell
         # walk and the pentagon fallback have to be free of the heap.
@@ -439,6 +449,15 @@ end
         @test @allocated(DGG.neighbors(grid, pent, 1)) == 0 skip = VERSION < v"1.12"
         @test @allocated(DGG.children(S, c)) == 0 skip = VERSION < v"1.12"
         @test @allocated(DGG.children(S, pent)) == 0 skip = VERSION < v"1.12"
+        # And at k >= 2 through the `Val` forms, on both libh3 paths.
+        for x in (c, pent)
+            DGG.neighbors(grid, x, Val(2)); DGG.neighbors(grid, x, Val(3))
+            DGG.ring(grid, x, Val(2)); DGG.ring(grid, x, Val(3))
+            @test @allocated(DGG.neighbors(grid, x, Val(2))) == 0 skip = VERSION < v"1.12"
+            @test @allocated(DGG.neighbors(grid, x, Val(3))) == 0 skip = VERSION < v"1.12"
+            @test @allocated(DGG.ring(grid, x, Val(2))) == 0 skip = VERSION < v"1.12"
+            @test @allocated(DGG.ring(grid, x, Val(3))) == 0 skip = VERSION < v"1.12"
+        end
     end
 
     # =======================================================================

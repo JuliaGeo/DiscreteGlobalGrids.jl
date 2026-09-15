@@ -738,8 +738,8 @@ DGG.neighbors(axis::ChunkedCellVector, p::Int, k::Integer=1;
     connectivity::DGG.Connectivity=DGG.Vertex()) =
     neighbors(region(axis), p, k; connectivity)
 DGG.neighbors(axis::ChunkedCellVector;
-    connectivity::DGG.Connectivity=DGG.Vertex()) =
-    neighbors(region(axis); connectivity)
+    connectivity::DGG.Connectivity=DGG.Vertex(), neighborhood=DGG.Disc(1)) =
+    neighbors(region(axis); connectivity, neighborhood)
 DGG.ring(axis::ChunkedCellVector, c::AbstractCellIndex, k::Integer;
     connectivity::DGG.Connectivity=DGG.Vertex()) =
     ring(region(axis), c, k; connectivity)

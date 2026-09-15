@@ -83,12 +83,67 @@ For kernels that also need geometry, indices or multiple variables, see
 [Requesting neighbour fields](neighbor-fields.md). For stored data, see
 [chunked sweeps](chunk-sweep.md).
 
+The `neighborhood` keyword chooses which cells each visit hands the kernel.
+`Disc(k)` hands it `neighbors(grid, cell, k)`, every cell within `k` steps;
+`Ring(k)` hands it `ring(grid, cell, k)`, the cells at exactly `k` steps. The
+default is `Disc(1)`, the one-ring. Every callback form keeps its arity: only
+the ring argument widens. The same keyword drives the one-argument
+[`neighbors`](@ref) iterator and the chunked [`mapneighbors!`](@ref), whose
+halo follows the radius.
+
+```@example neighbors
+cells = DGG.CellVector(grid)
+i = DGG.localindex(cells, cell)
+
+within3 = DGG.mapneighbors((c, nbrs) -> [DGG.localindex(h) for h in nbrs], cells;
+    neighborhood = DGG.Disc(3))
+at3 = DGG.mapneighbors((c, nbrs) -> [DGG.localindex(h) for h in nbrs], cells;
+    neighborhood = DGG.Ring(3))
+
+(; disc_is_neighbors = within3[i] == DGG.neighbors(cells, i, 3),
+   ring_is_ring = at3[i] == DGG.ring(cells, i, 3),
+   one_ring_leads = within3[i][1:length(DGG.neighbors(cells, i))] == DGG.neighbors(cells, i))
+```
+
+The order is the one [`neighbors`](@ref) and [`ring`](@ref) fix: a `Disc(k)`
+ring holds ring 1, then ring 2, out to ring `k`, each counter-clockwise, and a
+subset drops its non-members in place. The ring boundaries carry no marker, so
+a kernel that weights by distance sweeps `Ring(j)` once per `j`.
+
+One pass at radius `k` is a different computation from `k` one-ring passes.
+The disc pass weights every cell within `k` steps once; repeated one-ring
+passes compound, reaching a cell at distance two through every path of length
+two, so their weights fall off with distance.
+
+```@example neighbors
+mean3(c, x, nbrs) = (x + sum(nbrs)) / (1 + length(nbrs))
+values = sin.(eachindex(cells) ./ 7)
+
+radius3 = DGG.mapneighbors(mean3, cells, values; neighborhood = DGG.Disc(3))
+threepasses = foldl((v, _) -> DGG.mapneighbors(mean3, cells, v), 1:3; init = values)
+maximum(abs, radius3 .- threepasses)
+```
+
+`Disc(0)` is legal and hands every cell an empty ring; `Ring(0)` throws,
+because the sweep already hands the centre to the kernel as its first
+argument. On systems whose [`winding`](@ref) is `CounterClockwise` or
+`Clockwise` a `k ≥ 2` visit is one shell walk, and H3 answers from libh3's
+own automaton, both on the stack, so a sequential sweep through `Disc(3)` and
+`Ring(3)` allocates nothing there; on `CustomOrder` or undeclared-winding
+systems it sorts each
+shell by centroid azimuth, so a wide sweep there costs more than `k` one-ring
+sweeps. [`adjacency`](@ref) stays a one-ring table; widen the
+region with [`grow`](@ref) when a wider table is wanted.
+
 ```@docs
 mapneighbors
 mapneighbors!
 foreachneighbors
 Values
 Neighbors
+Neighborhood
+Disc
+Ring
 ```
 
 ## Neighbours across levels

@@ -45,6 +45,8 @@ export MAX_RESOLUTION,
     grid_disk_distances,
     grid_ring_unsafe,
     grid_ring_unsafe_1,
+    grid_ring_unsafe_static,
+    grid_disk_distances_static,
     is_pentagon,
     is_valid_cell,
     lonlat_to_cell,
@@ -335,6 +337,27 @@ pentagon and cannot be completed.
 walk, and the caller answers those cells from `grid_disk` instead. This is the
 whole reason the libh3 function is named "unsafe".
 """
+# The static forms: `N` is a type parameter, so libh3 writes into a `Ref` the
+# compiler keeps on the stack, exactly as the k = 1 forms below. `N` must hold
+# the whole answer: `6k` for a ring, `max_grid_disk_size(k)` for a disk.
+@inline function grid_ring_unsafe_static(id, k::Integer, ::Val{N}) where {N}
+    buf = Ref(ntuple(_ -> H3Index(0), Val(N)))
+    err = GC.@preserve buf ccall((:gridRingUnsafe, H3_jll.libh3), H3Error,
+        (H3Index, Cint, Ptr{H3Index}),
+        _to_id(id), Cint(k), Base.unsafe_convert(Ptr{H3Index}, buf))
+    err == 0 || return nothing
+    return buf[]
+end
+@inline function grid_disk_distances_static(id, k::Integer, ::Val{N}) where {N}
+    cells = Ref(ntuple(_ -> H3Index(0), Val(N)))
+    dists = Ref(ntuple(_ -> Cint(-1), Val(N)))
+    err = GC.@preserve cells dists ccall((:gridDiskDistances, H3_jll.libh3),
+        H3Error, (H3Index, Cint, Ptr{H3Index}, Ptr{Cint}),
+        _to_id(id), Cint(k), Base.unsafe_convert(Ptr{H3Index}, cells),
+        Base.unsafe_convert(Ptr{Cint}, dists))
+    _check(err, "gridDiskDistances")
+    return cells[], dists[]
+end
 function grid_ring_unsafe(id, k::Integer)
     k >= 0 || throw(ArgumentError("grid ring radius must be non-negative"))
     n = k == 0 ? 1 : 6 * Int(k)

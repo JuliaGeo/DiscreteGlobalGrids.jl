@@ -8,14 +8,14 @@ import DimensionalData as DD
 import Extents
 using Random: shuffle, Xoshiro
 
-using DiscreteGlobalGrids: levelgrid, cellindex, localindex, neighbors,
+using DiscreteGlobalGrids: levelgrid, cellindex, localindex, neighbors, ring,
     mapneighbors, foreachneighbors, StorageOrder, adjacency, subtree,
     PartialGrid, CellVector, CellLookup, Cells, MultiOrderCoverage,
-    AuthalicSystem, Vertex, Edge, query, system, cellid, level,
-    Neighbors, Values, NeighborSlices
+    AuthalicSystem, Vertex, Edge, query, system, cellid, level, neighborcount,
+    Neighbors, Values, NeighborSlices, Disc, Ring, Cell
 
 include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
-using .DGGTestHelpers: syslabel, sweepcovers
+using .DGGTestHelpers: syslabel, sweepcovers, basesystem, ishexwalk
 
 const FB = DGG.Fallbacks
 const EN = DGG.Engine
@@ -182,6 +182,29 @@ end
     s = IndexSum(Ref(0))
     foreachneighbors(s, coverage)
     @test @allocated(foreachneighbors(s, coverage)) == 0
+    # Spelling the default out reaches the same path: `Disc(1)` is the one-ring
+    # call the sweep made before the selector existed, keyword and all.
+    foreachneighbors(s, coverage; neighborhood = Disc(1))
+    @test @allocated(foreachneighbors(s, coverage; neighborhood = Disc(1))) == 0
+end
+
+# A wider sweep is free wherever the system carries its winding: the static
+# walk builds one stack buffer per shell, and H3 writes libh3's shells into
+# stack buffers of its own. Selected by the `winding` trait, never by name.
+@testset "a wider sweep allocates nothing where the winding is carried" begin
+    carried(sys) = DGG.winding(levelgrid(sys, 1), Vertex()) isa
+                   Union{DGG.CounterClockwise,DGG.Clockwise}
+    for sys in filter(carried, DGG.systems())
+        cv = CellVector(rooted_pg(sys, 1, 3))
+        s = IndexSum(Ref(0))
+        @testset "$(syslabel(sys)) $conn $nb" for conn in (Vertex(), Edge()),
+                nb in (Disc(2), Ring(2), Disc(3), Ring(3))
+            foreachneighbors(s, cv; neighborhood = nb, connectivity = conn)
+            @test @allocated(foreachneighbors(s, cv; neighborhood = nb,
+                connectivity = conn)) == 0 skip = VERSION < v"1.12"
+        end
+    end
+    @test !isempty(filter(carried, DGG.systems()))
 end
 
 # The whole-array entry points resolve the cell dimension and hand back the
@@ -300,6 +323,270 @@ end
     @test_throws "one dimension" neighbors(cube, (Cells, :time))
     @test_throws "carries a cell lookup" adjacency(
         DD.DimArray(collect(1.0:4), (DD.X(1:4),)))
+end
+
+# ===========================================================================
+# Radius-k and exact-ring sweeps: `neighborhood = Disc(k) | Ring(k)`.
+#
+# One law covers every case below — the callback's ring argument is the direct
+# query the selector names, clipped to the subset — so the oracle is that verb
+# and never a second implementation of the shell walk. Everything the sweep
+# could get wrong (order, membership, length, the centre, duplicates) is a
+# consequence of that one equality.
+# ===========================================================================
+
+# The verb each selector defers to.
+selected(cv, c, ::Disc{K}; connectivity = Vertex()) where {K} =
+    neighbors(cv, c, K; connectivity)
+selected(cv, c, ::Ring{K}; connectivity = Vertex()) where {K} =
+    ring(cv, c, K; connectivity)
+
+# Local indices hold order, membership and length in one comparable object.
+naive_rings(cv, nb; connectivity = Vertex()) =
+    [[localindex(cv, x) for x in selected(cv, cv[k], nb; connectivity)]
+     for k in eachindex(cv)]
+
+sweep_rings(cv, nb; kw...) =
+    mapneighbors((c, nbrs) -> [localindex(h) for h in nbrs], cv;
+        neighborhood = nb, kw...)
+
+# The two laws that hold at every visit, whatever the selector names.
+function visits_are_clean(cv, nb; connectivity = Vertex())
+    clean = true
+    foreachneighbors(cv; neighborhood = nb, connectivity) do c, nbrs
+        ids = [localindex(h) for h in nbrs]
+        clean &= !(localindex(c) in ids) && allunique(ids)
+    end
+    return clean
+end
+
+# `Vertex()` and `Edge()` coincide where exactly three cells meet at every
+# vertex — the icosahedral hex family the directed-walk hook names — and are
+# two different neighbourhoods everywhere else, so only those systems are
+# swept twice. The main testset checks the trait really does say this.
+conns(sys) = ishexwalk(sys) ? (Vertex(),) : (Vertex(), Edge())
+
+const SELECTORS = (Disc(0), Disc(1), Disc(2), Disc(3), Ring(1), Ring(2), Ring(3))
+
+@testset "$(syslabel(sys)): the ring argument is the selector's own query" for
+        (sys, base, depth, covlvl) in SWEEP
+
+    sub = CellVector(rooted_pg(sys, base, depth))
+    coverage = CellVector(query(sys, MultiOrderCoverage(TILE); level=covlvl))
+
+    # What `conns` skips, and why it is safe to skip it.
+    @test ishexwalk(sys) ==
+          all(c -> neighbors(sub, c) == neighbors(sub, c; connectivity = Edge()), sub)
+
+    @testset "$label" for (label, cv) in
+                          ("one rooted subtree" => sub,
+                           "multi-window coverage" => coverage)
+        @testset "$nb under $conn" for conn in conns(sys), nb in SELECTORS
+            @test sweep_rings(cv, nb; connectivity = conn, threaded = false) ==
+                  naive_rings(cv, nb; connectivity = conn)
+            @test visits_are_clean(cv, nb; connectivity = conn)
+        end
+    end
+end
+
+@testset "$(syslabel(sys)): Disc(1) written out is the default" for
+        (sys, base, depth, covlvl) in SWEEP
+
+    cv = CellVector(rooted_pg(sys, base, depth))
+    for conn in conns(sys)
+        @test mapneighbors(probe, cv; connectivity = conn,
+            neighborhood = Disc(1)) == mapneighbors(probe, cv; connectivity = conn)
+    end
+end
+
+# A subtree with its middle third removed. Distance stays the system's, so the
+# hole shortens rings without lengthening any path around itself: from `k == 2`
+# the clip is the only thing that separates this fixture from the whole
+# subtree, and it is the only thing the sweep may do.
+holed(cv) = cv[vcat(1:(length(cv) ÷ 3), (2 * (length(cv) ÷ 3) + 1):length(cv))]
+
+@testset "$(syslabel(sys)): a hole clips, and only clips" for
+        (sys, base, depth, covlvl) in SWEEP
+
+    cv = CellVector(rooted_pg(sys, base, depth))
+    hv = holed(cv)
+    @test length(hv) < length(cv)
+
+    @testset "$nb under $conn" for conn in conns(sys),
+                                   nb in (Disc(2), Disc(3), Ring(2), Ring(3))
+        @test sweep_rings(hv, nb; connectivity = conn, threaded = false) ==
+              naive_rings(hv, nb; connectivity = conn)
+        @test visits_are_clean(hv, nb; connectivity = conn)
+    end
+
+    # The fixture earns its place: the removed middle really does shorten rings
+    # the whole subtree answers in full. Indices below the hole are the same
+    # cell in both vectors.
+    whole = mapneighbors((c, r) -> length(r), cv; neighborhood = Disc(2),
+        threaded = false)
+    cut = mapneighbors((c, r) -> length(r), hv; neighborhood = Disc(2),
+        threaded = false)
+    @test any(k -> cut[k] < whole[k], 1:(length(cv) ÷ 3))
+end
+
+# Pentagons are a per-system expectation. H3 carries twelve at every level, and
+# a complete level clips nothing, so a short shell there is the pentagon's own
+# deficiency rather than an edge of the subset.
+@testset "H3 pentagons answer shorter shells" begin
+    sys = DGG.H3System()
+    grid = levelgrid(sys, 1)
+    cv = CellVector(grid)
+    pent = [k for k in eachindex(cv) if neighborcount(grid, cv[k]) == 5]
+    @test length(pent) == 12
+
+    @testset "$nb" for nb in (Disc(1), Disc(2), Disc(3), Ring(1), Ring(2), Ring(3))
+        rings = sweep_rings(cv, nb; threaded = false)
+        @test rings == naive_rings(cv, nb)
+        @test visits_are_clean(cv, nb)
+        hexmax = maximum(length(rings[k]) for k in eachindex(cv) if !(k in pent))
+        @test all(k -> length(rings[k]) < hexmax, pent)
+    end
+end
+
+# A complete level holds every face seam. A `CustomOrder` system measures one
+# centroid azimuth per shell member and sorts, which is the `k ≥ 2` path most
+# likely to disagree with the verb the sweep claims to be.
+customorder(sys) = DGG.winding(basesystem(sys), Vertex()) isa DGG.CustomOrder
+
+@testset "shells cross seams: $(syslabel(sys))" for
+        sys in filter(customorder, DGG.systems())
+
+    cv = CellVector(levelgrid(sys, 2))
+    @testset "$nb under $conn" for conn in conns(sys),
+                                   nb in (Disc(2), Disc(3), Ring(2), Ring(3))
+        @test sweep_rings(cv, nb; connectivity = conn, threaded = false) ==
+              naive_rings(cv, nb; connectivity = conn)
+        @test visits_are_clean(cv, nb; connectivity = conn)
+    end
+end
+
+@testset "the seam systems are still selected by winding" begin
+    # An empty filter above would pass every law in it vacuously.
+    @test !isempty(filter(customorder, DGG.systems()))
+end
+
+# Every calling form reads the same neighbourhood; the forms differ only in
+# what they hand the callback about it. One system suffices — the selector is
+# threaded through system-generic code and the numbers are pinned to the
+# handle form's.
+@testset "every calling form carries the selector" begin
+    sys = DGG.IGeo7System()
+    pg = rooted_pg(sys, 1, 3)
+    cv = CellVector(pg)
+    n = length(cv)
+    data = collect(1.0:n)
+    cubedata = [j * data[k] + 0.1j for j in 1:3, k in 1:n]
+    A = DD.DimArray(copy(data), (Cells(CellLookup(cv)),))
+    cube = DD.DimArray(copy(cubedata),
+        (DD.Dim{:time}(1:3), Cells(CellLookup(cv))))
+    metric = (c, v, vals) ->
+        3.0v + sum(i * vals[i] for i in eachindex(vals); init = 0.0)
+    sliced = (c, s, ns) -> sum(s) + sum(sum, ns; init = 0.0)
+
+    @testset "$nb" for nb in (Disc(0), Disc(2), Ring(2), Ring(3))
+        want = naive_rings(cv, nb)
+        @test sweep_rings(cv, nb; threaded = false) == want
+
+        # The iterator yields the same rings in the same order, from every
+        # collection that offers it: the vector, the subset, the lookup and
+        # the dimarray over the lookup.
+        for src in (cv, pg, CellLookup(cv), A)
+            @test [[localindex(h) for h in nbrs]
+                   for (_, nbrs) in neighbors(src; neighborhood = nb)] == want
+        end
+
+        # Positional data gathers the ring, slot for slot.
+        want_data = [3.0data[k] +
+                     sum(i * data[want[k][i]] for i in eachindex(want[k]);
+                         init = 0.0) for k in eachindex(cv)]
+        @test mapneighbors(metric, cv, data; neighborhood = nb,
+            threaded = false) == want_data
+
+        # A field request answers over the same cells, field-major.
+        got = mapneighbors(cv; needs = (Cell(),), neighborhood = nb,
+            threaded = false) do center, rings
+            [localindex(cv, x) for x in rings[1]]
+        end
+        @test got == want
+
+        # foreachneighbors fills a store the caller owns.
+        store = [Int[] for _ in 1:n]
+        foreachneighbors(cv; neighborhood = nb) do c, nbrs
+            store[localindex(c)] = [localindex(h) for h in nbrs]
+        end
+        @test store == want
+
+        # The DimArray forms: values, and one view per selected neighbour.
+        @test parent(mapneighbors(metric, A; pass = Values(),
+            neighborhood = nb, threaded = false)) == want_data
+        outS = mapneighbors(sliced, cube; pass = NeighborSlices(),
+            neighborhood = nb, threaded = false)
+        @test parent(outS) ≈ [sum(cubedata[:, k]) +
+                              sum(sum(cubedata[:, j]) for j in want[k]; init = 0.0)
+                              for k in eachindex(cv)]
+    end
+end
+
+@testset "traversal does not change a Disc(2) sweep" begin
+    sys = DGG.IGeo7System()
+    cv = CellVector(rooted_pg(sys, 1, 3))
+    want = naive_rings(cv, Disc(2))
+    perm = shuffle(Xoshiro(13), 1:length(cv))
+    @test sweep_rings(cv, Disc(2); threaded = false) == want
+    @test sweep_rings(cv, Disc(2); threaded = true) == want
+    @test sweep_rings(cv, Disc(2); order = perm, threaded = false) == want
+    @test sweep_rings(cv, Disc(2); order = perm, threaded = true) == want
+end
+
+# The message, not just the type: a caller who wrote the wrong thing is told
+# which spellings are the right ones.
+errmsg(f) = try
+    (f(); "")
+catch e
+    sprint(showerror, e)
+end
+
+@testset "a neighbourhood is Disc(k) or Ring(k), and says so" begin
+    sys = DGG.IGeo7System()
+    cv = CellVector(rooted_pg(sys, 1, 3))
+    data = collect(1.0:length(cv))
+    A = DD.DimArray(copy(data), (Cells(CellLookup(cv)),))
+
+    # The constructors refuse before any sweep is built.
+    @test_throws ArgumentError Ring(0)
+    @test_throws ArgumentError Disc(-1)
+    @test_throws ArgumentError Ring(-1)
+    zero_ring = errmsg(() -> Ring(0))
+    @test contains(zero_ring, "Disc(0)") && contains(zero_ring, "Ring(1)")
+    @test contains(errmsg(() -> Disc(-1)), "non-negative")
+
+    # A value that is neither selector is refused by every entry point.
+    for f in (() -> mapneighbors(probe, cv; neighborhood = 3),
+              () -> mapneighbors(probe, cv, data; neighborhood = 3),
+              () -> mapneighbors(probe, cv; needs = (Cell(),), neighborhood = 3),
+              () -> foreachneighbors(probe, cv; neighborhood = 3),
+              () -> neighbors(cv; neighborhood = 3),
+              () -> mapneighbors(probe, A; neighborhood = 3))
+        @test_throws ArgumentError f()
+        msg = errmsg(f)
+        @test contains(msg, "Disc(k)") && contains(msg, "Ring(k)")
+    end
+end
+
+@testset "the callback's ring type follows the selected capacity" begin
+    sys = DGG.IGeo7System()
+    cv = CellVector(rooted_pg(sys, 1, 3))
+    H = DGG.SubsetIndexedCell{eltype(cv)}
+    @testset "$nb under $conn" for conn in (Vertex(), Edge()), nb in SELECTORS
+        @test eltype(mapneighbors((c, r) -> r, cv; neighborhood = nb,
+            connectivity = conn)) ==
+              EN._ringtype(EN._capacity(cv.grid, nb, conn), H)
+    end
 end
 
 end # module MapNeighborsTests

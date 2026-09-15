@@ -82,6 +82,20 @@ chunk exactly what it computes on the whole axis — clipped identically, in the
 same order. That is what lets the two sweep forms be built on the plan without
 qualifying their results.
 
+[`mapneighbors!`](@ref) keeps that invariant itself. Its `halo` defaults to
+the radius of the `neighborhood` selector, `k` for both [`Disc`](@ref)`(k)`
+and [`Ring`](@ref)`(k)` and one ring for `Disc(0)`, and a supplied plan must carry at least that many
+rings: [`halowidth`](@ref)`(plan)` narrower than the radius throws an
+`ArgumentError` naming both widths. A wider halo than the radius is allowed.
+With `A` a stored cube, `out` a destination of the same shape and `kernel` a
+`(cell, value, values)` function:
+
+```julia
+plan = chunkplan(A; halo = 3)
+mapneighbors!(out, kernel, A, plan; neighborhood = Ring(3))   # halowidth(plan) ≥ 3
+mapneighbors!(out, kernel, A; neighborhood = Disc(3))         # plans halo = 3 itself
+```
+
 [`mapneighbors!`](@ref) is the streaming form: results are written into `dest` a
 chunk at a time, so neither the input nor the output has to fit in memory.
 [`mapneighbors`](@ref) with `pass = Values()` takes the same route by itself

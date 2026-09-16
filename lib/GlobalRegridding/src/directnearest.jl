@@ -21,8 +21,8 @@ without building weights for it.
 
 The stencil is [`NearestCell`](@ref)'s exactly — one source cell, weight one —
 and so are the results, element for element, under either missing policy and
-with any nodata sentinel. What differs is that no [`WeightCOO`](@ref),
-[`WeightBlock`](@ref) or sparse matrix is ever assembled: a plan holds only the
+with any nodata sentinel. What differs is that no `WeightCOO`, `WeightBlock` or
+sparse matrix is ever assembled: a plan holds only the
 two spaces, and the apply loop calls [`cellat`](@ref) per destination cell and
 copies the value across.
 
@@ -45,8 +45,8 @@ not the case this distinguishes. `NearestCell` is also the one to reach for when
 the operator itself is wanted — to inspect, to store, or to apply outside this
 package — since `DirectNearest` never materializes one.
 
-[`buildweights!`](@ref) is still supplied, so any route that has not been
-specialized for this method (a chunk pair built through [`pairblock`](@ref), a
+`buildweights!` is still supplied, so any route that has not been specialized
+for this method (a chunk pair built through `pairblock`, a
 weight file, a test) falls back to `NearestCell`'s own assembly and answers the
 same.
 """

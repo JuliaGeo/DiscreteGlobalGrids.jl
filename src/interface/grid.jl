@@ -38,7 +38,7 @@ The canonical typed id of the cell at **local index** `i` in `grid`'s dense orde
 
 The returned id is of type `cellindextype(system(grid))` for a grid that has a
 system, and of the grid's own canonical id type otherwise. Together with
-[`localindex`](@ref) this is a bijection `1:ncells(grid)` ↔ the grid's cells:
+[`localindex`](@ref DiscreteGlobalGrids.localindex) this is a bijection `1:ncells(grid)` ↔ the grid's cells:
 
     localindex(grid, cellindex(grid, i)) == i   for all i in 1:ncells(grid)
 
@@ -172,7 +172,7 @@ order, or `nothing` when absent. It is the inverse of [`cellindex`](@ref).
 
 `collection` is anything that stores cells in an order of its own: a grid, a
 [`CellVector`](@ref), a [`PartialGrid`](@ref), a cell lookup. On a complete grid
-the local index and the [`globalindex`](@ref) coincide — its storage IS the
+the local index and the [`globalindex`](@ref DiscreteGlobalGrids.globalindex) coincide — its storage IS the
 level — so generic code that means "wherever this collection put it" should ask
 for the local index and be correct in both cases.
 
@@ -193,7 +193,7 @@ The local index of the cell containing a point.
   - One search where the collection can answer in one: a subset resolves
     membership while it locates, and keeps the index that produced.
 
-See also [`globalindex`](@ref), [`cellindex`](@ref).
+See also [`globalindex`](@ref DiscreteGlobalGrids.globalindex), [`cellindex`](@ref).
 """
 function localindex end
 
@@ -206,11 +206,11 @@ of the system.
 
 This is the index space a subset's own storage is carved out of. Asking a
 [`CellVector`](@ref) for a global index answers for its underlying grid, so two
-different subsets of one level agree on it where their [`localindex`](@ref)
+different subsets of one level agree on it where their [`localindex`](@ref DiscreteGlobalGrids.localindex)
 values do not. It is the numeric counterpart of [`cellid`](@ref): the way to
 carry a cell between collections without carrying a stale offset.
 
-See also [`localindex`](@ref), [`cellindex`](@ref).
+See also [`localindex`](@ref DiscreteGlobalGrids.localindex), [`cellindex`](@ref).
 """
 function globalindex end
 
@@ -411,7 +411,7 @@ the cells at *exactly* distance `k`.
 
 Given a local index, both verbs answer with **in-set local indices in the rotational
 order above**: `neighbors(grid, p, k)` is `neighbors(grid, cellindex(grid, p),
-k)` mapped through [`localindex`](@ref), element for element, with non-members
+k)` mapped through [`localindex`](@ref DiscreteGlobalGrids.localindex), element for element, with non-members
 dropped. [`adjacency`](@ref) is this form for a whole region at once.
 
 The result is therefore not sorted. An index list read only by membership does
@@ -444,7 +444,7 @@ splat, which is what stops the arity from specialising per `k`.
 
 `ring` carries [`neighbors`](@ref)' order, container, coverage and
 subset-clipping contracts unchanged — including the local-index form's, which is
-the same counter-clockwise order read through [`localindex`](@ref).
+the same counter-clockwise order read through [`localindex`](@ref DiscreteGlobalGrids.localindex).
 
 # `k` as a type
 
@@ -513,7 +513,7 @@ joins the halo.
 
 `collect` gives a `Vector` and `Set` gives a membership-queryable set — both are
 Base's contracts over an iterator, and neither is overloaded to reach some other
-product. [`sizehint`](@ref DiscreteGlobalGrids.sizehint) gives a cheap size
+product. [`sizehint`](@ref DiscreteGlobalGrids.Engine.sizehint) gives a cheap size
 estimate where one exists.
 
 The walk is serial; [`adjacency`](@ref) is the verb that threads.
@@ -558,9 +558,9 @@ The compressed [`CellVector`](@ref) a region is answered as — the container th
 four region verbs, the neighbourhood sweeps, regridding and plotting are all
 written against.
 
-On a [`CellVector`](@ref) or a [`CellLookup`](@ref) this is the identity: they
+On a [`CellVector`](@ref) or a [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup) this is the identity: they
 already are that container. On a stored axis
-([`ChunkedCellVector`](@ref), [`ChunkedCellLookup`](@ref)) it is the conversion,
+([`ChunkedCellVector`](@ref DiscreteGlobalGrids.ChunkedLookups.ChunkedCellVector), [`ChunkedCellLookup`](@ref DiscreteGlobalGrids.ChunkedLookups.ChunkedCellLookup)) it is the conversion,
 built on first call and kept, so the cost is paid once however many verbs are
 asked afterwards. What that costs depends on the encoding and is documented on
 `CellVector(::ChunkedCellVector)`.
@@ -659,7 +659,7 @@ function treeify end
 """
     subcursor(grid::AbstractGrid, inds::AbstractUnitRange) -> tree or `nothing`
 
-The [`treeify`](@ref) tree restricted to the grid indices `inds`, with leaf
+The [`treeify`](@ref ConservativeRegridding.Trees.treeify) tree restricted to the grid indices `inds`, with leaf
 indices still in `grid`'s own index space, or `nothing` (the default) when
 this grid cannot express that restriction. The result must cover exactly the
 cells at `inds`, no more.
@@ -690,7 +690,7 @@ when this grid's cells are not pixels of raster tiles.
     opaque to the caller, which only passes it back to the three hooks below, so
     a grid may carry in it whatever those need — an identifier, the rectangle's
     origin, its offset in the grid.
-  - Implemented by grids over a collection of raster tiles; [`treeify`](@ref)
+  - Implemented by grids over a collection of raster tiles; [`treeify`](@ref ConservativeRegridding.Trees.treeify)
     builds a tiled raster tree for them.
 """
 function raster_tiles end

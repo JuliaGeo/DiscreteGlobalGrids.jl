@@ -5,8 +5,8 @@ CurrentModule = DiscreteGlobalGrids
 ```
 
 A DGGS store is a Zarr group containing variables over one cell axis and the
-metadata needed to interpret that axis. [`dggwrite`](@ref) writes a
-DimensionalData `DimStack`; [`dggread`](@ref) reopens it as a `DimStack` with a
+metadata needed to interpret that axis. [`dggwrite`](@ref DiscreteGlobalGrids.dggwrite) writes a
+DimensionalData `DimStack`; [`dggread`](@ref DiscreteGlobalGrids.dggread) reopens it as a `DimStack` with a
 shared `Cells` dimension and lazy arrays.
 
 The methods live in the Zarr.jl extension, which `using Zarr` loads. The
@@ -23,7 +23,7 @@ Both are registries. A downstream package can add a metadata dialect with
 [`register_convention!`](@ref) or an id layout with
 [`register_encoding!`](@ref).
 
-The reader returns a [`ChunkedCellLookup`](@ref). It answers `At`, `Contains`
+The reader returns a [`ChunkedCellLookup`](@ref DiscreteGlobalGrids.ChunkedLookups.ChunkedCellLookup). It answers `At`, `Contains`
 and `Covering` through the [`ChunkManifest`](@ref), which describes the chunk
 grid in cells. Arithmetic and range encodings can open without coordinate
 reads; a foreign dense store reads its ids once at open to validate them.

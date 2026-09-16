@@ -59,11 +59,11 @@ end
     expand(set::MultiOrderCellSet, l::Integer) -> CellVector
 
 Every level-`l` descendant of the region's cells, as one [`CellVector`](@ref).
-`l` equal to the region's own level returns it unchanged; `l` above it throws.
+`l` equal to the region's own level returns it unchanged; a coarser `l` (`l < level(region)`) throws.
 
 The expansion never assumes a cell's descendants are contiguous or ascending in
 the deeper level. Where [`has_sorted_subtrees`](@ref) holds it merges one
-[`descendant_range`](@ref) per cell; elsewhere (A5) it resolves
+[`descendant_range`](@ref DiscreteGlobalGrids.descendant_range) per cell; elsewhere (A5) it resolves
 [`descendants`](@ref) to indices and sorts them. Both paths visit every cell of
 the region, and the second visits every leaf it names.
 

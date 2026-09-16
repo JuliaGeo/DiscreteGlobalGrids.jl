@@ -169,7 +169,7 @@ end
     descendants(sys, c, l)
 
 Return all level-`l` descendants of `c`, ascending and materialized in
-`O(subtree)`. Sorted-subtree systems resolve one [`descendant_range`](@ref);
+`O(subtree)`. Sorted-subtree systems resolve one [`descendant_range`](@ref DiscreteGlobalGrids.descendant_range);
 others expand [`children`](@ref) level by level and sort.
 """
 function descendants(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, l::Integer)

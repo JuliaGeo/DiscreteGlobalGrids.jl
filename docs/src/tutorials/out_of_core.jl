@@ -77,8 +77,10 @@ fig
 
 # ## Run the chunks in parallel
 #
-# `chunkplan` records each owned chunk and the halo width it needs. Set
-# `halo = n` when a kernel reaches `n` rings.
+# `chunkplan` records each owned chunk and its surrounding input data.
+# This kernel uses the default one-ring neighborhood, so `halo=1` is sufficient.
+# A larger halo does not enlarge that callback neighborhood. A built-in
+# second-order convolution is not currently available.
 
 plan = DGG.chunkplan(A; halo = 1)
 

@@ -11,15 +11,15 @@ streams them with each clipped ring. For example,
 lookups.
 
 Each entry of `needs` is an [`AbstractNeed`](@ref). There are four of them, and
-one — [`Index`](@ref DiscreteGlobalGrids.Index) — also names the index space it
+one — [`Index`](@ref DiscreteGlobalGrids.Engine.Index) — also names the index space it
 answers in:
 
 | need | the visited cell | a ring slot |
 |---|---|---|
 | [`Cell`](@ref)`()` | its cell id | the neighbour's cell id |
-| [`Index`](@ref DiscreteGlobalGrids.Index)`(`[`Local`](@ref)`())` | its index in the collection | the neighbour's |
-| [`Index`](@ref DiscreteGlobalGrids.Index)`(`[`Global`](@ref)`())` | its [`globalindex`](@ref) | the neighbour's |
-| [`Index`](@ref DiscreteGlobalGrids.Index)`(T)` | its id `reindex`ed to scheme `T` | the neighbour's |
+| [`Index`](@ref DiscreteGlobalGrids.Engine.Index)`(`[`Local`](@ref)`())` | its index in the collection | the neighbour's |
+| [`Index`](@ref DiscreteGlobalGrids.Engine.Index)`(`[`Global`](@ref)`())` | its [`globalindex`](@ref DiscreteGlobalGrids.globalindex) | the neighbour's |
+| [`Index`](@ref DiscreteGlobalGrids.Engine.Index)`(T)` | its id `reindex`ed to scheme `T` | the neighbour's |
 | [`Value`](@ref)`(a)` | `a` at its index | `a` at the neighbour's index |
 | [`Centroid`](@ref)`()` | its centroid, on the unit sphere | the neighbour's |
 
@@ -28,7 +28,7 @@ carry as many fields as the kernel reads. A single field is what
 [`Values`](@ref) passes; a request extends that form to multiple fields and
 geometry. `needs` is a keyword on [`mapneighbors`](@ref) and
 [`foreachneighbors`](@ref), alongside `order`, `threaded` and `connectivity`,
-over a [`CellVector`](@ref), a [`PartialGrid`](@ref), a [`CellLookup`](@ref) or
+over a [`CellVector`](@ref), a [`PartialGrid`](@ref), a [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup) or
 a dimensional array.
 
 For the basic kernel forms, see [Neighbours and stencils](neighbors.md).

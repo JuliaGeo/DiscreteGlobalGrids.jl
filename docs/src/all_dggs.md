@@ -2,7 +2,12 @@
 
 Compare the cell shapes and global arrangement of the six systems below.
 Each panel uses a level that keeps individual cells visible. To compare
-resolutions numerically, use cell size in metres.
+resolutions numerically, use cell size in metres. See
+[Choosing a grid](tutorials/choosing_a_grid.md) for the decision table and identifier limits.
+
+The package also exports `CopernicusDEMSystem(30)` and `(90)`. This specialized
+raster lattice has tiles at level 0 and pixels at level 1, with pixel widths
+that vary by latitude. It is not included in `systems()` or the six panels below.
 
 ```@raw html
 <style>
@@ -67,7 +72,8 @@ end
   - **H3** — the same hexagon family on gnomonic icosahedral faces, so not
     equal-area.
   - **HEALPix** — curvilinear diamonds, exactly `4π/(12·4^l)` steradians each.
-  - **A5** — Cairo-style pentagons, equal-area.
+  - **A5** — Cairo-style pentagons, equal-area on its ellipsoid; unit-sphere
+    cell areas vary by about 1%.
   - **S2** — geodesic quadrilaterals on the cube, about a 2× area spread within
     a level.
   - **ISEA4R** — rhombi on ten icosahedral diamonds, exactly `4π/(10·4^l)`

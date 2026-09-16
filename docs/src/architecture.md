@@ -215,7 +215,7 @@ A cell-at-a-time pass over a lazy cube can decode the same storage chunk repeate
 ring crosses chunk boundaries. The chunk traversal follows the store's existing chunk grid
 and exposes the work as a plan and a runner.
 
-[`chunkplan`](@ref) returns a `MapChunkPlan`: per chunk, the axis indices it owns and the axis
+[`chunkplan`](@ref DiscreteGlobalGrids.chunkplan) returns a `MapChunkPlan`: per chunk, the axis indices it owns and the axis
 indices outside it that its cells' rings reach. Boundaries come from the data's own chunk
 grid, so an irregularly chunked store — one chunk per ancestor subtree, say — is planned on
 its real boundaries. Building a plan walks each chunk's boundary through `halo`, which is

@@ -276,7 +276,7 @@ end
     GlobalRegridding._asspace(target, name, src_space)
 
 Return the [`DGGSpace`](@ref) over the cells a regridding target names. A grid
-stands for itself; a [`CellLookup`](@ref), a [`CellVector`](@ref) and a
+stands for itself; a [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup), a [`CellVector`](@ref) and a
 [`MultiOrderCellSet`](@ref) name the [`PartialGrid`](@ref) of their cells.
 
 A bare system names no cells until a level is chosen. As a destination it takes
@@ -311,8 +311,8 @@ GR.dimsource(lk::AbstractCellLookup) = cellset(lk)
 """
     GlobalRegridding.destinationdims(space::DGGSpace, sampling)
 
-Return the single [`Cells`](@ref) dimension a result over this space carries: a
-[`CellLookup`](@ref) over the destination's own cells, in its local index order.
+Return the single [`Cells`](@ref DiscreteGlobalGrids.CellLookups.Cells) dimension a result over this space carries: a
+[`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup) over the destination's own cells, in its local index order.
 
 A cell holds one value however that value was measured, so the lookup is the
 same whichever `sampling` the method asks for. Being the space's only axis, it

@@ -129,8 +129,13 @@ fig
 # | rule | cells kept | spelling |
 # |---|---|---|
 # | `Covering` | a cell set containing the outline, possibly with an outer rim | `field[Cells(Covering(geom))]` |
-# | centre-in-zone | every cell whose centre is inside | — |
+# | centre-in-zone | every cell whose centre is inside | `boundary=:center` in raster operations |
 # | `Within` | every cell wholly inside the outline | `field[Cells(Within(geom))]` |
+
+#
+# The `Cells` predicates shown here test cell footprints. `Intersects` and
+# `Within` do not select cells by centroid containment. For that rule, use
+# `boundary=:center` with the [raster APIs](../api/raster-work.md).
 
 inside = field[DGG.Cells(DGG.Within(texas))]
 

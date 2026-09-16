@@ -26,3 +26,11 @@ a region changes local positions while preserving cell ids.
 A `Cells` dimension connects those identities to array values. Use it to
 [select data by point or region](api/selecting-cells.md), while ordinary
 integer indexing selects positions in the current array.
+
+## Choose a container
+
+A `PartialGrid` provides grid operations on a subset. A `CellVector` provides
+ordered cell identities. A `CellLookup` attaches those identities to a `Cells`
+dimension. A `MultiOrderCellSet` can store cells at different levels.
+Use the [conversion table](api/selecting-cells.md#cell-collections) to move
+between these forms without changing the association between cells and values.

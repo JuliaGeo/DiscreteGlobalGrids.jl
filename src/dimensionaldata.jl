@@ -4,17 +4,17 @@
 """
     CellLookups
 
-The DimensionalData layer: [`CellLookup`](@ref), the [`Cells`](@ref) dimension,
+The DimensionalData layer: [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup), the [`Cells`](@ref DiscreteGlobalGrids.CellLookups.Cells) dimension,
 and the [`Covering`](@ref) selector.
 
-A [`CellLookup`](@ref) is a one-dimensional `DimensionalData` lookup over cell
+A [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup) is a one-dimensional `DimensionalData` lookup over cell
 ids at a single level. It is a thin wrapper around a [`CellVector`](@ref),
 which is where the compression lives: a set of **leaf index windows** —
 sorted, disjoint intervals (or, where intervals are unavailable, a sorted list)
 of indices in `levelgrid(sys, leaf)`. Its logical content is their
 concatenation, and every operation is arithmetic over that concatenation:
 `length` sums the window lengths, `lk[k]` binary-searches the cumulative
-lengths and resolves one `cellindex`, [`localindex`](@ref) runs the inverse.
+lengths and resolves one `cellindex`, [`localindex`](@ref DiscreteGlobalGrids.localindex) runs the inverse.
 Nothing is materialised.
 
 `CellVector` provides the storage and indexing behavior; this module provides
@@ -53,11 +53,11 @@ A `DimensionalData` lookup naming cells at one level — the cube face of
 [`AbstractCellVector`](@ref). `Base.parent` returns that vector, and every cell
 verb a cube supports is defined once here and forwarded to it.
 
-Two lookups ship, one per backing: [`CellLookup`](@ref) over a computed
-[`CellVector`](@ref), and [`ChunkedCellLookup`](@ref) over a stored
-[`ChunkedCellVector`](@ref). Code that means "the cell dimension of this cube"
+Two lookups ship, one per backing: [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup) over a computed
+[`CellVector`](@ref), and [`ChunkedCellLookup`](@ref DiscreteGlobalGrids.ChunkedLookups.ChunkedCellLookup) over a stored
+[`ChunkedCellVector`](@ref DiscreteGlobalGrids.ChunkedLookups.ChunkedCellVector). Code that means "the cell dimension of this cube"
 dispatches on this type and accepts both; naming either concrete type accepts
-only cubes from one source, which is how a cube from [`dggread`](@ref) comes to
+only cubes from one source, which is how a cube from [`dggread`](@ref DiscreteGlobalGrids.dggread) comes to
 be refused by an operation that works on the identical cube built in memory.
 
 # Required interface
@@ -79,7 +79,7 @@ abstract type AbstractCellLookup{ID} <: Lookups.Lookup{ID,1} end
     CellLookup(grid::AbstractGrid)
 
 A `DimensionalData` lookup naming cells at one level. Pair it with
-[`Cells`](@ref) to make a cube axis:
+[`Cells`](@ref DiscreteGlobalGrids.CellLookups.Cells) to make a cube axis:
 
 ```julia
 set = query(sys, MultiOrderCoverage(region); level = 9)
@@ -94,7 +94,7 @@ cells, `lk[k]` is the `k`th of them, `collect(lk)` is the vector itself.
 as sorted, disjoint index windows at the leaf level ([`level_ranges`](@ref)),
 using O(number of windows) memory instead of O(number of leaf cells). Lookup
 operations delegate to the vector's methods, including `lk[k]`,
-[`localindex`](@ref), [`cellset`](@ref), [`covering`](@ref),
+[`localindex`](@ref DiscreteGlobalGrids.localindex), [`cellset`](@ref), [`covering`](@ref),
 and [`PartialGrid`](@ref).
 
 `Base.parent` returns the lookup's VALUES, as `DimensionalData` requires: the
@@ -130,7 +130,7 @@ produces carries a `CellLookup` again. Outside a cube those three are
 [`covering`](@ref)`(cv, polygon)`.
 
 `At` and `Contains` are referenced as `DD.At` and `DD.Contains`. They are not
-re-exported because this package exports DE9IM's unrelated [`Contains`](@ref)
+re-exported because this package exports DE9IM's unrelated `Contains`
 geometry predicate. [`Covering`](@ref) is exported by this package.
 
 `DD.Near` throws: cell ids ascend along a space-filling curve, so snapping to
@@ -434,7 +434,7 @@ Base.show(io::IO, ::MIME"text/plain", lk::CellLookup) = show(io, lk)
     Cells(x)
 
 The `DimensionalData` dimension of a cube's cell axis: `Cells(lk)` where `lk`
-is a [`CellLookup`](@ref), and `Cells(selector)` when indexing.
+is a [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup), and `Cells(selector)` when indexing.
 
 ```julia
 A = DimensionalData.DimArray(values, Cells(CellLookup(set)))
@@ -619,44 +619,26 @@ _checkpass(pass) = _needs_pass(pass)
                  neighborhood = Disc(1))
     mapneighbors(f, A::AbstractDimArray; needs = (Value(a), Centroid()), ...)
 
-Apply `f` to each cell and its neighbourhood. The result uses `A`'s wrapper and
-lookups. If `f` returns a concrete tuple, each component becomes an array.
+Apply a neighborhood callback along a cell dimension. The default dimension is the
+first cell lookup; `spatialdim` accepts a DimensionalData dimension selector.
+A missing or non-cell dimension raises `ArgumentError`.
+`neighborhood = Disc(k)` selects cells within `k` steps, excluding the center.
+`Ring(k)` selects cells at exactly `k` steps. The default is `Disc(1)`.
 
-`neighborhood` is [`Disc`](@ref)`(k)` or [`Ring`](@ref)`(k)` and picks the
-cells that fill the callback's ring argument; the [`CellVector`](@ref) method
-of [`mapneighbors`](@ref) describes both selectors and their cost.
+[`Neighbors`](@ref) passes handles and returns one result per cell.
+[`Values`](@ref) passes scalar values and preserves all input dimensions.
+[`NeighborSlices`](@ref) passes views across other dimensions and returns one
+result per cell; it requires at least two dimensions. Concrete tuple returns
+produce one array per component, using the input wrapper and relevant lookups.
 
-`spatialdim` accepts any selector supported by `DimensionalData.dims`, and
-`mapneighbors(f, A, dims; kw...)` is the same request spelled positionally.
-By default, the first dimension with a [`CellLookup`](@ref) is used. An
-array without one, or a selector that misses or names a non-cell dimension,
-is an `ArgumentError`.
+`needs` replaces the pass contract with `f(center, rings)` and produces one
+result per cell. Values come from its `Value` requests, not implicitly from
+`A`. Combining `needs` with a nondefault `pass` raises `ArgumentError`.
 
-`pass` controls the callback arguments and output shape:
-
-- [`Neighbors`](@ref): indexed handles; one result per cell, on the cell
-  dimension.
-- [`Values`](@ref): scalar values; the same dimensions as `A`.
-- [`NeighborSlices`](@ref): views across the other dimensions; one result per
-  cell, on the cell dimension.
-
-`needs` names the per-neighbour fields the kernel reads instead of `pass`, and
-the callback becomes `f(center, rings)` — the contract is the [`CellVector`](@ref)
-method's, and the requests are `Cell`, `Index`, `Value` and `Centroid`. Values
-reach the callback through the request's `Value` entries rather than from `A`
-itself, so an array of any dimensionality gives one result per cell, on the
-cell dimension. Any `pass` other than the default alongside `needs` is an
-`ArgumentError`.
-
-With `pass = Values()` or a `needs` request, and `order = StorageOrder()`, a
-cube whose data is chunked on disk is swept along those chunks rather than cell
-by cell — see [`chunkplan`](@ref). The result is identical either way; what
-changes is that each stored chunk is decoded once instead of once per scalar
-read, and that a request's stored `Value`s are read the same way.
-`Index(Local())` still answers this cube's cell-axis index, never a chunk's
-own. A permutation `order` names a visit order over the whole axis and a
-chunked sweep visits by chunk, so the two cannot both be honoured and the
-permutation wins.
+Stored arrays use chunked execution for `Values()` or `needs` with storage order.
+`Index(Local())` still refers to the original cell axis. A permutation order
+uses the ordinary traversal instead. See [Neighbours and stencils](@ref) for
+mode examples and [Workflow execution details](@ref) for routing details.
 """
 function mapneighbors(f::F, A::DD.AbstractDimArray; spatialdim = nothing,
         needs = nothing, pass = Neighbors(), order = StorageOrder(),
@@ -936,7 +918,7 @@ A[Cells(Covering(cap))]             # a GO.UnitSpherical.SphericalCap
 
 `target` is anything [`query`](@ref) accepts. The result is the intersection of
 the coverage's leaf expansion with the lookup, in ascending index order. The
-resulting view retains a [`CellLookup`](@ref).
+resulting view retains a [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup).
 
 Outside a cube, the equivalent selection is `covering(cv, target)`, which
 returns a
@@ -946,7 +928,7 @@ over-covering it inherits from the coverage itself.
 
 A [`query`](@ref) predicate — `Cells(Intersects(target))`,
 `Cells(Within(target))` — is the exact selection the coverage over-covers;
-see [`Cells`](@ref).
+see [`Cells`](@ref DiscreteGlobalGrids.CellLookups.Cells).
 """
 struct Covering{T} <: Lookups.ArraySelector{T}
     val::T
@@ -977,7 +959,7 @@ The predicate and target are whatever `query` accepts — the same limits apply,
 so a cap target supports `Intersects`, `Disjoint` and `Within` only. The
 result is the query's answer intersected with the lookup, in ascending index
 order; unlike [`Covering`](@ref) it is exact, not a coverage's over-cover. The
-resulting view retains a [`CellLookup`](@ref).
+resulting view retains a [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup).
 
 Outside a cube, the equivalent selection is `predicate_indices(cv, pred)`.
 """

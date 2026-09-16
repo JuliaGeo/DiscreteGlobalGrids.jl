@@ -109,7 +109,8 @@ lazy execution, and weight caching.
 | `regrid(data; to, method, ...)`, `plan_regrid(data; to, ...)` | Regrid data or prepare reusable weights. |
 
 These names are available through `DGG` in the examples. See the
-[grid interface](docs/src/api/grid-interface.md) for the full reference.
+[grid interface](docs/src/api/grid-interface.md) for cells and geometry,
+and the [regridding API](docs/src/api/regridding.md) for transfer calls and execution controls.
 
 ## How it works
 
@@ -130,7 +131,7 @@ Longitude/latitude entry points use degrees. For geodetic data, follow the
 
 ## Going further
 
-The [tutorials](https://juliageo.org/DiscreteGlobalGrids.jl/dev/tutorials/) cover regional statistics, neighborhood
+The [tutorials](https://juliageo.org/DiscreteGlobalGrids.jl/dev/) cover regional statistics, neighborhood
 operations, regridding, and Zarr storage. Store I/O requires `using Zarr`.
 To add a grid, follow [Writing a grid system](https://juliageo.org/DiscreteGlobalGrids.jl/dev/extending/) and use the
 [conformance tests](lib/DiscreteGlobalGridsConformanceTesting/README.md).

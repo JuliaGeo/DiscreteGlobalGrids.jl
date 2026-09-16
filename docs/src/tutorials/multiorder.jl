@@ -32,10 +32,19 @@ fig                                                                             
 # gives a compact regional index while retaining a controllable finest
 # resolution.
 #
-# A parent cell stands for all of its descendants at the target level when its
-# whole subtree fits the region. The coverage stores that parent, and
-# `level_ranges` can expose the represented leaves as sorted ranges when an
-# operation needs a one-level view.
+# Each stored parent represents all of its descendants at the reference level.
+# `level_ranges` exposes those leaves when the system has sorted subtrees.
+# The descendants' union equals the parent's polygon only with congruent
+# refinement, as in HEALPix, S2, and ISEA4R. IGeo7, H3, and A5 differ.
+#
+# | Mode | Meaning | Guarantee |
+# | --- | --- | --- |
+# | `level=l` | Refine boundary crossings to a fixed finest level | Expansion includes all intersecting level-l cells; equality holds with congruent refinement |
+# | `maxcells=n` | Refine within a cell budget | A seed larger than n stays over budget; full coverage is guaranteed only with congruent refinement |
+#
+# On noncongruent systems, budget results can miss target polygons and
+# intersecting reference-level cells. Displayed members and expanded leaves
+# therefore answer different geometric questions.
 
 # ## Query California as a coverage in HEALPix
 #
@@ -154,11 +163,13 @@ fig
 # rule: cells that meet California remain in the representation, so expanding
 # the coverage produces a superset around the state outline.
 
-# ## Cap the cell count with `maxcells`
+# ## Set a refinement budget with `maxcells`
 #
 # `maxcells` chooses a space budget for the representation. The query refines
 # the coarsest boundary cells first and stops when further refinement would
-# exceed that budget.
+# exceed that budget. If the initial seed already exceeds `maxcells`, the
+# result retains the seed and exceeds the budget. This HEALPix example has
+# congruent refinement; the same coverage guarantee does not hold for IGeo7, H3, or A5.
 #
 # 1. Take the coarsest cell the outline crosses.
 # 2. Replace it by the children that meet California.

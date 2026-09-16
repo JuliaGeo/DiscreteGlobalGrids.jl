@@ -4,6 +4,8 @@
 CurrentModule = DiscreteGlobalGrids
 ```
 
+For signatures, plan reuse, and execution controls, see [Regridding calls and plans](regridding.md).
+
 Choose a regridding method according to what each source value represents:
 an average over a cell, a sample at a point, or a value to copy from the
 containing cell. Pass the method with `regrid(...; method = ...)`.

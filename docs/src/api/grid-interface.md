@@ -12,13 +12,30 @@ levels. An [`AbstractGrid`](@ref) is a finite collection of cells; an
 A bare `Int` addresses a local position in `1:ncells(grid)`. An
 [`AbstractCellIndex`](@ref) identifies a cell and carries its level. Keep
 that distinction when working with subsets, where local positions change.
+[Grids and cell indices](../abstractions.md) introduces these concepts.
 The [architecture guide](../architecture.md) explains the design.
 
 ## What a grid answers
 
-Four of these are the whole implementor's contract — [`ncells`](@ref),
-[`cellindex`](@ref), [`cell_boundary`](@ref) and [`cell_centroid`](@ref) — and
-the rest have working defaults built on them.
+Locate a cell with longitude and latitude in degrees. Geometry methods return
+unit-sphere points, and `cell_area` returns steradians. Convert a point to
+geographic coordinates when the next consumer expects longitude and latitude:
+
+```@example grid-basics
+import DiscreteGlobalGrids as DGG
+import GeometryOps as GO
+sys = DGG.HEALPixSystem()
+grid = DGG.levelgrid(sys, 2)
+cell = DGG.cellat(grid, 8.5, 47.4)
+togeographic = GO.GeographicFromUnitSphere()
+centroid_lonlat = togeographic(DGG.cell_centroid(grid, cell))
+boundary_lonlat = togeographic.(DGG.cell_boundary(grid, cell))
+(; centroid_lonlat, boundary_points=length(boundary_lonlat))
+```
+
+The converted pairs are `(longitude, latitude)` in degrees, with longitude
+in `[-180, 180]`. Coordinate conversion does not change the latitude frame;
+see [Choosing a grid](../tutorials/choosing_a_grid.md) for authalic and geodetic data.
 
 ```@docs
 ncells
@@ -37,6 +54,8 @@ level
 
 `cellsize` measures a typical cell width in metres. `levelfor` finds the
 closest available level for a requested width or another dataset's resolution.
+Its `over` keyword restricts candidate grid sampling only; target dataset size
+is still measured over its full extent.
 
 ```@docs
 cellsize
@@ -44,6 +63,31 @@ levelfor
 ```
 
 ## The hierarchy
+
+Larger level numbers mean finer cells. Choose the output needed by your task:
+
+| Operation | Result |
+| --- | --- |
+| `parent(sys, cell)` / `children(sys, cell)` | Immediate coarser / finer relatives |
+| `ancestor(sys, cell, l)` | One ancestor at `l <= level(cell)` |
+| `descendants(sys, cell, l)` | All descendants at `l >= level(cell)` |
+| `descendant_range(sys, cell, l)` | Their complete-level positions, only with sorted subtrees |
+| `subtree(sys, cell, l)` | A regional grid holding those descendants |
+
+```@example grid-basics
+coarse = parent(sys, cell)
+leaves = DGG.descendants(sys, coarse, 3)
+positions = DGG.descendant_range(sys, coarse, 3)
+regional = DGG.subtree(sys, coarse, 3)
+@assert length(leaves) == length(positions) == DGG.ncells(regional)
+(; parent_level=DGG.level(coarse), fine_cells=length(leaves))
+```
+
+`descendant_range` requires `has_sorted_subtrees(sys)`. A5 does not provide
+that property. Hierarchical descendants need not geometrically tile their
+parent; that stronger property is `has_congruent_refinement(sys)`.
+See [Region boundaries](boundaries.md) to compute on a subtree region.
+
 
 ```@docs
 levels
@@ -58,15 +102,13 @@ descendant_range
 
 ## Trees over a grid
 
-[`treeify`](@ref) exposes a grid as a spatial tree for queries and regridding.
+[`treeify`](@ref ConservativeRegridding.Trees.treeify) exposes a grid as a spatial tree for queries and regridding.
 Hierarchical grids can use their existing parent/child structure and compute
 node geometry as the traversal needs it.
 
 ```@docs
 treeify
 getcell
-DiscreteGlobalGrids.Engine.node_cell
-DiscreteGlobalGrids.Engine.node_indices
 ```
 
 ## Identifiers
@@ -107,38 +149,8 @@ AbstractQuadFaceGridSystem
 AbstractCellIndex
 ```
 
-## System capabilities
-
-These declarations let generic algorithms use a system's hierarchy, cell
-ordering and point-location methods efficiently.
-
-```@docs
-has_sorted_subtrees
-has_congruent_refinement
-has_direct_location
-node_extent
-```
-
-## Geometry and traversal helpers
-
-These helpers support grid implementations: coordinate transforms, boundary
-rings, spatial bounds and traversal engines.
-
-```@docs
-DiscreteGlobalGrids.one_ring
-DiscreteGlobalGrids.cap_inflation
-DiscreteGlobalGrids.authalic_sphere
-DiscreteGlobalGrids.Fallbacks.authalic_stretch
-DiscreteGlobalGrids.Fallbacks.authalic_shift
-DiscreteGlobalGrids.Helpers.AuthalicTransform
-DiscreteGlobalGrids.Helpers.authalic_radius
-DiscreteGlobalGrids.Helpers.EllipsoidShapeError
-DiscreteGlobalGrids.Fallbacks.closed_ring
-DiscreteGlobalGrids.border_engine
-DiscreteGlobalGrids.lattice_decode
-Trees.AbstractCurvilinearGrid
-Trees.cell_range_extent
-```
+Implementation traits and traversal helpers are in the
+[Grid extension reference](../internals/grid-contracts.md).
 
 ## Index
 

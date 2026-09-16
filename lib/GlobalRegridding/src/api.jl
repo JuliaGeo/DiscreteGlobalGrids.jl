@@ -40,39 +40,39 @@ source space's cell order. Non-spatial dimensions retain their order. One plan
 is reused for all non-spatial slices.
 
 A dimensional source comes back labelled with the destination's own axes — a
-[`RasterGrid`](@ref) echoes the dimension order it was constructed with —
+`RasterGrid` echoes the dimension order it was constructed with —
 followed by its unchanged non-spatial dimensions. Destinations without axes of
 their own keep a flat `Cell` axis. Lazy results carry the same labels and
 shape over a disk-backed array.
 
 Results are floating point. [`Weighted`](@ref) blanks uncovered destination
-cells with the source's own nodata sentinel ([`outputmissingval`](@ref)): a
+cells with the source's own nodata sentinel (`outputmissingval`): a
 `Rasters.AbstractRaster` comes back as a raster declaring the `missingval` it
 was handed, and every other array takes `missing` when its element type holds
 it and `NaN` otherwise.
 
 # Keyword arguments
 
-  - `to`: destination [`RegridSpace`](@ref), a dimensional raster or tuple of
-    dimensions naming a [`RasterGrid`](@ref), or a package-specific target.
+  - `to`: destination `RegridSpace`, a dimensional raster or tuple of
+    dimensions naming a `RasterGrid`, or a package-specific target.
   - `from`: source space, spelled any of those ways; `nothing` derives a
-    [`RasterGrid`](@ref) from `data`.
+    `RasterGrid` from `data`.
   - `method`: weight-building method; defaults to [`Conservative`](@ref).
   - `missingpolicy`: [`Weighted`](@ref) means or [`Extensive`](@ref) sums.
   - `missingval`: the nodata sentinel of the regrid — invalid in the source, and
     written into blanked destination cells. Left out, the source's comes from
-    [`sourcemissingval`](@ref)`(data)` and the destination's from
-    [`outputmissingval`](@ref)`(data)`, a raster's own `missingval`. `missing`
+    `sourcemissingval(data)` and the destination's from
+    `outputmissingval(data)`, a raster's own `missingval`. `missing`
     and `NaN` are always invalid whatever it is. Give it a value the destination
     element type holds and the result stays concrete: `missingval = NaN` regrids
     a `Union{Missing,Float64}` raster into a `Float64` one.
-  - `lazy`: compute on demand ([`LazyRegridArray`](@ref)); defaults to chunked sources.
+  - `lazy`: compute on demand (`LazyRegridArray`); defaults to chunked sources.
   - `chunks`: lazy destination tiling. `nothing` derives it automatically.
   - `budget`: target bytes for lazy reads and weights, default `2^31`.
   - `storage`: lazy weight storage, [`PerChunk`](@ref) or [`Spilled`](@ref).
   - `sampling`: destination lookup sampling. `nothing` follows the method —
     area-based methods give `Intervals`, point samples give `Points`
-    ([`outputsampling`](@ref)).
+    (`outputsampling`).
 
 `chunks`, `budget` and `storage` apply only to `lazy = true`, and `sampling`
 only to `lazy = false`. The plan form takes `missingval` alone: a plan settles
@@ -138,7 +138,7 @@ followed by `data`'s non-spatial dimensions; either leading shape is accepted.
 Keywords match [`regrid`](@ref) and are forwarded to [`plan_regrid`](@ref).
 
 `dest` declares the destination's nodata convention here, so `missingval`
-defaults to [`destinationmissingval`](@ref)`(dest)` — its own `missingval` for a
+defaults to `destinationmissingval(dest)` — its own `missingval` for a
 `Rasters.AbstractRaster`, and `missing` or NaN for a plain array. Passing one
 names the sentinel on both sides, as it does for [`regrid`](@ref), and it must
 be a value `eltype(dest)` holds.
@@ -183,7 +183,7 @@ regrid!(dest, data, plan::AbstractRegriddingPlan;
 Build a reusable regridding plan without reading source values. `missingval` is
 the source sentinel alone here — a plan reads data and never writes it, so the
 destination's sentinel belongs to [`regrid`](@ref). In-memory data uses one
-whole-domain [`DirectPlan`](@ref). Lazy plans build blocks on demand
+whole-domain `DirectPlan`. Lazy plans build blocks on demand
 and default to a budget-limited [`PerChunk`](@ref) cache. Use `PerChunk()` for
 an unlimited cache or `Spilled(dir)` for disk storage. Keywords match
 [`regrid`](@ref); `chunks`, `budget`, `storage`, `dependencies`, `refine` and
@@ -194,20 +194,20 @@ an unlimited cache or `Spilled(dir)` for disk storage. Keywords match
 A lazy plan is the sole owner of its chunk dependency relation, and this is the
 only place a narrow phase may be supplied. `dependencies` chooses whether the
 plan builds one (`nothing`, the default, or `true`), adopts and validates one
-somebody else built (a [`ChunkDependencyGraph`](@ref)), or holds none (`false`).
+somebody else built (a `ChunkDependencyGraph`), or holds none (`false`).
 Every lazy read needs one — for tile order, wave costing, refcounts and
 prefetch, and on the chunk-pair route for the source chunks themselves — so a
-plan that holds none cannot back a [`LazyRegridArray`](@ref). `refine` is the
+plan that holds none cannot back a `LazyRegridArray`. `refine` is the
 conservative narrow phase to apply while building, `refine(dstchunk, srcchunk)
 -> Bool`, and `narrow` the `Symbol` that names it in the relation's identity. A
 `refine` must only ever reject pairs it can *prove* disconnected; a wrong one
-silently corrupts results. [`dependencies`](@ref) documents each branch.
+silently corrupts results. `dependencies` documents each branch.
 
-[`dependencies`](@ref)`(plan)` reads the relation back and builds nothing. It is
+`dependencies(plan)` reads the relation back and builds nothing. It is
 deliberately impossible to narrow, replace or rebuild a plan's relation once the
 plan exists: [`regrid`](@ref) and [`regrid!`](@ref) forward every other keyword
 here but refuse `dependencies`, `refine` and `narrow`, and
-[`chunk_dependency_graph`](@ref) has no `plan` method. A caller that wants a
+`chunk_dependency_graph` has no `plan` method. A caller that wants a
 different relation makes a different plan.
 """
 function plan_regrid(data; to, from = nothing,

@@ -2,7 +2,8 @@
 #
 # This tutorial shows how to persist a cell-indexed cube, reopen it lazily, and
 # select only the stored cells needed for a region. It also compares the two
-# cell-id encodings available to a DGGS store.
+# cell-id encodings applicable to this regional axis. Complete levels can also
+# use implicit encoding; see [Store IO](../api/store-io.md).
 #
 # `dggwrite` and `dggread` are provided by the Zarr.jl extension, loaded by
 # `using Zarr`.
@@ -152,6 +153,7 @@ size(Zarr.zopen(ranks)["cell_id_ranges"], 2)
 # ## Reading a store by URL
 #
 # `dggread` also opens a public `gs://`, `s3://` or `https://` store in place.
+# An `s3://` URL additionally requires `using AWSS3` to activate Zarr's S3 support.
 # A selection then fetches the chunks it needs. For example:
 #
 # ```julia

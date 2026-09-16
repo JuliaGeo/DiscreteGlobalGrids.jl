@@ -12,7 +12,7 @@
     AbstractNeed
 
 One per-neighbour quantity a neighbourhood sweep streams: [`Cell`](@ref),
-[`Index`](@ref DiscreteGlobalGrids.Index), [`Value`](@ref) or
+[`Index`](@ref DiscreteGlobalGrids.Engine.Index), [`Value`](@ref) or
 [`Centroid`](@ref).
 
 A tuple of these is the `needs` keyword of [`mapneighbors`](@ref) and
@@ -28,7 +28,7 @@ abstract type AbstractNeed end
 
 Request each neighbour's cell identity, in the system's canonical id scheme.
 The ring's element type is the collection's own (`eltype(cv)`), and the
-center entry is the visited cell. Use [`Index`](@ref DiscreteGlobalGrids.Index)
+center entry is the visited cell. Use [`Index`](@ref DiscreteGlobalGrids.Engine.Index)
 to ask for the same cell in another scheme.
 """
 struct Cell <: AbstractNeed end
@@ -38,7 +38,7 @@ struct Cell <: AbstractNeed end
 
 The index space of the collection the sweep was called on: `1:length(cv)`,
 the same numbers `localindex` answers with. An argument of
-[`Index`](@ref DiscreteGlobalGrids.Index).
+[`Index`](@ref DiscreteGlobalGrids.Engine.Index).
 """
 struct Local end
 
@@ -47,7 +47,7 @@ struct Local end
 
 The index space of the complete grid at the collection's level: the numbers
 `globalindex` answers with. An argument of
-[`Index`](@ref DiscreteGlobalGrids.Index).
+[`Index`](@ref DiscreteGlobalGrids.Engine.Index).
 """
 struct Global end
 

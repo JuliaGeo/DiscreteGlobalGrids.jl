@@ -16,11 +16,11 @@ collection.
 
 `==`, `hash` and `convert(::Type{C})` delegate to the cell, so a handle
 compares and hashes as its cell; `show` prints the wrapper and the index
-as well. [`localindex`](@ref)`(h)` returns the stored index.
+as well. [`localindex`](@ref DiscreteGlobalGrids.localindex)`(h)` returns the stored index.
 
 The read-only cell verbs — [`cell_boundary`](@ref), [`cell_centroid`](@ref),
 [`cell_polygon`](@ref), [`cell_area`](@ref), [`cell_extent`](@ref),
-[`node_extent`](@ref), [`localindex`](@ref), [`globalindex`](@ref),
+[`node_extent`](@ref), [`localindex`](@ref DiscreteGlobalGrids.localindex), [`globalindex`](@ref DiscreteGlobalGrids.globalindex),
 [`neighbors`](@ref), [`ring`](@ref), [`neighborcount`](@ref),
 [`reindex`](@ref), [`level`](@ref) and [`rawid`](@ref) — accept a handle
 wherever they accept a cell, and answer for the cell.
@@ -493,44 +493,27 @@ _checknodata(needs) = _needs_and_data()
     mapneighbors(f, cv, data::AbstractVector; ...)
     mapneighbors(f, cv; needs = (Value(data), Centroid()), ...)
 
-Apply `f` to each cell and its clipped one-ring. `cv` may be a
-[`CellVector`](@ref), [`PartialGrid`](@ref), or [`CellLookup`](@ref).
+Apply `f` to each cell and its clipped one-ring. `cv` accepts a [`CellVector`](@ref),
+[`PartialGrid`](@ref), or [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup). Wider-radius sweeps are not supported.
 
-Without `data`, `f(cell, nbrs)` receives the same indexed handles yielded
-by the one-argument [`neighbors`](@ref) iterator. With a vector laid out
-against the subset, `f(cell, value, values)` receives the cell value and its
-neighbour values in the counter-clockwise order [`neighbors`](@ref) states, so
-slot `j` of the callback's ring names a direction.
+- Without data, `f(cell, neighbors)` receives indexed cell handles.
+- With a same-order vector, `f(cell, value, neighbor_values)` receives values.
+- With `needs`, `f(center, rings)` receives one center entry and one neighbor
+  sequence per requested field. `rings[j][i]` is field `j` for neighbor `i`.
+  A positional data vector cannot be combined with `needs`.
 
-`needs` names the per-neighbour fields the kernel reads — a tuple of `Cell`,
-`Index`, `Value` and `Centroid` requests — and the callback becomes
-`f(center, rings)`: one entry per need for the visited cell, and one ring per
-need for its clipped neighbours. The rings are field-major, `rings[j]` being
-need `j`'s value for every neighbour, with slot `i` of every ring naming the
-same neighbour; a caller who wants one record per neighbour writes
-`zip(rings...)`. `Index(Local())` is the index in the collection passed here,
-and it stays that index however the sweep is run: [`mapneighbors!`](@ref)
-answers the same request chunk by chunk and translates each chunk's own
-numbering back to this collection's, so its result is this one's cell for
-cell. `Centroid()` is answered from a bounded working set kept per task and
-keyed by the local index, so a centroid several neighbourhoods name is
-computed once wherever the visit order keeps them close in that index — the
-default storage order does,
-and a random permutation `order` does not. A field request and a positional
-`data` vector are exclusive.
+Results follow collection index order. A concrete tuple return produces one
+output vector per component. Neighbor order follows [`neighbors`](@ref);
+clipping preserves order but does not preserve missing directional slots.
 
-Results are stored in subset index order. A concrete tuple result produces
-a tuple of vectors, one per component. `order` accepts [`StorageOrder`](@ref)
-or a permutation of `1:length(cv)`; invalid permutations throw
-`ArgumentError`.
+`order` is [`StorageOrder`](@ref) or a permutation of local positions.
+Invalid permutations raise `ArgumentError`. Threaded callbacks must be
+order-independent. A callback failure raises [`NeighborCallbackError`](@ref)
+with the cell and index. [`foreachneighbors`](@ref) discards return values and
+defaults to serial execution.
 
-When `threaded` is true, contiguous ranges run in separate tasks and write to
-disjoint output indices — legal exactly when `f` is order-independent, and
-the results are then identical to the sequential ones. A callback that throws
-there raises one [`NeighborCallbackError`](@ref) naming the cell and index
-it failed at, not one exception per task.
-[`foreachneighbors`](@ref) provides the side-effecting form and defaults to
-sequential execution.
+See [Requesting neighbour fields](@ref) for field requests and
+[Workflow execution details](@ref) for caching and scheduling contracts.
 """
 function mapneighbors(f::F, cv::CellVector; needs = nothing,
         order = StorageOrder(), threaded = true,

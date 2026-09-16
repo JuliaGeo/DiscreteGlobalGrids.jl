@@ -232,7 +232,7 @@ Cache weight blocks, evicting least-recently-used entries when `capacity` or
 
   - A chunk pair is keyed by `(destination chunk, source chunk)`; a point method
     whose build unit is a destination tile is keyed by tile number instead,
-    through [`gettile!`](@ref).
+    through `gettile!`.
   - The newest entry is retained. Tiles and chunk pairs share the recency clock,
     the entry count and the byte budget, and evict each other by recency alone.
   - Builds run outside the lock. Duplicate concurrent builds of a pair keep the

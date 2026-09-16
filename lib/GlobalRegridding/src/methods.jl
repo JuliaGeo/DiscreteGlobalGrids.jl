@@ -25,7 +25,7 @@ struct Conservative <: AbstractRegriddingMethod end
 
 Give weight 1 to the source cell containing each destination centroid.
 
-Requires [`cellcentroid`](@ref) of the destination space and [`cellat`](@ref)
+Requires `cellcentroid` of the destination space and [`cellat`](@ref)
 of the source space. A destination centroid outside the source's coverage emits
 no entry at all; the missing policy decides what that destination cell becomes.
 
@@ -44,7 +44,7 @@ Interpolate between source sample sites at each destination sample site.
     triangle are that triangle's barycentric coordinates.
   - Weights are nonnegative and sum to one, so the result lies between the
     source values it came from. Integrals are not preserved.
-  - Requires [`cellcentroid`](@ref) of the destination space and a source space
+  - Requires `cellcentroid` of the destination space and a source space
     that answers point queries; a destination outside the source's dual complex
     emits no entry at all and the missing policy decides what it becomes.
   - `poles` is the policy where a source's own sample sites stop short of a

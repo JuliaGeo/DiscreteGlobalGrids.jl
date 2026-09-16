@@ -16,8 +16,8 @@ pads the shorter columns to fit Zarr's uniform chunks, and the reader removes
 that padding from the cell axis.
 
 Write it with `dggwrite(dest, cube; layout = :subzones, ancestor_level = k)` or
-incrementally through [`subzonestore`](@ref) and [`dggwrite!`](@ref). Read it
-with [`dggread`](@ref), which returns a `Cells` dimension over a lazy
+incrementally through [`subzonestore`](@ref) and [`dggwrite!`](@ref DiscreteGlobalGrids.dggwrite!). Read it
+with [`dggread`](@ref DiscreteGlobalGrids.dggread), which returns a `Cells` dimension over a lazy
 `DiskArrays` view, drops pentagon padding, and publishes subtree chunk
 boundaries.
 

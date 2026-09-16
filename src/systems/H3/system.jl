@@ -209,7 +209,7 @@ Every descendant at resolution `l`, in ascending id order. `cellToChildren`
 handles any depth in one call.
 
 O(subtree) and materialising, as the contract says — reach for
-[`descendant_range`](@ref) instead wherever indices will do.
+[`descendant_range`](@ref DiscreteGlobalGrids.descendant_range) instead wherever indices will do.
 """
 function descendants(::H3System, c::H3Cell, l::Integer)
     target = Int(l)

@@ -27,7 +27,7 @@ Ten describe the system:
 | `levels(sys)` | a `UnitRange`, coarsest level first |
 | `ncells(sys, l)` | how many cells level `l` has |
 | [`cellindex`](@ref)`(sys, l, i)` | dense index → id |
-| [`globalindex`](@ref)`(sys, c)` | id → dense index, or `nothing` for a cell outside the level |
+| [`globalindex`](@ref DiscreteGlobalGrids.globalindex)`(sys, c)` | id → dense index, or `nothing` for a cell outside the level |
 | `cell_boundary(sys, c)` | the cell's ring, closed and counter-clockwise, as unit-sphere points |
 | `cell_centroid(sys, c)` | a point strictly inside the cell |
 | `rootcells(sys)` | the coarsest level's cells, ascending |
@@ -185,7 +185,7 @@ hierarchy; every descendant's boundary lies inside every ancestor's extent.
 
 **That what the system declares about itself is true.** `levels` ends where
 `maxlevel` says it does; `cap_inflation` is at least 1; a system declaring
-[`has_sorted_subtrees`](@ref) answers [`descendant_range`](@ref); a declared
+[`has_sorted_subtrees`](@ref) answers [`descendant_range`](@ref DiscreteGlobalGrids.descendant_range); a declared
 [`maxneighbors`](@ref) is a real ceiling; a declared `winding` matches the order
 the boundaries actually run in.
 
@@ -452,7 +452,7 @@ Four groups are still generic on this system, roughly in order of payoff:
     neighbourhood family use stack-allocated containers; the polar row's large
     neighbourhood is the bound this lattice would have to declare, so a small
     interior-cell bound is out of reach.
-  - **[`descendant_range`](@ref) with `has_sorted_subtrees(sys) = true`** — a
+  - **[`descendant_range`](@ref DiscreteGlobalGrids.descendant_range) with `has_sorted_subtrees(sys) = true`** — a
     range test for subtree membership, which the halo and grow engines use in
     place of scanning a level. Row-major order scatters a subtree across rows;
     a Morton or Hilbert index would make it contiguous, so this system keeps
@@ -463,3 +463,11 @@ Four groups are still generic on this system, roughly in order of payoff:
     replacing a walk up `parent` or down `children`.
 
 Re-run both suites after each: the skips turn into checks, as `cellat` did.
+
+## Further contracts
+
+The [Grid extension reference](internals/grid-contracts.md) collects traits,
+coordinate helpers, and tree hooks. [Collection and traversal contracts](internals/collection-contracts.md)
+records compressed-storage costs and subtree bounds. [System capabilities and
+traversal costs](internals/system-capabilities.md) describes shipped optimizations
+and their limits. These contracts supplement the user-facing API reference.

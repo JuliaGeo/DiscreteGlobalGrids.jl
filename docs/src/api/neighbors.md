@@ -74,9 +74,44 @@ haloindices
 
 ## Compute with neighbourhoods
 
-`mapneighbors` applies a kernel to each cell and collects the results.
+`mapneighbors` applies a one-ring kernel to each cell and collects the results.
 `mapneighbors!` writes into an existing destination, and `foreachneighbors`
 runs a callback without collecting its return values.
+
+All three sweeps currently supply one-ring neighbors. They do not accept a
+radius-k or exact-ring selector. A wider chunk halo does not change that limit.
+Repeated one-ring passes perform diffusion, not one radius-k convolution.
+
+For a dimensional array, choose the callback shape with `pass`:
+
+| Mode | Callback | Use it when |
+| --- | --- | --- |
+| `Neighbors()` | `f(cell, neighbors)` with indexed cell handles | The callback needs cell identity or controls data access |
+| `Values()` | `f(cell, value, neighbors)` with values at one non-spatial position | Each time or band slice needs the same scalar kernel |
+| `NeighborSlices()` | `f(cell, center_slice, neighbor_slices)` | One call needs each cell's whole time series or other non-spatial slice |
+
+`Values()` preserves the input dimensions and visits each non-spatial position.
+`NeighborSlices()` makes one call per cell and collects one return value per cell.
+See its reference below for the exact slice and output contracts.
+
+```@example neighbor-modes
+import DiscreteGlobalGrids as DGG
+import DimensionalData as DD
+
+grid = DGG.levelgrid(DGG.HEALPixSystem(), 1)
+lookup = DGG.CellLookup(grid)
+values = [Float64(t + c) for t in 1:3, c in 1:length(lookup)]
+cube = DD.DimArray(values, (DD.Dim{:time}(1:3), DGG.Cells(lookup)))
+
+per_time = DGG.mapneighbors((c, x, ns) -> x + sum(ns), cube;
+    pass=DGG.Values(), threaded=false)
+per_cell = DGG.mapneighbors((c, xs, ns) -> sum(xs) + sum(sum, ns), cube;
+    pass=DGG.NeighborSlices(), threaded=false)
+@assert size(per_time) == size(cube)
+@assert size(per_cell) == (length(lookup),)
+@assert parent(per_cell) ≈ vec(sum(parent(per_time); dims=1))
+(; per_time=size(per_time), per_cell=size(per_cell))
+```
 
 Use `pass = Values()` to receive the centre value and neighbouring values.
 For kernels that also need geometry, indices or multiple variables, see
@@ -89,6 +124,9 @@ mapneighbors!
 foreachneighbors
 Values
 Neighbors
+NeighborSlices
+DiscreteGlobalGrids.StorageOrder
+DiscreteGlobalGrids.NeighborCallbackError
 ```
 
 ## Neighbours across levels

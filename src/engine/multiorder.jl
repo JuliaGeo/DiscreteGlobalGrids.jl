@@ -5,45 +5,22 @@
 """
     MultiOrderCoverage(target)
 
-A multi-order coverage query for [`query`](@ref), bounded by a maximum depth or
-by a cell budget.
+Request cells at several levels through [`query`](@ref). `target` accepts a
+GeoInterface geometry, a longitude/latitude extent in degrees, or a spherical cap.
+Supply exactly one mode to `query`:
 
-```julia
-set = query(sys, MultiOrderCoverage(polygon); level = 8)      # accuracy first
-set = query(sys, MultiOrderCoverage(polygon); maxcells = 10)  # cardinality first
-```
+- `level=l`: refine boundary crossings to level `l`. Expanding the result at
+  that level includes every intersecting cell. With congruent refinement, the
+  expansion equals the fixed-level intersection result.
+- `maxcells=n`: refine within a cell budget, optionally limited by `maxlevel`.
+  If the initial seed exceeds `n`, it is returned over budget. On noncongruent
+  systems, this mode does not guarantee full polygon or reference-level coverage.
 
-`target` accepts a GeoInterface geometry, lon/lat `Extents.Extent`, or
-`GO.UnitSpherical.SphericalCap`.
-
-# The two modes
-
-`level` is accuracy first: refine every boundary crossing down to `level`, and
-the cardinality is whatever the outline needs. `maxcells` is cardinality
-first: crossing cells refine coarsest first, a cell whose replacement would
-not fit is kept whole, and the depth is whatever the budget bought. A `level`
-set is the exact answer at a fixed depth, a `maxcells` set the best a fixed
-cardinality can say. The keywords are mutually exclusive; [`query`](@ref)
-documents both modes, their edge cases and their guarantees.
-
-[`iscontained`](@ref) reports which emissions were *proven* to fit;
-[`coarsest_contained`](@ref) is the accessor that uses it.
-
-!!! warning "Coverage is a statement about the leaves, not about the drawn cells"
-    The guarantee is at the deepest level: every cell there that meets the
-    target is a member of the set or a descendant of one, and no member
-    descends from another. [`level_ranges`](@ref) therefore contains the
-    single-level `Intersects` query, and equals it where refinement is
-    congruent.
-
-    The union of the emitted polygons is not that region. Replacing a subtree
-    by its root swaps the subtree's footprint for the root's, and the two
-    agree only under congruent refinement (HEALPix, S2, ISEA4R) — the bounds
-    [`query`](@ref) states and its suite asserts. Draw a set as *which cells
-    were chosen*; expand it before computing with it as a region. The same
-    non-congruence runs the other way: a member's descendants may lie outside
-    the target — inside a hole, for instance — so the expansion over-covers
-    exactly where the refinement does.
+HEALPix, S2, and ISEA4R have congruent refinement. IGeo7, H3, and A5 do not:
+a parent's polygon can differ from the union of its descendants.
+Use [`iscontained`](@ref) for proven containment and [`level_ranges`](@ref)
+for represented leaves where sorted subtrees are available.
+See [Multi-order coverage](@ref) for the mode comparison and examples.
 """
 struct MultiOrderCoverage{T}
     target::T
@@ -70,7 +47,8 @@ without the caller resolving a level grid per cell.
 The REFERENCE LEVEL is the depth the set speaks about — the `level` the query
 was given, or in `maxcells` mode the deepest level the budget reached. It is
 the default expansion level for [`level_ranges`](@ref), [`cellindices`](@ref)
-and `CellLookup`, and the level the covering guarantee is stated at.
+and `CellLookup`. Coverage at that level depends on the query mode and
+refinement traits; see [`MultiOrderCoverage`](@ref).
 
 !!! note "Expansion needs sorted subtrees"
     `level_ranges` throws where [`has_sorted_subtrees`](@ref) is `false` (A5),
@@ -90,7 +68,7 @@ end
     MultiOrderCellSet(sys, coverage::MultiOrderCoverage; maxcells, maxlevel = deepest)
 
 Run a [`MultiOrderCoverage`](@ref) against `sys`, recursing no deeper than
-`level`, or refining until `maxcells` cells are spent. Equivalent to
+`level`, or refining within `maxcells` (subject to the seed exception). Equivalent to
 `query(sys, coverage; ...)`, which documents both modes.
 """
 MultiOrderCellSet(sys::AbstractHierarchicalGridSystem, coverage::MultiOrderCoverage;
@@ -102,79 +80,30 @@ MultiOrderCellSet(sys::AbstractHierarchicalGridSystem, coverage::MultiOrderCover
     query(sys, coverage::MultiOrderCoverage; level) -> MultiOrderCellSet
     query(sys, coverage::MultiOrderCoverage; maxcells, maxlevel = deepest) -> MultiOrderCellSet
 
-The multi-order form of [`query`](@ref): the coarsest cells covering the target.
-The two keywords are the two modes of [`MultiOrderCoverage`](@ref), and exactly
-one of them must be given.
+Return a mixed-level representation of the target. Supply exactly one of
+`level` and `maxcells`; invalid combinations raise `ArgumentError`.
 
-`level` is ACCURACY FIRST: refine everything the target's boundary crosses down
-to `level`, and let the cell count fall where it may.
+`level` fixes the finest level. Its expanded membership includes every
+intersecting cell at that level and equals that set on congruent systems.
+The emitted polygons need not cover the same region as their descendants.
 
-```julia
-set = query(sys, MultiOrderCoverage(california); level = 7)   # thousands of cells
-```
+`maxcells` is a refinement budget, not an unconditional maximum. The initial
+coarsest-cell seed is returned whole if it already exceeds the budget.
+Otherwise `length(result) <= maxcells`. `maxcells < 1` raises `ArgumentError`.
+Set `maxlevel` with this mode to limit depth, especially for small targets.
 
-`maxcells` is CARDINALITY FIRST: refine the crossing cells coarsest first,
-keeping whole any cell whose replacement would not fit.
+On HEALPix, S2, and ISEA4R, the budget result covers the target and represents
+all intersecting leaves at its reference level. IGeo7, H3, and A5 have no such
+budget-mode guarantee: both polygon and leaf coverage can miss part of the target.
+Increasing a budget does not turn empirical error measurements into a contract.
 
-```julia
-set = query(sys, MultiOrderCoverage(california); maxcells = 10)   # ten cells
-```
+The reference level is the requested `level`, or the deepest level reached in
+budget mode. It is the default for expansion and `CellLookup` construction.
+[`level_ranges`](@ref) requires sorted subtrees; A5 does not support that operation.
+[`cell_polygons`](@ref) displays chosen members, and [`iscontained`](@ref)
+reports cells proven to fit inside the target.
 
-`maxlevel` bounds how deep the budget may descend, and defaults to the system's
-deepest level, so that the budget alone decides. It is worth setting on a target
-much smaller than a root cell, where refinement replaces one crossing cell by one
-crossing cell for level after level and the budget never binds.
-
-# Edge cases, all of them by design
-
-  - Giving both keywords, or neither, is an `ArgumentError`: they are modes, not
-    a bound and a hint. `maxlevel` belongs with `maxcells`; in `level` mode the
-    level IS the bound.
-  - `maxcells < 1` is an `ArgumentError`. A covering of a target the system
-    meets at all needs at least one cell.
-  - **A seed larger than the budget is returned whole**, over budget, rather
-    than throwing. The seed is the set of coarsest cells that meet the target,
-    and it is the smallest covering this traversal can express; there is nothing
-    to refine away. A target spanning most of the sphere with `maxcells = 3`
-    lands here. `length(set) <= maxcells` holds in every other case.
-  - A target smaller than one cell of the seed comes back as that one crossing
-    cell when the budget is 1, and as a chain of single crossing cells descending
-    towards it as the budget grows.
-
-# What "cover" means here, and where it is exact
-
-Every point of the target lies inside one of the emitted cells. The seed is
-the coarsest cells meeting the target; refinement replaces a crossing cell by
-its meeting children, descending through missing cells as `level` mode does. A
-crossing cell with no meeting child is dropped for the cells that cover its
-share, and its reserved slot pays for what the walk still owes: cells found
-and not afforded, or the cell itself kept whole where its share was never
-certified.
-
-Two statements, both EXACT at every budget where four children tile their
-parent (HEALPix, S2, ISEA4R), and measured elsewhere on a state-sized outline
-as the fraction of the target missed:
-
-| statement                                                | IGEO7 | authalic | H3  | A5  |
-|:---------------------------------------------------------|------:|---------:|----:|----:|
-| union — the target lies in the emitted polygons          | 2%    | 3%       | 15% | 30% |
-| leaf — every reference-level cell meeting the target is a member or descends from one | 1% | 2% | 2% | 18% |
-
-Where the leaf statement is inexact the budget has no fixed depth to carry the
-overhang descent to: where it stops paying, the search goes on only for the
-dropped cells whose share is still unproven. The suite asserts both bounds per
-system, at three budgets and on four targets.
-
-What a budget does NOT buy is a tight picture of the target: at ten cells the
-set over-covers California by a wide margin, and [`iscontained`](@ref) says so.
-
-# Composition
-
-A budget set is a `MultiOrderCellSet` like any other. It sorts in curve order,
-answers [`coarsest_contained`](@ref), [`cell_polygons`](@ref) and
-[`level_ranges`](@ref), and backs a `CellLookup` at its own reference level or
-at any deeper one — so ten cells chosen for the picture can still name every
-leaf under them for the data.
+See [Multi-order coverage](@ref) for a worked comparison of the two modes.
 """
 query(sys::AbstractHierarchicalGridSystem, coverage::MultiOrderCoverage;
     level::Union{Integer,Nothing}=nothing, maxcells::Union{Integer,Nothing}=nothing,

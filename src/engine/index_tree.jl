@@ -12,7 +12,7 @@ const INDEX_TREE_ARITY = 4
     IndexTree(grid)
 
 A spatial tree over grid indices, built from cell caps in `O(ncells)` time and
-memory. [`treeify`](@ref) uses it only for grids without a hierarchy.
+memory. [`treeify`](@ref ConservativeRegridding.Trees.treeify) uses it only for grids without a hierarchy.
 
 Its extents nest — every node's cap is a merge of its children's — because the
 tree bottoms out at the grid's own cells and has nothing below them. That is a

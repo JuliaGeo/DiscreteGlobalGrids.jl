@@ -127,3 +127,21 @@ The API pages cover [grids](api/grid-interface.md),
 To add a grid, follow [Writing a grid system](extending.md). The
 [architecture guide](architecture.md) explains how grids, cell collections
 and algorithms fit together.
+
+## Optional integrations
+
+The names exist in the core package, but optional packages activate these methods:
+
+| Capability | Load | Scope and guide |
+| --- | --- | --- |
+| Zarr store IO | `using Zarr` | [Read and write cell cubes](api/store-io.md); S3 URLs also require `using AWSS3` |
+| Makie conversion | `using Makie` and a backend | Convert grids and cell collections to point or polygon plots |
+| METIS partitioning | `using Metis` | [Assign chunks](api/partitioning.md) with `MetisPartition` |
+| KaHyPar partitioning | `using KaHyPar_jll` | [Assign chunks](api/partitioning.md) with `KaHyParPartition` |
+| Scotch partitioning | `using Scotch` | [Assign chunks](api/partitioning.md) with `ScotchPartition` |
+
+The separate `DiscreteGlobalGridsVisualization` package adds `dggpoly`,
+`dggsurface`, and `dggresample`. Core Makie conversion does not provide those
+plot types. Tutorials using them import the companion package explicitly.
+
+For grid, identity, and data-axis concepts, read [Grids and cell indices](abstractions.md).

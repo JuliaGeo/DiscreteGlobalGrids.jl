@@ -11,7 +11,7 @@ function rawid end
 
 One finite collection of unit-sphere cells: a complete DGGS level, a regional
 subset, or a standalone structured grid. A grid need not cover the sphere;
-[`treeify`](@ref)'s root extent defines its coverage.
+[`treeify`](@ref ConservativeRegridding.Trees.treeify)'s root extent defines its coverage.
 
 # Index types and index spaces
 
@@ -32,7 +32,7 @@ the two it is.
 
 The canonical order is the grid's own choice, but it must be stable for the
 lifetime of the grid object and consistent with [`cellindex`](@ref) /
-[`localindex`](@ref), which are inverses of each other over it.
+[`localindex`](@ref DiscreteGlobalGrids.localindex), which are inverses of each other over it.
 
 # Required interface
 
@@ -45,18 +45,18 @@ A grid type writes exactly four methods:
 | [`cell_boundary(grid, c)`](@ref cell_boundary) | exact boundary ring, unit-sphere points |
 | [`cell_centroid(grid, c)`](@ref cell_centroid) | representative interior point |
 
-Everything else—[`localindex`](@ref), [`cell_polygon`](@ref),
+Everything else—[`localindex`](@ref DiscreteGlobalGrids.localindex), [`cell_polygon`](@ref),
 [`cell_area`](@ref), [`cell_extent`](@ref), [`getcell`](@ref),
-[`cellat`](@ref), [`neighbors`](@ref), [`ring`](@ref), [`treeify`](@ref),
+[`cellat`](@ref), [`neighbors`](@ref), [`ring`](@ref), [`treeify`](@ref ConservativeRegridding.Trees.treeify),
 and [`query`](@ref)—is provided generically and may be optimized without
-changing semantics. The generic [`localindex`](@ref) scans `1:ncells(grid)`
+changing semantics. The generic [`localindex`](@ref DiscreteGlobalGrids.localindex) scans `1:ncells(grid)`
 linearly, so a grid that can search should override it.
 
 A hierarchical system needs no grid type: it answers this interface with the
 five level-grid primitives listed under
 [`AbstractHierarchicalGridSystem`](@ref), which [`HierarchicalLevelGrid`](@ref)
 forwards to. That list is five rather than four because a linear scan is not an
-acceptable [`globalindex`](@ref) for a complete level.
+acceptable [`globalindex`](@ref DiscreteGlobalGrids.globalindex) for a complete level.
 
 A grid produced by a hierarchical system reports it through [`system`](@ref)
 and [`level`](@ref); a standalone grid returns `nothing` from both and stops at
@@ -117,7 +117,7 @@ allocation per cell. Declaring the bound is the fast path.
 | [`node_extent(sys, c)`](@ref node_extent) | the cell's bounding cap, inflated — covers descendant *geometry*, not descendant caps; see the covering law |
 | [`cap_inflation(sys)`](@ref cap_inflation) | `1.2` |
 | [`maxlevel(sys)`](@ref maxlevel) | `last(levels(sys))` |
-| [`has_sorted_subtrees(sys)`](@ref has_sorted_subtrees) | `false`; declaring it `true` obliges [`descendant_range`](@ref) |
+| [`has_sorted_subtrees(sys)`](@ref has_sorted_subtrees) | `false`; declaring it `true` obliges [`descendant_range`](@ref DiscreteGlobalGrids.descendant_range) |
 | [`has_congruent_refinement(sys)`](@ref has_congruent_refinement) | `false`; `true` asserts that children tile their parent |
 | [`has_direct_location(sys)`](@ref has_direct_location) | `false`; declaring it `true` obliges [`cellat`](@ref) on the level grid |
 
@@ -129,7 +129,7 @@ Identity and geometry dispatch on the **system**: the tables above are all
 
 Everything else dispatches on the **grid**. A system's fast paths —
 [`cellat`](@ref), [`neighbors`](@ref), [`ring`](@ref), [`cell_area`](@ref),
-[`treeify`](@ref), the subtree engines — attach to
+[`treeify`](@ref ConservativeRegridding.Trees.treeify), the subtree engines — attach to
 `HierarchicalLevelGrid{typeof(sys)}`, for which each system here keeps a local
 alias:
 
@@ -160,9 +160,9 @@ are that one family.
 
 A subtype inherits every method that identity alone determines: the hierarchy
 block ([`rootcells`](@ref), [`parent`](@ref), [`children`](@ref),
-[`ancestor`](@ref), [`descendant_range`](@ref), [`descendants`](@ref)), the
+[`ancestor`](@ref), [`descendant_range`](@ref DiscreteGlobalGrids.descendant_range), [`descendants`](@ref)), the
 level-grid arithmetic ([`ncells`](@ref), [`cellindex`](@ref),
-[`globalindex`](@ref), [`cellindextype`](@ref),
+[`globalindex`](@ref DiscreteGlobalGrids.globalindex), [`cellindextype`](@ref),
 [`has_sorted_subtrees`](@ref)), and the subtree engines
 ([`border_engine`](@ref)/`interior_engine`/`halo_engine`), which read a subtree as
 the square lattice block it is.
@@ -208,8 +208,8 @@ The system documents whether `index` is zero- or one-based. It must increase in
 canonical cell order; `LevelIndex` orders lexicographically by `(level, index)`.
 
 Here `index` is an identity component, not an offset into a collection. Use
-[`globalindex`](@ref) for the index in the complete grid and
-[`localindex`](@ref) for the index in a subset's own storage.
+[`globalindex`](@ref DiscreteGlobalGrids.globalindex) for the index in the complete grid and
+[`localindex`](@ref DiscreteGlobalGrids.localindex) for the index in a subset's own storage.
 
 Construction does not validate level or index ranges. Validation occurs when an
 id is used with a system or grid.
@@ -247,7 +247,7 @@ so a new backing gets the whole surface by subtyping rather than by
 reimplementing it.
 
 Two backings ship. [`CellVector`](@ref) COMPUTES its ids from compressed
-index windows; [`ChunkedCellVector`](@ref) reads the ids a store WROTE, from
+index windows; [`ChunkedCellVector`](@ref DiscreteGlobalGrids.ChunkedLookups.ChunkedCellVector) reads the ids a store WROTE, from
 its chunk manifest. What differs is where element `k` comes from and what it
 costs, not what it means.
 
@@ -270,7 +270,7 @@ not a cell vector; it is an unordered list of cells.
 `localindex` is closed-form arithmetic on one backing and may decode a stored
 chunk on another. Generic code that resolves indices in an order the backing
 did not choose is correct on both and cheap on only one, which is what
-[`chunkplan`](@ref) exists to fix: it names the traversal order that keeps a
+[`chunkplan`](@ref DiscreteGlobalGrids.chunkplan) exists to fix: it names the traversal order that keeps a
 chunk-backed vector reading each chunk once.
 
 See also [`AbstractCellLookup`](@ref), the `DimensionalData` face of the same

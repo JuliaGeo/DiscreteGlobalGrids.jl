@@ -132,8 +132,12 @@ fig
 # | rule | cells kept | spelling |
 # |---|---|---|
 # | `Covering` | a cell set containing the outline, possibly with an outer rim | `field[Cells(Covering(geom))]` |
-# | centre-in-zone | every cell whose centre is inside | — |
+# | centre-in-zone | every cell whose centre is inside | No current selector |
 # | `Within` | every cell wholly inside the outline | `field[Cells(Within(geom))]` |
+
+#
+# The current predicates test cell footprints. A centroid-in-zone selector is
+# not available; `Intersects` and `Within` do not substitute for that rule.
 
 inside = field[DGG.Cells(DGG.Within(texas))]
 

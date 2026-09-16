@@ -67,8 +67,11 @@ between two levels takes the geometrically nearer of the two. A target coarser
 than every level of `sys`, or finer than every level, takes that end of
 [`levels`](@ref).
 
-The keywords are [`cellsize`](@ref)'s and mean the same thing; `over` restricts
-both sides of the comparison to an area of interest.
+`radius` and `samples` follow [`cellsize`](@ref). `over` restricts sampling of
+candidate levels of `sys` only. A raster, grid, or regridding-space `target`
+is still measured over its full extent. Regional comparison of both sides is
+not currently supported; this distinction matters when target cell sizes vary
+by location.
 """
 function levelfor(sys::AbstractHierarchicalGridSystem, target;
         over=nothing, radius::Real=_EARTH_RADIUS, samples::Integer=256)

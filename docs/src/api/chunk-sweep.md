@@ -27,7 +27,7 @@ mapneighbors!(out, slope, A, plan)
 
 ## The plan
 
-[`chunkplan`](@ref) reads boundaries from the data's chunk grid, including
+[`chunkplan`](@ref DiscreteGlobalGrids.chunkplan) reads boundaries from the data's chunk grid, including
 irregular layouts such as one chunk per ancestor subtree. It finds each halo by
 walking its boundary through [`halo`](@ref), so planning reads metadata and
 performs CPU work without loading data chunks.
@@ -53,7 +53,7 @@ Base.split(::MapChunkPlan, ::Integer)
 
 [`foreachchunk`](@ref) hands the callback a [`ChunkCube`](@ref) containing the
 chunk's cells and halo in memory, represented as an ordinary cube over a
-[`CellLookup`](@ref). Package operations work on it as they do on any one-level
+[`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup). Package operations work on it as they do on any one-level
 cell cube; ownership metadata remains alongside the cube.
 
 A chunk is a partial grid, so its indices are **chunk-local**. The owned cells
@@ -76,13 +76,16 @@ globalindices
 
 ## The sweeps built on it
 
-Because a chunk's halo carries every axis neighbour of every cell the chunk
-owns, a stencil reaching no further than the plan's halo width computes on a
-chunk exactly what it computes on the whole axis — clipped identically, in the
-same order. That is what lets the two sweep forms be built on the plan without
-qualifying their results.
+Halo width describes available input data, not the callback's neighborhood.
+The built-in `mapneighbors` and `mapneighbors!` sweeps always supply one-ring
+neighbors. Setting `halo=2` does not request a second-order convolution.
+Wider context is available inside `foreachchunk`, but there is no built-in
+radius-k sweep. Repeating a one-ring sweep is a separate diffusion operation.
 
-[`mapneighbors!`](@ref) is the streaming form: results are written into `dest` a
+For the supported one-ring sweep, a width-one halo supplies the surrounding
+axis members needed at owned chunk boundaries.
+
+[`mapneighbors!`](@ref DiscreteGlobalGrids.mapneighbors!) is the streaming form: results are written into `dest` a
 chunk at a time, so neither the input nor the output has to fit in memory.
 [`mapneighbors`](@ref) with `pass = Values()` takes the same route by itself
 whenever the cube's data is chunked, and collects the results.

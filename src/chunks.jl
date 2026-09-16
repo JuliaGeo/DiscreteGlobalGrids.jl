@@ -78,7 +78,7 @@ Base.show(io::IO, mc::MapChunk) = print(io, "MapChunk(", mc.index, ", ",
 What a chunk-following sweep will read, in what order — a value, not a running
 traversal.
 
-Build one with [`chunkplan`](@ref) and run it with [`foreachchunk`](@ref). It is
+Build one with [`chunkplan`](@ref DiscreteGlobalGrids.chunkplan) and run it with [`foreachchunk`](@ref). It is
 worth being a value because three separate decisions are made on it:
 
   - **order**: `plan[i]` is the `i`th chunk to visit. Reorder by rebuilding the
@@ -162,9 +162,10 @@ cells outside it its rings reach.
 makes each chunk decode once. An `Integer` fixes a uniform chunk length in cells
 instead, and an in-memory array, having no chunk grid, is one chunk.
 
-`halo = n` carries `n` rings of context, which is what a stencil reaching `n`
-rings needs; `1` is the one-ring default. `spatialdim` and `connectivity` are
-[`mapneighbors`](@ref)'s.
+`halo = n` makes `n` rings of input context available to a chunk callback.
+It does not change the neighborhood passed by [`mapneighbors!`](@ref DiscreteGlobalGrids.mapneighbors!): that
+operation currently supplies one-ring neighbors only. The default halo is `1`.
+`spatialdim` and `connectivity` follow [`mapneighbors`](@ref).
 
 The second form plans against a cell axis alone, with `bounds` either a chunk
 length or the chunk ranges themselves — the form to reach for when the cube is
@@ -264,7 +265,7 @@ end
     ChunkCube
 
 One chunk of a cube, read: its own cells and its halo, in memory, as an ordinary
-`DimArray` over a [`CellLookup`](@ref).
+`DimArray` over a [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup).
 
 This is what [`foreachchunk`](@ref) hands its callback, and the reason it is
 worth handing over rather than hiding: every verb in this package already works
@@ -304,7 +305,7 @@ end
 """
     chunkcube(cc::ChunkCube) -> AbstractDimArray
 
-The chunk's cells and its halo, in memory, over a [`CellLookup`](@ref).
+The chunk's cells and its halo, in memory, over a [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup).
 """
 chunkcube(cc::ChunkCube) = cc.cube
 
@@ -688,36 +689,22 @@ end
     mapneighbors!(dest, f, A, plan::MapChunkPlan;
                   needs = (Value(a), Centroid()), threaded = true)
 
-Apply `f` to each cell of `A` and its neighbours, chunk by chunk, writing one
-result per cell into `dest`.
+Apply a one-ring kernel chunk by chunk and write results into `dest`.
+The default callback is `f(cell, value, neighbor_values)`. With `needs`, it
+is `f(center, rings)` and produces one result per cell.
 
-This is [`mapneighbors`](@ref)'s out-of-core form, and the difference is where
-the results go: `mapneighbors` collects them, which needs one array of them in
-memory, and this writes them into `dest` a chunk at a time, which does not.
-`dest` is anything indexable along the cell dimension by a range — an `Array`,
-another cube, or a lazy array being written back to a store.
+`dest` must support range writes along the cell dimension and hold the result
+shape. It can be an array, a dimensional cube, or writable stored data.
+Halo width controls input context only: `halo=2` does not enlarge the
+one-ring neighborhood passed to the callback.
 
-`f` is called as `f(cell, value, neighbor_values)`, [`Values`](@ref)' form: a
-chunked sweep is exactly the case where the values must flow through the
-traversal rather than be fetched by the callback.
+`Index(Local())` names positions on the original cube's cell axis, not positions
+inside a temporary chunk. With sufficient halo, results match the whole-axis
+one-ring sweep. `threaded` controls work within each chunk.
 
-`needs` names the per-neighbour fields the kernel reads instead, and the
-callback becomes `f(center, rings)` — [`mapneighbors`](@ref)'s field-request
-contract, here on the chunk route. The request is stated once, about the cube
-the caller passed, and translated onto each chunk: `Index(Local())` answers
-that cube's cell-axis index on every chunk, never a chunk-local one, and a
-[`Value`](@ref) over a stored array is read along its own storage chunks the
-way the swept data is. `dest` then holds one result per cell.
-
-The result is the whole-axis sweep's, cell for cell, in either form. Each
-chunk's halo carries every axis neighbour of every cell the chunk owns, so a
-ring computed on a chunk is the ring computed on the axis — clipped
-identically, and in the same order.
-
-`threaded` threads WITHIN each chunk. To run chunks themselves in parallel,
-`split` a [`chunkplan`](@ref) and call this on the pieces. Build the plan before
-splitting: doing so is what fills the axis's [`region`](@ref) memo, so the
-pieces share one conversion rather than each repeating it.
+To assign chunks to workers, build one [`chunkplan`](@ref DiscreteGlobalGrids.chunkplan) before splitting it.
+See [Sweeping a cube along its chunk lines](@ref) for ownership and
+[Workflow execution details](@ref) for field translation and routing details.
 """
 function mapneighbors!(dest, f::F, A::DD.AbstractDimArray; halo::Integer=1,
         chunks=:auto, spatialdim=nothing, needs=nothing,

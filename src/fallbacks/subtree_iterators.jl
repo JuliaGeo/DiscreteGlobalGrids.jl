@@ -21,13 +21,13 @@ Memory is `O(depth)` and independent of the border's size: IGeo7, H3, HEALPix,
 ISEA4R and S2 walk a pruned subtree from an `isbits` stack and allocate nothing
 per element. `eltype` is `cellindextype(sys)`.
 
-[`Base.IteratorSize`](@ref) is `HasLength()` wherever the count is closed-form —
+`Base.IteratorSize` is `HasLength()` wherever the count is closed-form —
 `3^(d+1)-3` / `5(3^d-1)/2` on the two hexagonal systems, `4·2^d-4` on the three
 square ones, `d = l - level(c)` — and `SizeUnknown()` for the generic scan,
 which has no count short of running it. There is no `length` that would.
 
 See also [`InnerCellIterator`](@ref), the complement, and
-[`descendant_range`](@ref).
+[`descendant_range`](@ref DiscreteGlobalGrids.descendant_range).
 """
 struct EdgeCellIterator{S<:AbstractHierarchicalGridSystem,C<:AbstractCellIndex,
         K<:Connectivity,E}
@@ -301,7 +301,7 @@ curve position `p` is, and the orientation state its own children are read
 under. Orientation is inert for [`MortonCurve`](@ref); S2's Hilbert curve
 advances it.
 
-Dispatches on the curve used by [`SquareBorderEngine`](@ref). A system supplies a
+Dispatches on the curve used by `SquareBorderEngine`. A system supplies a
 curve type and a method for its quadrant transition.
 """
 function quadrant_step end

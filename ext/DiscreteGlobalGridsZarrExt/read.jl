@@ -63,62 +63,21 @@ const MANIFEST_VALIDATED = "strict"
 
 """
     dggread(store; vars = All(), lazy = true, validate = :strict,
-            conventions = CONVENTION_REGISTRY, description = nothing) -> DimStack
+            conventions = CONVENTION_REGISTRY, description = nothing,
+            ancestors = nothing) -> DimStack
     dggread(store, var::Symbol; kwargs...) -> DimArray
 
-Read a DGGS store into plain DimensionalData: one `Cells` dimension shared by
-every layer, carrying a [`ChunkedCellLookup`](@ref) that resolves a cell to a
-index without scanning the axis. Any other dimension of the store — time,
-bands — becomes an ordinary `Dim`, with the values of the like-named coordinate
-array where the store has one.
+Zarr implementation of [`dggread`](@ref DiscreteGlobalGrids.dggread). The generic function documents the
+common read contract. `s3://` additionally requires `using AWSS3`.
 
-`store` is a `Zarr.ZGroup`, a `Zarr.AbstractStore`, a local path, or a URL. A
-`gs://BUCKET/PATH` URL is read as `https://storage.googleapis.com/BUCKET/PATH`,
-which works for public-read buckets; an `s3://` URL needs Zarr's own AWSS3
-extension (`using AWSS3`) and says so otherwise.
+For ancestor-subzone stores, `ancestors` selects ancestor cells or column indices.
+The default includes the full level, including unwritten columns that read as fill.
+The result still has a `Cells` dimension; its data use the subzone layout lazily.
+Its metadata contain `"layout"` instead of ordinary encoding/convention/description
+entries. Other dimensions use stored coordinates when available.
 
-  - `vars`: `All()` for every data variable, or the `Symbol`s to read. An
-    unknown name raises, listing what the store holds.
-  - `lazy`: leave the data as the store's own chunked arrays (the default), or
-    materialize them.
-  - `validate`: `:strict` (the default) checks that every stored id names a cell
-    of the declared level; `:lazy` checks `LAZY_SAMPLES` per chunk
-    instead. Sortedness, uniqueness and the length checks are not optional and
-    run either way. None of the three reaches a store carrying a chunk manifest
-    this package wrote: its axis is built from the manifest without a scan, so
-    no id is checked at all, and what bounds that trust is a per-chunk
-    comparison of first id, last id and length as the ids are read
-    (`persistedmanifest`). `:scan` is how that trust is declined — the
-    sidecar is ignored, the ids are scanned, and every check runs on every
-    store.
-  - `conventions`: the conventions to try, in order.
-  - `ancestors`: an ancestor-subzone store only — the level-`ancestor_level`
-    cells (or column indices) to restrict the cell axis to. The default reads
-    the WHOLE level, since a column nobody wrote is not absent from such a store,
-    it reads back as fill.
-  - `description`: a [`StoreDescription`](@ref) that bypasses detection. The
-    caller then asserts grid, level, encoding and array names, and only the
-    mechanical checks — the id scan, the closed-form counts — still run. This
-    is how an attribute-less store is read.
-
-The stack's `metadata` carries the provenance a value-identical rewrite needs:
-
-| key | |
-|---|---|
-| `"source"` | the store URL or path |
-| `"conventions"` | the conventions that fired, in order |
-| `"encoding"` | the cell-axis layout, as the store spells it |
-| `"attrs"` | the group attributes verbatim |
-| `"description"` | the [`StoreDescription`](@ref) everything was read through |
-
-Each layer keeps its own array attributes as its metadata.
-
-**The ancestor-subzone layout** is recognized from its own attributes and read
-by its own path: the layers come back over a `Cells` dimension as ever, backed
-by a lazy [`SubzoneCellArray`](@ref) whose chunks are the store's subtrees. Such
-a stack's metadata carries `"layout"` — a [`SubzoneLayout`](@ref) — in place of
-`"description"`, `"conventions"` and `"encoding"`, none of which have anything
-to say about a two-dimensional store.
+See [Workflow execution details](@ref) for validation, manifest trust, and the
+metadata keys retained for a rewrite.
 """
 function DiscreteGlobalGrids.dggread(store::StoreLike; vars=DD.All(), lazy::Bool=true,
     validate::Symbol=:strict, conventions=DiscreteGlobalGrids.CONVENTION_REGISTRY,

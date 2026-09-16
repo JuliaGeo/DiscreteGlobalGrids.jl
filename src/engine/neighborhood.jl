@@ -142,7 +142,7 @@ end
     Neighborhood
 
 Supertype of the sweep selectors [`Disc`](@ref) and [`Ring`](@ref). A
-[`mapneighbors`](@ref), [`foreachneighbors`](@ref), [`mapneighbors!`](@ref)
+[`mapneighbors`](@ref), [`foreachneighbors`](@ref), [`mapneighbors!`](@ref DiscreteGlobalGrids.mapneighbors!)
 or one-argument [`neighbors`](@ref) sweep takes one as its `neighborhood`
 keyword and hands the callback that neighbourhood of each visited cell.
 """

@@ -6,6 +6,7 @@
 module RegionAlgebraTests
 
 using Test
+using Statistics
 import DiscreteGlobalGrids as DGG
 
 include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
@@ -106,6 +107,56 @@ end
             @test minimum(DGG.level, set) == rootlevel
             @test length(set) < length(mixed)
             @test DGG.expand(set, leaflevel) == mixed
+        end
+
+        # VALUE-DRIVEN SIMPLIFICATION uses reductions only while deciding
+        # whether the next complete sibling group may collapse. The result
+        # deliberately retains identities rather than the reduced values.
+        @testset "simplify by sibling values" begin
+            values = collect(range(0.0, 0.5; length = length(cv)))
+            within_one = xs -> begin
+                lo, hi = extrema(xs)
+                hi - lo <= 1
+            end
+
+            set = DGG.simplify(cv, values; predicate = within_one, reduce = mean)
+            @test set isa DGG.MultiOrderCellSet
+            @test collect(set) == [root]
+            @test DGG.expand(set, leaflevel) == cv
+            @test all(!DGG.iscontained(set, i) for i in eachindex(set))
+            @test collect(DGG.simplify(
+                pg,
+                values;
+                predicate = within_one,
+                reduce = mean,
+            )) == [root]
+
+            outliers = copy(values)
+            outliers[1] += 2
+            partial = DGG.simplify(
+                cv,
+                outliers;
+                predicate = within_one,
+                reduce = mean,
+            )
+            badparent = DGG.ancestor(sys, first(cv), leaflevel - 1)
+            @test length(partial) ==
+                  length(DGG.children(sys, badparent)) +
+                  length(DGG.children(sys, root)) - 1
+            @test DGG.expand(partial, leaflevel) == cv
+
+            @test_throws DimensionMismatch DGG.simplify(
+                cv,
+                values[1:(end-1)];
+                predicate = within_one,
+                reduce = mean,
+            )
+            @test_throws ArgumentError DGG.simplify(
+                cv,
+                values;
+                predicate = Returns(1),
+                reduce = mean,
+            )
         end
     end
 end

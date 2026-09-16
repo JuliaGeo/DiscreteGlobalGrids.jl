@@ -16,12 +16,7 @@ using Test
 import DiscreteGlobalGrids as DGG
 
 export syslabel, basesystem, isquadface, ishexwalk, hassortedsubtrees,
-    isauthalic, forsystems, sweepcovers, FORCED_BOUNDS_CHECKS
-
-# Forced bounds checking (`--check-bounds=yes`, the julia-runtest default) keeps
-# SmallCollections' BoundsError branch alive, so the MutableSmallVector shell
-# buffers escape to the heap; the zero-allocation law only holds in default mode.
-const FORCED_BOUNDS_CHECKS = Base.JLOptions().check_bounds == 1
+    isauthalic, forsystems, sweepcovers
 
 """
     syslabel(sys) -> String

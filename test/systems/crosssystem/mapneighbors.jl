@@ -15,8 +15,7 @@ using DiscreteGlobalGrids: levelgrid, cellindex, localindex, neighbors, ring,
     Neighbors, Values, NeighborSlices, Disc, Ring, Cell
 
 include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
-using .DGGTestHelpers: syslabel, sweepcovers, basesystem, ishexwalk,
-    FORCED_BOUNDS_CHECKS
+using .DGGTestHelpers: syslabel, sweepcovers, basesystem, ishexwalk
 
 const FB = DGG.Fallbacks
 const EN = DGG.Engine
@@ -202,8 +201,7 @@ end
                 nb in (Disc(2), Ring(2), Disc(3), Ring(3))
             foreachneighbors(s, cv; neighborhood = nb, connectivity = conn)
             @test @allocated(foreachneighbors(s, cv; neighborhood = nb,
-                connectivity = conn)) == 0 skip = VERSION < v"1.12" ||
-                                                  FORCED_BOUNDS_CHECKS
+                connectivity = conn)) == 0 skip = VERSION < v"1.12"
         end
     end
     @test !isempty(filter(carried, DGG.systems()))

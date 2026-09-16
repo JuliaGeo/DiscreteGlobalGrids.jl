@@ -40,6 +40,12 @@ jobs:
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
+        with:
+          # The action forces `--check-bounds=yes` by default, which keeps
+          # SmallCollections' BoundsError branch live and makes the k >= 2
+          # neighbourhood stack buffers escape, failing the zero-allocation
+          # laws. `auto` is what users run and what the laws are stated for.
+          check_bounds: 'auto'
       - uses: julia-actions/julia-processcoverage@v1
         with:
           directories: src

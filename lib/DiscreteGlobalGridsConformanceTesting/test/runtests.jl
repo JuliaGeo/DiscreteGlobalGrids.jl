@@ -378,20 +378,35 @@ function count_results(ts)
     return passes, fails
 end
 
+# Julia 1.13 replaced the mutable testset stack (`push_testset`/`pop_testset`)
+# with a scoped value entered through the `Test.@with_testset` macro. A macro
+# only reachable on one version has to be branched on at parse time.
+@static if isdefined(Test, :push_testset)
+    function with_testset(f, ts)
+        Test.push_testset(ts)
+        try
+            f()
+        finally
+            Test.pop_testset()
+        end
+    end
+else
+    with_testset(f, ts) = Test.@with_testset ts f()
+end
+
 "Run `f` under a captured, silenced test set; return `(passes, failures)`."
 function capture(f)
     ts = Test.DefaultTestSet("capture")
-    Test.push_testset(ts)
     try
-        redirect_stdout(devnull) do
-            redirect_stderr(devnull) do
-                f()
+        with_testset(ts) do
+            redirect_stdout(devnull) do
+                redirect_stderr(devnull) do
+                    f()
+                end
             end
         end
     catch err
         err isa Test.TestSetException || rethrow()
-    finally
-        Test.pop_testset()
     end
     return count_results(ts)
 end

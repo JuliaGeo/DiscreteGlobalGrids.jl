@@ -589,7 +589,7 @@ function covering_indices(cv::CellVector, target)
 end
 
 """
-    predicate_indices(cv::CellVector, pred::DE9IMPredicate) -> Vector{Int}
+    predicate_indices(cv::CellVector, pred) -> Vector{Int}
 
 The indices in `cv` of the cells that satisfy `pred` at `cv`'s level, ascending
 — `query(system(cv), pred; level = level(cv))` intersected with `cv`, answered
@@ -601,7 +601,7 @@ inside `cap`. This is what a predicate used as a [`Cells`](@ref DiscreteGlobalGr
 resolves to. Unlike [`covering_indices`](@ref), the answer is exact: it
 inherits no over-covering from a coverage.
 """
-function predicate_indices(cv::CellVector, pred::DE9IM.DE9IMPredicate)
+function predicate_indices(cv::CellVector, pred::QueryPredicate)
     out = Int[]
     for c in query(cv.grid, pred)
         k = localindex(cv, c)

@@ -28,7 +28,7 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     ncells, cellindex, localindex, globalindex, cellat, level, system,
     levelgrid, cellindextype, has_sorted_subtrees, descendants, query,
     neighbors, ring, neighborcount, Connectivity, Vertex, maxneighbors,
-    halo, border, interior, adjacency, DE9IMPredicate
+    halo, border, interior, adjacency, DE9IMPredicate, QueryPredicate
 import ..DiscreteGlobalGrids: Helpers
 import ..DiscreteGlobalGrids.Engine: PartialGrid, SubtreeIds,
     MultiOrderCoverage, MultiOrderCellSet, level_ranges
@@ -945,6 +945,7 @@ Lookups.selectindices(lk::AbstractCellLookup, sel::Covering{<:AbstractVector};
 
 """
     Cells(pred::DE9IMPredicate)
+    Cells(pred::CentroidCovered)
 
 A [`query`](@ref) predicate is itself a cell selector: it selects every stored
 cell that satisfies the predicate against its target, at the lookup's level.
@@ -953,6 +954,7 @@ cell that satisfies the predicate against its target, at the lookup's level.
 A[Cells(Intersects(cap))]           # cells meeting a SphericalCap
 A[Cells(Within(county))]            # cells lying wholly inside a polygon
 A[Cells(Disjoint(extent))]          # cells clear of a lon/lat extent
+A[Cells(CentroidCovered(county))]   # cells whose centroid lies in a polygon
 ```
 
 The predicate and target are whatever `query` accepts — the same limits apply,
@@ -963,7 +965,7 @@ resulting view retains a [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.Cel
 
 Outside a cube, the equivalent selection is `predicate_indices(cv, pred)`.
 """
-Lookups.selectindices(lk::AbstractCellLookup, pred::DE9IMPredicate; kw...) =
+Lookups.selectindices(lk::AbstractCellLookup, pred::QueryPredicate; kw...) =
     predicate_indices(parent(lk), pred)
 
 Lookups.selectindices(lk::AbstractCellLookup,

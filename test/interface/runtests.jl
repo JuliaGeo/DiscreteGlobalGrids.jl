@@ -90,7 +90,8 @@ end
               :ancestor, :descendants,
               :descendant_range, :LevelIndex, :Connectivity, :Vertex, :Edge,
               :cellsize, :levelfor, :subtree, :halo, :border, :interior,
-              :adjacency, :AdjacencyTable, :halocells, :haloindices)
+              :adjacency, :AdjacencyTable, :halocells, :haloindices,
+              :CentroidCovered)
         @test n in EXPORTED
     end
 

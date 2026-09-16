@@ -49,6 +49,11 @@ end
         @test hits == oracle(grid, target, pred)
         @test !isempty(hits)
     end
+    # The public form carries the region itself and answers in typed ids.
+    public = DGG.query(grid, DGG.CentroidCovered(holed))
+    @test [DGG.localindex(grid, c) for c in public] ==
+        oracle(grid, target, DGG.Engine.CentroidCovered())
+    @test Base.parent(DGG.CentroidCovered(holed)) === holed
     # Cells deep inside the box are boundary-free, and none of them contains it.
     @test isempty(DGG.Engine._query_indices(grid, DE9IM.Contains(nothing), target))
     @test DGG.Engine._query_indices(grid, DE9IM.Touches(nothing), target) ==
@@ -70,6 +75,7 @@ end
     @test hits == [i for i in 1:DGG.ncells(grid)
         if GO.UnitSpherical.spherical_distance(DGG.cell_centroid(grid, DGG.cellindex(grid, i)),
             target.cap.point) <= 0.3]
+    @test [DGG.localindex(grid, c) for c in DGG.query(grid, DGG.CentroidCovered(cap))] == hits
 
     # Two parts with a gap between them: an edge invented from the last vertex
     # of one ring to the first of the next would accept cells in that gap.

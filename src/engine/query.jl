@@ -438,12 +438,29 @@ end
 # ===========================================================================
 
 """
-    CentroidCovered()
+    CentroidCovered(region)
 
-Internal predicate: the cell's centroid lies on or inside the target, the raster
-`boundary=:center` rule. A point rule, so `query`'s DE9IM predicate set omits it.
+A [`query`](@ref) predicate selecting every cell whose centroid,
+[`cell_centroid`](@ref), lies on or inside `region`. A centroid on the region's
+boundary counts, so the rule is the raster `boundary = :center` rule. Read it as
+**cell centroid COVERED BY region**: `Within(region)` selects a subset of
+it, and `Intersects(region)` a superset.
+
+`region` is any target `query` accepts: a GeoInterface geometry, an
+`Extents.Extent` in lon/lat degrees, or a `GO.UnitSpherical.SphericalCap`.
+`Base.parent(pred)` gives it back. The predicate works through `query` and as a
+[`Cells`](@ref DiscreteGlobalGrids.CellLookups.Cells) selector:
+
+```julia
+query(grid, CentroidCovered(county))    # cells centred in a polygon
+A[Cells(CentroidCovered(cap))]          # cells centred in a SphericalCap
+```
 """
-struct CentroidCovered end
+struct CentroidCovered{T}
+    val::T
+end
+CentroidCovered() = CentroidCovered(nothing)
+Base.parent(pred::CentroidCovered) = pred.val
 
 const QueryPredicate = Union{DE9IM.DE9IMPredicate,CentroidCovered}
 
@@ -573,16 +590,16 @@ _matches(pred::DE9IM.DE9IMPredicate, ::CapTarget, grid, c) = throw(ArgumentError
 # ===========================================================================
 
 """
-    query(grid, pred::DE9IM.DE9IMPredicate) -> Vector{<:AbstractCellIndex}
-    query(sys, pred::DE9IM.DE9IMPredicate; level) -> Vector{<:AbstractCellIndex}
+    query(grid, pred) -> Vector{<:AbstractCellIndex}
+    query(sys, pred; level) -> Vector{<:AbstractCellIndex}
 
-Return every matching cell as a sorted vector of typed ids.
+Return every cell matching the predicate as a sorted vector of typed ids.
 
 Implemented predicates: `Intersects`, `Disjoint`, `Contains`, `Within`,
-`Covers`, `CoveredBy`, `Touches`, `Overlaps`, `Equals`. `Crosses` throws, since
-inverting it is not a matter of naming its converse. Targets: a GeoInterface
-geometry, an `Extents.Extent` in lon/lat degrees, or a
-`GO.UnitSpherical.SphericalCap`.
+`Covers`, `CoveredBy`, `Touches`, `Overlaps`, `Equals`, and the centroid rule
+[`CentroidCovered`](@ref). `Crosses` throws, since inverting it is not a matter
+of naming its converse. Targets: a GeoInterface geometry, an `Extents.Extent`
+in lon/lat degrees, or a `GO.UnitSpherical.SphericalCap`.
 
 `Disjoint` is computed as the full-grid complement of `Intersects` and cannot
 prune the output traversal.
@@ -593,8 +610,9 @@ Traversal and cap targets:
   rebuilt at the wider of the query's leaf bucket and the grid's own, and a
   level-less grid (stored cells of mixed levels) gets the engine's index tree.
 - Cap targets are answered without polygonisation and support only
-  `Intersects`, `Disjoint`, and `Within`; `Within` uses the complement past a
-  hemisphere, and `Intersects` accepts undecidable cap-centre containment.
+  `Intersects`, `Disjoint`, `Within`, and `CentroidCovered`; `Within` uses
+  the complement past a hemisphere, and `Intersects` accepts undecidable
+  cap-centre containment.
 """
 function query(grid::AbstractGrid, pred::DE9IM.DE9IMPredicate)
     # Validate the grid, predicate, and target before the empty-grid shortcut.
@@ -613,13 +631,22 @@ sys === nothing ? typeof(cellindex(grid, 1)) : cellindextype(sys))
 _empty_ids(grid::AbstractGrid) = (sys = system(grid);
 sys === nothing ? AbstractCellIndex[] : cellindextype(sys)[])
 
-function query(sys::AbstractHierarchicalGridSystem, pred::DE9IM.DE9IMPredicate;
+function query(sys::AbstractHierarchicalGridSystem, pred::QueryPredicate;
         level::Integer)
     # `level` the keyword shadows `level` the function throughout this body.
     return query(levelgrid(sys, level), pred)
 end
 
-function _run_query(grid::AbstractGrid, pred::DE9IM.DE9IMPredicate, target::QueryTarget)
+function query(grid::AbstractGrid, pred::CentroidCovered)
+    n = ncells(grid)
+    pred.val === nothing && throw(ArgumentError(
+        "CentroidCovered needs a region; write e.g. `CentroidCovered(geometry)`"))
+    target = _query_target(pred.val)
+    n == 0 && return _empty_ids(grid)
+    return _run_query(grid, pred, target)
+end
+
+function _run_query(grid::AbstractGrid, pred::QueryPredicate, target::QueryTarget)
     indices = _query_indices(grid, pred, target)
     out = Vector{_id_type(grid)}(undef, length(indices))
     for (k, i) in enumerate(indices)

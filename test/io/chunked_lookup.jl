@@ -287,7 +287,7 @@ end
     end
     # A query predicate resolves the same way on a stored axis as on a computed
     # one: the query's answer, intersected with the axis.
-    for pred in (DGG.Intersects(target), DGG.Within(target))
+    for pred in (DGG.Intersects(target), DGG.Within(target), DGG.CentroidCovered(target))
         want = Lookups.selectindices(naive, pred)
         @test !isempty(want)
         for lookup in (ranged, dense)

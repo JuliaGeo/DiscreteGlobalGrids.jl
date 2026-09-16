@@ -759,8 +759,8 @@ function raster_cap end
 # ===========================================================================
 
 """
-    query(grid::AbstractGrid, pred::DE9IM.DE9IMPredicate) -> Vector{<:AbstractCellIndex}
-    query(sys::AbstractHierarchicalGridSystem, pred::DE9IM.DE9IMPredicate; level::Integer) -> Vector{<:AbstractCellIndex}
+    query(grid::AbstractGrid, pred) -> Vector{<:AbstractCellIndex}
+    query(sys::AbstractHierarchicalGridSystem, pred; level::Integer) -> Vector{<:AbstractCellIndex}
 
 Every cell satisfying the spatial predicate `pred`, as a **sorted** `Vector` of
 typed cell ids.
@@ -768,7 +768,8 @@ typed cell ids.
 # Predicates
 
 Predicates are re-exported DE9IM.jl wrappers such as `Intersects(target)`,
-`Covers(target)`, and `Touches(target)`. `Base.parent(pred)` returns the target.
+`Covers(target)`, and `Touches(target)`, plus the centroid rule
+[`CentroidCovered`](@ref)`(target)`. `Base.parent(pred)` returns the target.
 This package defines their spherical semantics.
 
 The target may be a GeoInterface geometry, an `Extents.Extent`, or a

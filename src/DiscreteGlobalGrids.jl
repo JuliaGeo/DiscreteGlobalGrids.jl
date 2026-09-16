@@ -140,6 +140,7 @@ using .Engine: PartialGrid,
     MultiOrderCoverage, MultiOrderCellSet, level_ranges,
     iscontained, coarsest_contained, cell_polygons,
     CellVector, cellset, covering, covering_indices, predicate_indices,
+    CentroidCovered, QueryPredicate,
     grow, expand, compact, member_neighbors,
     SubtreeHaloIterator, SubsetHaloIterator, HaloIndexIterator, RegionSide,
     halo_indices, sizehint,
@@ -376,6 +377,7 @@ public missingmask!
 export DE9IMPredicate
 export Intersects, Disjoint, Contains, Within, Covers, CoveredBy
 export Touches, Crosses, Overlaps, Equals
+export CentroidCovered
 
 # --- Fallback substrate ----------------------------------------------------
 # These fallback types are bound before system modules extend them.

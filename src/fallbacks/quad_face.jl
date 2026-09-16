@@ -167,7 +167,7 @@ end
     descendants(sys::AbstractQuadFaceGridSystem, c, l)
 
 Every level-`l` descendant of `c`, ascending: the dense, subtree-contiguous
-[`descendant_range`](@ref) read off as consecutive ids, with no `children`
+[`descendant_range`](@ref DiscreteGlobalGrids.descendant_range) read off as consecutive ids, with no `children`
 recursion and no sort.
 """
 function descendants(sys::AbstractQuadFaceGridSystem, c::LevelIndex, l::Integer)

@@ -200,7 +200,7 @@ needs no sort. The count is `7^d` for a hexagon and `(5·7^d + 1)/6` for a
 pentagon, `d = l - level(c)`.
 
 Throws an `ArgumentError` for `l` outside `level(c):maxlevel`. This
-materialises — reach for [`descendant_range`](@ref) when indices will do.
+materialises — reach for [`descendant_range`](@ref DiscreteGlobalGrids.descendant_range) when indices will do.
 """
 function DGG.descendants(::IGeo7System, c::Z7Cell, l::Integer)
     res = _geometry_checked(c.id)

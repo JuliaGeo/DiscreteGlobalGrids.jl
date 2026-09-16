@@ -7,7 +7,7 @@ CurrentModule = DiscreteGlobalGrids
 Use these operations to find the cells along a region's edge, fetch values just
 outside it, or enlarge it by a few layers of cells. A region is a collection at
 one level, such as a [`PartialGrid`](@ref), [`CellVector`](@ref) or
-[`CellLookup`](@ref).
+[`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup).
 
 | Operation | Cells returned |
 |---|---|
@@ -22,8 +22,9 @@ cells just inside a hole can belong to the halo. A complete global grid has an
 empty border and halo, and all of its cells belong to the interior.
 
 These operations return cells or their indices. To obtain polygon coordinates,
-use [`cell_boundary`](@ref) for a single cell or [`cell_polygons`](@ref) for a
-collection. For neighbours around individual cells and adjacency tables, see
+use [`cell_boundary`](@ref) for a single cell. [`cell_polygons`](@ref) currently
+accepts a `MultiOrderCellSet` only; it is not a general operation on grids,
+`CellVector`, `PartialGrid`, or `CellLookup`. For neighbours around individual cells and adjacency tables, see
 [Neighbours and stencils](neighbors.md).
 
 ## Find the inside and outside of an edge

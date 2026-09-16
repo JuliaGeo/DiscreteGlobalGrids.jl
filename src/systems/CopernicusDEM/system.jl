@@ -148,11 +148,10 @@ end
     descendants(CopernicusDEMSystem(...), c, l)
 
 Every level-`l` descendant of `c`, ascending, as a lazy vector over
-[`descendant_range`](@ref).
+[`descendant_range`](@ref DiscreteGlobalGrids.descendant_range).
 
-!!! warning "This diverges from the interface"
-    Unlike the interface default, this returns a read-only `AbstractVector`, not
-    an owned `Vector`. Call `collect` before mutation or passing it to mutating APIs.
+This implementation returns a read-only `AbstractVector` without enumerating
+the descendants. Call `collect` before passing the result to a mutating API.
 """
 function DGG.descendants(sys::CopernicusDEMSystem, c::DGG.LevelIndex, l::Integer)
     r = DGG.descendant_range(sys, c, l)     # validates `l` both ways

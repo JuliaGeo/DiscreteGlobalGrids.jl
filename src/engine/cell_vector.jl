@@ -222,65 +222,23 @@ end
     CellVector(grid::AbstractGrid)
     CellVector(sys, level, ids::AbstractVector)
 
-An immutable, lazy `AbstractVector` of strictly ascending cell ids from one
-level of one hierarchical system. It stores their leaf-grid index windows
-instead of the ids.
+A read-only `AbstractVector` of canonical cell IDs at one level of one system.
+`cv[i]` returns an ID; [`localindex`](@ref DiscreteGlobalGrids.localindex)`(cv, cell)` returns its position or
+`nothing`. `collect(cv)` creates an ordinary vector. `CellVector(cv)` returns
+`cv` unchanged.
 
-Semantically `cv` **is** the id vector: `length(cv)` is the number of cells,
-`cv[k]` is the `k`th of them, `collect(cv)` is the vector itself. What is
-*stored* is sorted, disjoint intervals or a sorted index list in
-`levelgrid(system(cv), level(cv))`, so memory is O(number of windows) rather
-than O(number of cells). `cv[k]` searches the windows' cumulative lengths and
-resolves one `cellindex`; [`localindex`](@ref) runs the inverse. Nothing is
-materialised.
+The explicit-ID form requires strictly ascending IDs and validates their level.
+The grid form accepts complete levels and [`PartialGrid`](@ref) regions.
+The mixed-level form expands hierarchy membership at the requested level;
+that membership can differ from the union of the original cell polygons.
 
-[`CellLookup`](@ref) provides the DimensionalData wrapper and delegates its
-collection operations to this type.
+Use [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup)`(cv)` for a `Cells` dimension, `PartialGrid(cv)` for
+a grid view, and [`cellset`](@ref)`(cv)` to inspect its recorded source.
+Store field values in the same order as `cv`.
 
-# The three ways in
-
-  - a [`MultiOrderCellSet`](@ref), the compressed coverage, optionally
-    re-expanded to a deeper `level` than the set's own reference level;
-  - an [`AbstractGrid`](@ref) — `levelgrid(sys, l)`, a whole level, which is one
-    window; or a [`PartialGrid`](@ref), which is that subset's indices (one
-    window when the subset is a subtree, the explicit list when it is
-    scattered);
-  - `sys, level, ids` — an explicit **strictly ascending** id vector, validated
-    and run-compressed.
-
-`CellVector(cv)` returns `cv` unchanged.
-
-# The verbs
-
-```julia
-cv[k]                          # the kth cell id
-localindex(cv, c)              # its inverse: Int, or `nothing`
-c in cv                        # membership, O(log #windows)
-localindex(cv, lon, lat)       # the index of the cell a point falls in
-cellat(cv, lon, lat)           # that cell's id instead
-covering(cv, polygon)          # the sub-vector a region's coverage names
-intersect(cv, other)           # two vectors at the same level, O(#windows)
-PartialGrid(cv)                # read as a grid, O(1) — the regridding handshake
-cellset(cv)                    # what it was built from
-```
-
-`Base.summarysize(cv)` is O(number of windows) plus the object referenced by
-[`cellset`](@ref). Indexing is O(log(number of windows)) and allocation-free.
-
-Where [`has_sorted_subtrees`](@ref) holds, [`level_ranges`](@ref) constructs the
-windows in
-O(#entries). Where it does not (A5), a cell's descendants are not one interval
-of their level, so the vector is built by SELECTION: `descendants` names the
-leaves, they are resolved to indices and sorted, and the result is
-run-compressed like any other index list. Every method above is unchanged
-as any other index list. This construction visits every leaf. The stored
-form ranges from a small set of windows to one index per cell.
-
-For A5, descendants need not lie inside their parent's footprint, so expanding a coverage
-names leaves the target does not touch — most visibly inside a hole. A
-[`covering`](@ref) subset on A5 is therefore a superset of the cells that meet
-the region, by the same margin the refinement itself is; see
-[`MultiOrderCoverage`](@ref).
+IDs are stored as compressed index windows where possible. Storage can still
+grow to one index per cell, and A5 expansion visits every descendant.
+See [Collection and traversal contracts](@ref) for costs and implementation details.
 """
 struct CellVector{ID,W<:CellWindows,G<:AbstractGrid,B} <: AbstractCellVector{ID}
     windows::W
@@ -530,7 +488,7 @@ outside the cells the vector holds. Same contract as [`cellat`](@ref) on a
 grid, restricted to the subset: a point inside the level grid but outside this
 vector answers `nothing` rather than naming a cell that is not here.
 
-[`localindex`](@ref) is the same question answered as an index.
+[`localindex`](@ref DiscreteGlobalGrids.localindex) is the same question answered as an index.
 """
 function cellat(cv::CellVector, p::GO.UnitSphericalPoint)
     c = cellat(cv.grid, p)
@@ -601,9 +559,10 @@ outside `DimensionalData`.
 Selection visits each leaf named by the coverage, even though the result is
 stored compactly. Select at the level being read to avoid unnecessary expansion.
 
-Coverage means *covering*: the result is a superset of the cells that meet
-`target`, by whatever margin the system's refinement is non-congruent. See
-[`MultiOrderCoverage`](@ref) for the size of that margin per system.
+This operation uses fixed-level coverage at `level(cv)`. Within `cv`, its
+result includes the cells meeting `target`; noncongruent refinement can add
+extra cells. With congruent refinement the selection equals intersection.
+These are fixed-level guarantees, not guarantees for a `maxcells` query.
 """
 covering(cv::CellVector, target) =
     _derive(cv, _windows(_covering_leafindices(cv, target)))
@@ -638,7 +597,7 @@ in index space so a data array laid out against `cv` can be indexed by it.
 
 `pred` is any predicate [`query`](@ref) implements, over any target it accepts;
 `cv[predicate_indices(cv, Within(cap))]` names the cells of `cv` lying wholly
-inside `cap`. This is what a predicate used as a [`Cells`](@ref) selector
+inside `cap`. This is what a predicate used as a [`Cells`](@ref DiscreteGlobalGrids.CellLookups.Cells) selector
 resolves to. Unlike [`covering_indices`](@ref), the answer is exact: it
 inherits no over-covering from a coverage.
 """

@@ -104,10 +104,10 @@ end
 """
     has_sorted_subtrees(::A5System) -> Bool
 
-`false`: no [`descendant_range`](@ref) contract is asserted across the level-0
+`false`: no [`descendant_range`](@ref DiscreteGlobalGrids.descendant_range) contract is asserted across the level-0
 to level-1 quintant fan-out.
 
-  - [`treeify`](@ref) uses selection mode and materializes root indices;
+  - `treeify` uses selection mode and materializes root indices;
     prefer a [`PartialGrid`](@ref DiscreteGlobalGrids.Engine.PartialGrid) for
     deep grids — a complete one is O(cells) in memory and not viable past
     about level 12.

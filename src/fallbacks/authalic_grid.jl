@@ -99,7 +99,7 @@ rejected. Wrap its system instead:
     PartialGrid(AuthalicSystem(sys), level, ids)
 
 A grid whose system publishes geodetic geometry already — A5, Copernicus DEM;
-see [`Fallbacks.publishes_geodetic_geometry`](@ref) — is rejected too, because
+see `Fallbacks.publishes_geodetic_geometry` — is rejected too, because
 warping it would convert a second time.
 
 See also [`AuthalicSystem`](@ref).
@@ -289,7 +289,7 @@ levels, ordering, and descendant ranges are forwarded unchanged.
 
 `ellipsoid` is read exactly as [`AuthalicGrid`](@ref)'s is. Wrapping an
 `AuthalicSystem` throws for the same reason, as does wrapping a system that is
-geodetic already (see [`Fallbacks.publishes_geodetic_geometry`](@ref)).
+geodetic already (see `Fallbacks.publishes_geodetic_geometry`).
 
 [`node_extent`](@ref) is recomputed with the analytic
 [`authalic_stretch`](@ref) bound because the warp is not an isometry.

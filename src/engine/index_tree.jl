@@ -12,8 +12,8 @@ const CellNode = GO.FlexibleRTrees.RTreeNode{CellTree,XYZExtent}
 """
     IndexTree(grid)
 
-A spatial tree over grid indices, built from every cell's [`cell_cap`](@ref).
-[`treeify`](@ref) uses it only for grids without a hierarchy.
+A spatial tree over grid indices, built from cell caps in `O(ncells)` time and
+memory. [`treeify`](@ref ConservativeRegridding.Trees.treeify) uses it only for grids without a hierarchy.
 
 - `caps[i]` is the cap of grid index `i`; `rtree` is a
   `GeometryOps.FlexibleRTrees.RTree` over their boxes in STR order, and leaf

@@ -302,7 +302,7 @@ const ZARR_DGGS_COMPRESSIONS = ("none", "compacted", "ranges")
     ZarrDGGSConvention()
 
 `zarr-conventions/dggs`: a `zarr_conventions` declaration on the group naming
-[`ZARR_DGGS_UUID`](@ref), plus a `dggs` object carrying `name`,
+`ZARR_DGGS_UUID`, plus a `dggs` object carrying `name`,
 `refinement_level`, `spatial_dimension` and optionally `coordinate`,
 `compression`, `indexing_scheme` and `ellipsoid`.
 
@@ -656,7 +656,8 @@ const CONVENTION_REGISTRY = DGGSConvention[
 """
     DEFAULT_WRITE_CONVENTIONS
 
-What [`dggwrite`](@ref) stamps by default: `zarr-conventions/dggs` for the
+What [`dggwrite`](@ref DiscreteGlobalGrids.dggwrite) stamps by default:
+`zarr-conventions/dggs` for the
 encoding vocabulary a flat coordinate cannot express, and xdggs so the store
 opens in the ecosystem's own reader. The `zarr-conventions/dggs` half is
 written schema-VALID, which the stores in the wild are not.

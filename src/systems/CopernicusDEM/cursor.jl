@@ -27,7 +27,7 @@ struct Blocked{K} <: BlockStrategy end
     Bisected()
 
 Split the longer axis in two, the rule both trees over this lattice use. This
-is what [`treeify`](@ref) builds.
+is what [`treeify`](@ref ConservativeRegridding.Trees.treeify) builds.
 """
 struct Bisected <: BlockStrategy end
 
@@ -39,7 +39,7 @@ const DEFAULT_STRATEGY = Bisected()
                 strategy = DEFAULT_STRATEGY)
 
 A spatial-tree cursor over a rectangle of the complete Copernicus DEM lattice.
-Prefer [`treeify`](@ref), which wraps it in a [`MemoBlockCursor`](@ref).
+Prefer [`treeify`](@ref ConservativeRegridding.Trees.treeify), which wraps it in a [`MemoBlockCursor`](@ref).
 
   - A node is either a tile rectangle (`inpixels == false`) or a raster
     rectangle within tile `(r0, q0)` (`inpixels == true`).

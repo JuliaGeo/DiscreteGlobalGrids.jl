@@ -27,10 +27,10 @@ fig                                                                            #
 # resolutions. Choose a system for its cell geometry and compatibility with
 # your data, then choose a level for the cell size you need.
 #
-# This tutorial compares five systems, finds a level from a size in metres,
+# This tutorial compares the global systems, finds a level from a size in metres,
 # and checks the coordinate convention used to locate cells. The globes above
-# show cells roughly 800 km across; the [DGGS gallery](../all_dggs.md) includes
-# all systems in the package.
+# show cells roughly 800 km across. This tutorial compares five systems;
+# the [DGGS gallery](../all_dggs.md) shows the supported global systems.
 
 import DiscreteGlobalGrids as DGG
 import GeometryOps as GO
@@ -47,6 +47,12 @@ using Statistics
 # | A5 | Pentagons | A single cell shape with nearly equal areas |
 # | HEALPix | Curved quadrilaterals | Equal-area cells and compatibility with HEALPix maps |
 # | ISEA4R | Rhombi | Equal-area cells with four edge neighbours |
+#
+# H3 supports native H3 identifiers. HEALPix supports nested and ring index
+# conversion; reorder values when changing pixel order. ISEA4R numbering is package-defined;
+# compatibility with external ISEA4R identifiers is not established.
+#
+# ### Compare physical resolution
 #
 # Cell shape affects neighbourhood calculations. Cell area affects the weights
 # needed for spatial averages. We examine both below.

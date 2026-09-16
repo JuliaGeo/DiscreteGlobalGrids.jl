@@ -101,7 +101,7 @@ end
 """
     RasterTileTree(grid, inds; arity = RASTER_TILE_ARITY)
 
-The tile layer of the tree [`treeify`](@ref) builds for a grid that answers
+The tile layer of the tree [`treeify`](@ref ConservativeRegridding.Trees.treeify) builds for a grid that answers
 [`raster_tiles`](@ref): the tiles covering grid indices `inds`, sorted by the
 Morton key of their cap centres, with a cap and a pixel count stored per node.
 

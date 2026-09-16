@@ -9,7 +9,7 @@ pentagons, and resolutions `0:15`. [`H3Cell`](@ref) wraps libh3's `UInt64` id;
 
 Canonical order is base-cell-major, then H3 child position with deleted
 pentagon paths omitted. It matches raw-id order within a resolution and makes
-subtrees contiguous, enabling exact [`descendant_range`](@ref) values. Geometry,
+subtrees contiguous, enabling exact [`descendant_range`](@ref DiscreteGlobalGrids.descendant_range) values. Geometry,
 location, hierarchy, and adjacency use libh3; `border.jl` implements the
 digit-arc subtree border. [`node_extent`](@ref) uses the generic inflated cap.
 """

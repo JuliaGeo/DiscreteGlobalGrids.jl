@@ -20,9 +20,9 @@ of [`neighbors`](@ref).
 Construction does not materialize the halo. The iterator holds `O(depth)` walk
 state and bounded neighbour containers.
 
-[`Base.IteratorSize`](@ref) is `HasLength()` only when an engine derives an
+`Base.IteratorSize` is `HasLength()` only when an engine derives an
 exact count; otherwise it is `SizeUnknown()`, and
-[`sizehint`](@ref DiscreteGlobalGrids.sizehint) is the inexact estimate.
+[`sizehint`](@ref DiscreteGlobalGrids.Engine.sizehint) is the inexact estimate.
 """
 struct SubtreeHaloIterator{S<:AbstractHierarchicalGridSystem,C<:AbstractCellIndex,
         K<:Connectivity,E}
@@ -156,7 +156,7 @@ halo_engine(sys::AuthalicSystem, c::AbstractCellIndex, target::Int,
 
 What [`halo`](@ref) returns, with `cells = true`, for a region that is not a
 rooted complete subtree. Construction is O(1); iteration uses an O(depth)
-frame stack and prunes with [`subset_span`](@ref). Its size is unknown.
+frame stack and prunes with `subset_span`. Its size is unknown.
 """
 struct SubsetHaloIterator{S,K<:Connectivity,E}
     subset::S
@@ -190,7 +190,7 @@ returns by default, and what [`halo_indices`](@ref) wraps an id walk in.
 
 Yields `Int`, strictly increasing, one per cell of the underlying walk and in
 the same order. Everything else is the wrapped iterator's:
-[`Base.IteratorSize`](@ref), the `length` that exists on exactly two engines and
+`Base.IteratorSize`, the `length` that exists on exactly two engines and
 on no others, resumability, and the `O(depth)` state.
 """
 struct HaloIndexIterator{I,G}
@@ -322,7 +322,7 @@ const _SPAN_ALL = 2
 How much of the index block `lo:hi` of the subset's own complete level the
 subset holds: `_SPAN_NONE`, `_SPAN_SOME` or `_SPAN_ALL`.
 
-The block is a node's [`descendant_range`](@ref). Classification costs
+The block is a node's [`descendant_range`](@ref DiscreteGlobalGrids.descendant_range). Classification costs
 O(log(number of windows)) for [`CellVector`](@ref) and O(log(number of cells))
 for [`PartialGrid`](@ref), without scanning the block.
 
@@ -658,7 +658,7 @@ end
 
 Every cell of the target level in index order, the descendants skipped and
 the rest tested. `O(1)` memory and canonical by construction, but `O(ncells)`
-time — the price of a system with no [`descendant_range`](@ref) to prune by, and
+time — the price of a system with no [`descendant_range`](@ref DiscreteGlobalGrids.descendant_range) to prune by, and
 A5 is the only one. See the comment above this type for what a dedicated A5
 engine would have to prove first.
 """
@@ -739,7 +739,7 @@ subset's span can still be emitted as a halo cell. Nodes are descended only when
 the subset touches them or one of their same-level neighbours.
 
 `O(depth)` memory beyond the subset's own storage. A system with no
-[`descendant_range`](@ref) gets [`ScanHaloEngine`](@ref), for the same reason it
+[`descendant_range`](@ref DiscreteGlobalGrids.descendant_range) gets [`ScanHaloEngine`](@ref), for the same reason it
 does at a subtree.
 
 This is not a system extension point because its subject is an arbitrary
@@ -922,7 +922,7 @@ are one per face and ascending by face, so the concatenation is already the
 canonical merge.
 
 `faceside` is a face's full lattice side at `level`. Yields [`LevelIndex`](@ref)
-on [`SquareBorderEngine`](@ref)'s reasoning and takes the same
+on `SquareBorderEngine`'s reasoning and takes the same
 [`quadrant_step`](@ref) curves. `O(candidates + depth)` time, `O(depth)` memory.
 
 `check` decides both the emit rule and the count contract:
@@ -930,7 +930,7 @@ on [`SquareBorderEngine`](@ref)'s reasoning and takes the same
   - [`NoCheck`](@ref) — the block is nowhere flush with its face edge, the one
     rectangle is the width-1 band, and band and halo are the same set. The count
     is closed form, `4·side + 4` or `4·side` under `Edge()`, so
-    [`Base.IteratorSize`](@ref) is `HasLength()`.
+    `Base.IteratorSize` is `HasLength()`.
   - [`NativeCheck`](@ref) — the block is flush somewhere, the rectangles are a
     conservative superset, and every candidate is tested before it is yielded.
     No perimeter formula survives a seam (a cube corner is three cells, not
@@ -1518,8 +1518,8 @@ it is yielded. The ring is in descendant-range order and the blocks are disjoint
 so concatenating the neighbours' streams is already the canonical merge.
 
 Memory is `O(depth)`: one seeded engine and frame stack plus the fixed ring.
-[`Base.IteratorSize`](@ref) is `SizeUnknown()` and `length` is not defined. The
-formula used by [`sizehint`](@ref DiscreteGlobalGrids.sizehint) has not been
+`Base.IteratorSize` is `SizeUnknown()` and `length` is not defined. The
+formula used by [`sizehint`](@ref DiscreteGlobalGrids.Engine.sizehint) has not been
 derived for every seeded
 transition and therefore is not an exact-length contract.
 """

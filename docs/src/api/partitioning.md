@@ -91,24 +91,39 @@ kernel contracts.
 A regridding partition assigns **destination chunks**. Source chunks remain
 read dependencies: several partitions may need the same source.
 
-```julia
-import GlobalRegridding as GR
-
+```@example partitioning
+source = DGG.levelgrid(DGG.HEALPixSystem(), 1)
+target = DGG.levelgrid(DGG.HEALPixSystem(), 2)
+values = ones(DGG.ncells(source))
+regridplan = DGG.plan_regrid(values; from=DGG.DGGSpace(source; chunklevel=0),
+    to=DGG.DGGSpace(target; chunklevel=1), method=DGG.NearestCell(), lazy=true)
 assignment = DGG.partition(regridplan, 4)
 destination_chunks = DGG.partchunks(assignment, 1)
 source_chunks = DGG.partsources(assignment, 1)
+@assert sort(vcat([DGG.partindices(assignment, p) for p in 1:4]...)) ==
+    collect(1:length(DGG.partitionproblem(regridplan).ids))
+(; destination_chunks, source_chunks)
 ```
 
-This reads `GR.dependencies(regridplan)`, the relation the plan already owns.
+This reads the dependency relation the plan already owns.
 It builds neither regridding weights nor a replacement dependency graph.
 The relation is conservative: a listed source may be ruled out when the
 actual interpolation or overlap weights are built.
 
 For a run whose graph rows correspond to application-specific chunk IDs,
 provide the mapping explicitly. For example, a Copernicus DEM run can use its
-destination store chunk numbers and source tile numbers:
+destination store chunk numbers and source tile numbers.
+The following is a schematic for an application that already has these objects:
 
-```julia
+| Placeholder | Required meaning |
+| --- | --- |
+| `dag.graph` | A GlobalRegridding chunk dependency graph |
+| `dag.order` | A permutation of its destination row positions |
+| `todochunks` / `tiles` | Application IDs aligned with destination / source graph rows |
+| `estimated_work` / `tile_bytes` | Nonnegative work / source weights in those row orders |
+| `worker_ids` / `worker_capacities` | Worker labels and relative positive compute capacities |
+
+```text
 problem = DGG.partitionproblem(dag.graph;
     ids=todochunks, sourceids=tiles, order=dag.order,
     weights=estimated_work, sourceweights=tile_bytes)

@@ -106,6 +106,8 @@ fig
 # ## Smoothing with mapneighbors
 #
 # `mapneighbors` applies a kernel once per cell and can thread those calls.
+# Its default neighborhood is `Disc(1)`. Use `Disc(k)` for all rings through `k`,
+# or `Ring(k)` for cells at exactly `k` steps.
 # With `pass = Values()`, the kernel receives `f(cell, value, neighbours)`:
 #
 # - `value` — the cell's own entry;
@@ -125,8 +127,11 @@ smoothed = smooth(field)
 
 var(field), var(smoothed)
 
-# Repeating the pass increases the radius of the operation and produces a
-# simple diffusion process.
+# Repeating the pass produces diffusion. Its result depends on multiple paths
+# through intermediate cells, and each pass includes the center again. Two
+# passes therefore do not equal one uniform average over a radius-two disk.
+# Direct `neighbors(grid, cell, 2)` and `ring(grid, cell, 2)` queries are available,
+# but the sweep API cannot yet apply either neighborhood across the whole field.
 
 diffused = foldl((v, _) -> smooth(v), 1:10; init = field)
 var(diffused)

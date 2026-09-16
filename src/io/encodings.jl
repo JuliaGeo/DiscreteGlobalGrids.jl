@@ -54,7 +54,7 @@ export idranges, write_eligible, validate_ranges, cellaxis, storedid
 
 The number of cells of `grid` whose raw id is strictly less than `id` — a
 COUNT, so it is a zero-based rank and `idrank(grid, rawid(c)) + 1` is
-[`globalindex`](@ref)`(grid, c)`.
+[`globalindex`](@ref DiscreteGlobalGrids.globalindex)`(grid, c)`.
 
 **Total on the integer type.** `id` need not name a cell: an id above every
 cell of the level answers `ncells(grid)`, one below every cell answers `0`, and
@@ -64,7 +64,7 @@ a stored `[start, stop]` interval is counted by subtracting two ranks, and an
 interval's endpoints are not required to be cells.
 
 `grid` is a complete level grid; rank is meaningless against a subset, which
-has [`localindex`](@ref) instead.
+has [`localindex`](@ref DiscreteGlobalGrids.localindex) instead.
 
 **Required** of a grid that is to be read from a store, together with
 [`idselect`](@ref) and [`idcount_between`](@ref).

@@ -433,6 +433,63 @@ Base.@constprop :aggressive function _shell_ring(walk::W, grid::AbstractGrid,
     return _wound_ring(walk, grid, c, steps, cap)
 end
 
+# --- the static walk: one fresh buffer per shell ----------------------------
+#
+# `K` is a type parameter, so this walk unrolls: shell `j` is built once into
+# its own buffer and never written again. A buffer that is read, refilled and
+# then returned is one the compiler cannot keep on the stack, which is where
+# the `Integer` walk's three-buffer rotation lands every shell; a buffer with
+# one writer and one reader stays an alloca. Every exit freezes the shell it
+# returns, so all of them hand back one isbits type.
+
+@inline function _fill_shell!(next, walk::W, prev2, prev1) where {W}
+    for f in prev1
+        R = walk(f)
+        m = length(R)
+        m == 0 && continue
+        # Start the arc after the last inward neighbour. The inward set is
+        # contiguous in the turn, so one index is the whole boundary.
+        a = 0
+        for i in 1:m
+            _member(prev2, @inbounds R[i]) && (a = i)
+        end
+        for t in 1:m
+            y = @inbounds R[mod1(a + t, m)]
+            (_member(prev2, y) || _member(prev1, y) || _member(next, y)) &&
+                continue
+            push!(next, y)
+        end
+    end
+    return nothing
+end
+
+@inline function _static_shells!(walk::W, grid, centre, frame, prev2, prev1,
+        ::Val{J}, ::Val{K}, cap, out) where {W,J,K}
+    next = _shellbuf(cap, eltype(prev1))
+    _fill_shell!(next, walk, prev2, prev1)
+    _pin_phase!(next, grid, centre, frame)
+    _absorb!(out, next)
+    (J == K || isempty(next)) && return _freeze(next)
+    return _static_shells!(walk, grid, centre, frame, prev1, next, Val(J + 1),
+        Val(K), cap, out)
+end
+
+@inline function _static_walk(walk::W, grid::AbstractGrid, c::T, ::Val{K}, cap,
+        out) where {W,T,K}
+    prev1 = _shellbuf(cap, T)
+    for x in walk(c)
+        push!(prev1, x)
+    end
+    _absorb!(out, prev1)
+    (K == 1 || isempty(prev1)) && return _freeze(prev1)
+    centre = cell_centroid(grid, c)
+    frame = _ring_frame(grid, centre, @inbounds prev1[1])
+    prev2 = _shellbuf(cap, T)
+    push!(prev2, c)
+    return _static_shells!(walk, grid, centre, frame, prev2, prev1, Val(2),
+        Val(K), cap, out)
+end
+
 # `K` is a type parameter, so `maxring` and `static_capacity` fold to a concrete
 # `Val{N}` here rather than to the abstract `Val` a run-time `steps` produces.
 # That is what lets the walk's buffers stay on the stack, and it is the only
@@ -445,7 +502,8 @@ function _static_shell_ring(walk::W, grid::AbstractGrid, c::T, ::Val{K},
         return @inbounds shells[K]
     end
     cap = static_capacity(maxring(grid, K, connectivity), T)
-    return _freeze(_wound_walk(walk, grid, c, K, cap, nothing))
+    cap === nothing && return _wound_ring(walk, grid, c, K, cap)
+    return _static_walk(walk, grid, c, Val(K), cap, nothing)
 end
 
 # `maxneighbors(sys, k, conn)` sums `maxring` in a loop, and a loop is opaque to
@@ -472,8 +530,11 @@ function _static_shell_disc(walk::W, grid::AbstractGrid, c::T, ::Val{K},
         return reduce(vcat, _shells_azimuth(walk, grid, c, K); init = T[])
     end
     cap = static_capacity(maxring(grid, K, connectivity), T)
-    out = _shellbuf(static_capacity(_disc_bound(grid, Val(K), connectivity), T), T)
-    _wound_walk(walk, grid, c, K, cap, out)
+    bound = static_capacity(_disc_bound(grid, Val(K), connectivity), T)
+    (cap === nothing || bound === nothing) && return _wound_disc(walk, grid,
+        c, K, cap, maxneighbors(grid, K, connectivity))
+    out = _shellbuf(bound, T)
+    _static_walk(walk, grid, c, Val(K), cap, out)
     return _freeze(out)
 end
 
@@ -512,35 +573,51 @@ wrap point of a rotated sorted sequence and a binary search finds it in
 because the sequence really is a rotation of a sorted one, which is what a
 declared [`winding`](@ref) asserts and `test_grid_interface` checks.
 """
-function _pin_phase!(shell::AbstractVector, grid, centre, frame)
+@inline function _pin_phase!(shell::AbstractVector, grid, centre, frame)
     n = length(shell)
     n <= 1 && return shell
     e1, e2, zero = frame
-    ph(i) = _phase(_azimuth(centre, e1, e2,
-        cell_centroid(grid, @inbounds shell[i])) - zero)
     # Against a FIXED reference, so the search costs one centroid per step
     # rather than two: phase rises to the end of the turn and restarts, so
     # `phase < phase[1]` is false along the tail and true from the wrap on, and
     # the first index where it holds is the start. No wrap means index 1.
-    first_phase = ph(1)
-    first_phase <= ph(n) && return shell
+    first_phase = _shell_phase(shell, 1, grid, centre, e1, e2, zero)
+    first_phase <= _shell_phase(shell, n, grid, centre, e1, e2, zero) && return shell
     lo, hi = 1, n
     while lo < hi
         mid = (lo + hi) >> 1
-        if ph(mid) >= first_phase
+        if _shell_phase(shell, mid, grid, centre, e1, e2, zero) >= first_phase
             lo = mid + 1
         else
             hi = mid
         end
     end
     lo == 1 && return shell
-    # Rotate left by `lo - 1` with three reversals rather than a scratch copy:
-    # the buffer may be a stack container, where allocating a `similar` would
-    # put the walk back on the heap for the sake of one rotation.
-    s = lo - 1
-    reverse!(view(shell, 1:s))
-    reverse!(view(shell, (s + 1):n))
-    reverse!(shell)
+    _rotate_left!(shell, lo - 1)
+    return shell
+end
+
+@inline _shell_phase(shell, i::Int, grid, centre, e1, e2, zero) =
+    _phase(_azimuth(centre, e1, e2, cell_centroid(grid, @inbounds shell[i])) - zero)
+
+# Everything that touches the shell here is inlined and index-based: a closure
+# or a `view` over the buffer hands its address to code the compiler cannot see
+# through, and a stack buffer whose address escapes is a heap buffer.
+@inline function _reverse_range!(shell, lo::Int, hi::Int)
+    while lo < hi
+        @inbounds shell[lo], shell[hi] = shell[hi], shell[lo]
+        lo += 1
+        hi -= 1
+    end
+    return shell
+end
+
+# Rotate left by `s` with three reversals, so no scratch copy is needed.
+@inline function _rotate_left!(shell, s::Int)
+    n = length(shell)
+    _reverse_range!(shell, 1, s)
+    _reverse_range!(shell, s + 1, n)
+    _reverse_range!(shell, 1, n)
     return shell
 end
 

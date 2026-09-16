@@ -131,6 +131,25 @@ var(field), var(smoothed)
 diffused = foldl((v, _) -> smooth(v), 1:10; init = field)
 var(diffused)
 
+# `neighborhood = Disc(3)` widens one pass to every cell within three steps.
+# The kernel is unchanged: `nbs` holds the three rings concatenated outward,
+# in the order [`neighbors`](@ref) fixes, and the same average runs once over
+# the whole disc. `Ring(3)` would hand it only the cells at exactly three
+# steps.
+
+wide = DGG.mapneighbors((c, x, nbs) -> (x + sum(nbs)) / (1 + length(nbs)),
+    field; pass = DGG.Values(), neighborhood = DGG.Disc(3))
+var(wide)
+
+# One pass at radius 3 and three one-ring passes are different computations.
+# The disc pass weights every cell within three steps equally; the repeated
+# passes compound, reaching a cell two steps away through every path of length
+# two, so their weights fall off with distance. Choose the selector for a
+# stencil of a given radius, and repetition for a diffusion process.
+
+threepasses = foldl((v, _) -> smooth(v), 1:3; init = field)
+maximum(abs, wide .- threepasses)
+
 # Close up, over Europe and North Africa. `Covering(box)` selects every cell
 # over a lon/lat box, and the result keeps its cell lookup, so `dggpoly` draws
 # it as readily as the whole grid.

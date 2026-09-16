@@ -146,6 +146,7 @@ using .Engine: PartialGrid,
     AdjacencyTable, halocells, haloindices,
     SubsetIndexedCell, cellid,
     mapneighbors, foreachneighbors, StorageOrder,
+    Neighborhood, Disc, Ring,
     NeighborCallbackError,
     AbstractNeed, Cell, Index, Local, Global, Value, Centroid,
     cellfield
@@ -414,6 +415,8 @@ export ancestor, descendants, descendant_range
 export subtree
 export cellid
 export mapneighbors, foreachneighbors
+export Disc, Ring
+public Neighborhood
 
 # --- The region verbs ------------------------------------------------------
 # A region is a subset of one complete level, or a complete level itself: the

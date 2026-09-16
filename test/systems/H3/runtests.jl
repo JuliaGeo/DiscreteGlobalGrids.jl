@@ -18,6 +18,9 @@ import DiscreteGlobalGrids as DGG
 using DiscreteGlobalGridsConformanceTesting
 using SmallCollections: SmallVector
 
+include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
+using .DGGTestHelpers: FORCED_BOUNDS_CHECKS
+
 const H3 = DGG.H3
 const H3N = H3.H3Native
 const S = H3.H3System()
@@ -453,10 +456,10 @@ end
         for x in (c, pent)
             DGG.neighbors(grid, x, Val(2)); DGG.neighbors(grid, x, Val(3))
             DGG.ring(grid, x, Val(2)); DGG.ring(grid, x, Val(3))
-            @test @allocated(DGG.neighbors(grid, x, Val(2))) == 0 skip = VERSION < v"1.12"
-            @test @allocated(DGG.neighbors(grid, x, Val(3))) == 0 skip = VERSION < v"1.12"
-            @test @allocated(DGG.ring(grid, x, Val(2))) == 0 skip = VERSION < v"1.12"
-            @test @allocated(DGG.ring(grid, x, Val(3))) == 0 skip = VERSION < v"1.12"
+            @test @allocated(DGG.neighbors(grid, x, Val(2))) == 0 skip = VERSION < v"1.12" || FORCED_BOUNDS_CHECKS
+            @test @allocated(DGG.neighbors(grid, x, Val(3))) == 0 skip = VERSION < v"1.12" || FORCED_BOUNDS_CHECKS
+            @test @allocated(DGG.ring(grid, x, Val(2))) == 0 skip = VERSION < v"1.12" || FORCED_BOUNDS_CHECKS
+            @test @allocated(DGG.ring(grid, x, Val(3))) == 0 skip = VERSION < v"1.12" || FORCED_BOUNDS_CHECKS
         end
     end
 

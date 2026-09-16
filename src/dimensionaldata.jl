@@ -347,6 +347,10 @@ DGG.region(lk::AbstractCellLookup) = DGG.region(parent(lk))
 # searches below — and `searchsortedfirst` on the lookup — sound.
 Lookups.order(::AbstractCellLookup) = Lookups.ForwardOrdered()
 Lookups.metadata(::AbstractCellLookup) = Lookups.NoMetadata()
+# A cell is a region, so a value on it describes that region. Its id names the
+# whole region, so there is no locus within it to shift to.
+Lookups.sampling(::AbstractCellLookup) = Lookups.Intervals(Lookups.Center())
+Lookups.shiftlocus(::Lookups.Center, lk::AbstractCellLookup) = lk
 
 # DimensionalData passes concatenated values through `rebuild`. Ascending cell
 # ids remain compressed; other orders become an unordered categorical lookup.

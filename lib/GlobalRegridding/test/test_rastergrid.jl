@@ -235,6 +235,30 @@ end
               GR.localindex(wrapped, 5, 3)
     end
 
+    @testset "point sample sites" begin
+        # Irregular posts: the midpointed edges bound the cells, but the sites
+        # stay at the lookup values, and the spacing bounds the widest gap
+        # between sites (9°) rather than between edges (5°).
+        xs = [0.0, 1.0, 10.0, 11.0]
+        ys = [0.0, 2.0, 3.0]
+        posts = RasterGrid(DD.DimArray(zeros(4, 3), (DD.X(xs), DD.Y(ys))))
+        @test posts.xedges == [-0.5, 0.5, 5.5, 10.5, 11.5]
+        @test GR.chartaxes(posts) == (xs, ys)
+        @test cellcentroid(posts, GR.localindex(posts, 3, 2)) ==
+              geographic_point(10.0, 2.0)
+        @test all(cellat(posts, cellcentroid(posts, i)) == i for i in 1:ncells(posts))
+        @test GR.chartspacing(posts)[1] >= deg2rad(9.0)
+
+        # Intervals keep their cell centres.
+        intervals = RasterGrid(DD.DimArray(zeros(8, 4), (
+            DD.X(DD.Lookups.Sampled(-180.0:45.0:135.0;
+                sampling = DD.Lookups.Intervals(DD.Lookups.Start()))),
+            DD.Y(DD.Lookups.Sampled(-90.0:45.0:45.0;
+                sampling = DD.Lookups.Intervals(DD.Lookups.Start()))))))
+        @test GR.chartaxes(intervals) == (collect(raster_lon()), collect(raster_lat()))
+        @test GR.sourcesampling(intervals) isa DD.Lookups.Intervals
+    end
+
     @testset "lookup order" begin
         # Lookup order and array orientation do not change cell geometry.
         forward = rg_forward()

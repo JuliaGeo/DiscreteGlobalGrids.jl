@@ -193,6 +193,62 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         @test DD.dims(regrid(src; to = yfirst)) isa Tuple{<:DD.Y,<:DD.X}
     end
 
+    @testset "Auto chooses the method from the source's sampling" begin
+        f(lon, lat) = 2.0 + sind(2 * lat) + 0.25 * cosd(lon)
+        xs, ys = t6_centres(-180, 180, 36), t6_centres(-90, 90, 18)
+        dst = t6_space(t6_centres(-180, 180, 9), t6_centres(-90, 90, 6))
+        intervals(v) = DD.Lookups.Sampled(v; order = DD.Lookups.ForwardOrdered(),
+            span = DD.Lookups.Regular(v[2] - v[1]),
+            sampling = DD.Lookups.Intervals(DD.Lookups.Center()))
+
+        # Posts interpolate; DimensionalData gives unannotated lookups `Points`.
+        posts = t6_raster(f, xs, ys)
+        @test DD.sampling(DD.lookup(posts, DD.X)) isa DD.Lookups.Points
+        @test GR.resolvemethod(Auto(), posts, RasterGrid(posts)) == BarycentricPoint()
+        auto = regrid(posts; to = dst, method = Auto())
+        @test isequal(parent(auto),
+            parent(regrid(posts; to = dst, method = BarycentricPoint())))
+        @test DD.sampling(DD.lookup(auto, DD.X)) isa DD.Lookups.Points
+
+        # Cell means conserve, and the plan holds the resolved method.
+        means = DD.DimArray(parent(posts), (DD.X(intervals(xs)), DD.Y(intervals(ys))))
+        @test plan_regrid(means; to = dst, method = Auto()).method == Conservative()
+        @test isequal(parent(regrid(means; to = dst, method = Auto())),
+            parent(regrid(means; to = dst, method = Conservative())))
+        @test plan_regrid(means; to = dst, method = Auto(), lazy = true).method ==
+              Conservative()
+
+        # A bare array reads the sampling off its source space.
+        @test GR.resolvemethod(Auto(), parent(means), RasterGrid(means)) == Conservative()
+        @test GR.sourcesampling(RasterGrid(posts)) isa DD.Lookups.Points
+
+        # An explicit method is never second-guessed.
+        @test GR.resolvemethod(NearestCell(), means, RasterGrid(means)) == NearestCell()
+
+        # Lookups that disagree, or a source that says nothing, are refused.
+        mixed = DD.DimArray(parent(posts), (DD.X(intervals(xs)), DD.Y(ys)))
+        @test_throws ArgumentError regrid(mixed; to = dst, method = Auto())
+        toy = ToyLonLatSpace(4, 2)
+        @test GR.sourcesampling(toy) === nothing
+        @test_throws ArgumentError regrid(zeros(ncells(toy)); from = toy, to = toy,
+            method = Auto())
+    end
+
+    @testset "irregular posts interpolate at their own coordinates" begin
+        # Midpointed edges do not centre irregular posts, so the sample sites
+        # must be the lookup values themselves. Q1 on the lon/lat chart
+        # reproduces a function linear in both exactly.
+        f(lon, lat) = 1.0 + 0.02 * lon - 0.05 * lat
+        xs = [0.0, 1.0, 10.0, 11.0, 30.0]
+        ys = [0.0, 2.0, 3.0, 20.0]
+        src = t6_raster(f, xs, ys)
+        dxs, dys = [0.5, 4.0, 10.5, 25.0], [1.0, 2.5, 15.0]
+        dst = t6_space(dxs, dys)
+        out = regrid(src; to = dst, method = BarycentricPoint())
+        @test all(isapprox(out[GR.localindex(dst, i, j)], f(dxs[i], dys[j]);
+            atol = 1e-12) for i in eachindex(dxs), j in eachindex(dys))
+    end
+
     @testset "a raster names its own space" begin
         f(lon, lat) = 2.0 + sind(2 * lat) + 0.25 * cosd(lon)
         src = t6_raster(f, t6_centres(-180, 180, 36), t6_centres(-90, 90, 18))

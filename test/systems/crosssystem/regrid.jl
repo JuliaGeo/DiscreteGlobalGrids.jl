@@ -486,6 +486,22 @@ end
     @test_throws "from = $named" DGG.regrid(onto; to = GRID)
 end
 
+@testset "Auto reads a cell as the region it covers" begin
+    # A cell axis is `Intervals`, whether it arrives on a cube or as a bare
+    # grid, so its values are averaged back rather than interpolated.
+    onto = DGG.regrid(RASTER; to = GRID)
+    @test DD.sampling(DD.lookup(onto, 1)) isa DD.Intervals
+    @test GR.sourcesampling(DGG.DGGSpace(GRID)) isa DD.Intervals
+    auto(data; kwargs...) = DGG.plan_regrid(data; method = DGG.Auto(), kwargs...).method
+    @test auto(onto; to = SRC, from = GRID) == GR.Conservative()
+    @test auto(parent(onto)[:, 1]; to = SRC, from = GRID) == GR.Conservative()
+
+    # The raster's own axes choose on the way onto the cells.
+    @test auto(RASTER; to = GRID) == GR.Conservative()
+    posts = DD.set(RASTER, DD.X => DD.Points(), DD.Y => DD.Points())
+    @test auto(posts; to = GRID) == GR.BarycentricPoint()
+end
+
 @testset "Extensive conserves the global integral" begin
     out = DGG.regrid(RASTER; to = GRID, missingpolicy = GR.Extensive())
     for m in 1:2

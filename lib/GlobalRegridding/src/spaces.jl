@@ -310,6 +310,28 @@ fastest dimension first, with lookups carrying `sampling`. The default is
 destinationdims(::RegridSpace, ::DD.Lookups.Sampling) = nothing
 
 """
+    sourcesampling(space::RegridSpace) -> Sampling or nothing
+
+Return what a value on this space represents: `Intervals` for an average over
+its cell, `Points` for a sample at its site, or `nothing` when the space does
+not say. [`Auto`](@ref) reads it for sources that carry no dimensions of their
+own. The default is `nothing`.
+"""
+sourcesampling(::RegridSpace) = nothing
+
+# The one sampling a set of spatial dimensions agrees on, or `nothing` when none
+# of them says `Points` or `Intervals`.
+function _commonsampling(ds)
+    s = map(d -> DD.sampling(DD.lookup(d)), Tuple(ds))
+    all(x -> x isa DD.Lookups.Points, s) && return first(s)
+    all(x -> x isa DD.Lookups.Intervals, s) && return first(s)
+    any(x -> x isa Union{DD.Lookups.Points,DD.Lookups.Intervals}, s) || return nothing
+    throw(ArgumentError(
+        "the spatial dimensions $(map(DD.name, Tuple(ds))) disagree on what a value " *
+        "represents, with samplings $s; pass `method` explicitly"))
+end
+
+"""
     dimsource(lookup) -> `from` target or nothing
 
 Return the source a lookup already names, or `nothing`. A lookup that carries

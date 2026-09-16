@@ -78,7 +78,7 @@ export RasterGrid
 
 # Methods
 export AbstractRegriddingMethod
-export Conservative, NearestCell, BarycentricPoint
+export Conservative, NearestCell, BarycentricPoint, Auto
 export DirectNearest
 export buildweights!, supportradius
 
@@ -110,7 +110,7 @@ public knownempty, sourcemissingval, chunkat, cellarea
 public outputmissingval, destinationmissingval, rebuildoutput
 public residency, LazyStats, ShapedRegridArray
 public spilledfiles, usesreference
-public outputsampling, destinationdims, dimsource
+public outputsampling, destinationdims, dimsource, sourcesampling, samplingmethod
 
 # Qualified `RegridSpace` extension hooks. Their declarations and contracts are
 # grouped by responsibility in spaces.jl; they stay unexported to avoid generic

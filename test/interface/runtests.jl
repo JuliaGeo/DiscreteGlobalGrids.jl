@@ -80,7 +80,7 @@ end
     @test UnimplementedIndex() isa AbstractCellIndex
 
     # Required interface names are exported.
-    for n in (:ncells, :cellindex, :cell_boundary, :cell_centroid, :localindex,
+    for n in (:ncells, :cellindex, :cell_boundary, :cell_centroid, :cell_polygon, :localindex,
               :globalindex, :rawid, :reindex, :cellindextypes,
               :cell_area, :cell_extent, :getcell, :cellat, :neighbors, :ring,
               :treeify, :query, :system, :level, :cellindextype, :levels,
@@ -264,7 +264,8 @@ end
     @test_throws MethodError cell_boundary(g, c)
     @test_throws MethodError cell_centroid(g, c)
     @test_throws MethodError globalindex(g, c)
-    @test_throws MethodError DGG.cell_polygon(g, c)
+    @test_throws MethodError cell_polygon(g, c)
+    @test !hasmethod(cell_polygon, Tuple{AbstractHierarchicalGridSystem,AbstractCellIndex})
     @test_throws MethodError cell_area(g, c)
     @test_throws MethodError cell_extent(g, c)
     @test_throws MethodError getcell(g, 1)

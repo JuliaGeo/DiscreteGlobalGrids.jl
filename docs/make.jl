@@ -75,6 +75,7 @@ makedocs(;
         "API" => [
             "The grid interface" => "api/grid-interface.md",
             "Selecting cells" => "api/selecting-cells.md",
+            "Rasterize, extract, and zonal" => "api/raster-work.md",
             "Choosing a regridding method" => "api/regridding-methods.md",
             "Region boundaries" => "api/boundaries.md",
             "Neighbours and stencils" => "api/neighbors.md",

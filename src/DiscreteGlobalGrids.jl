@@ -162,7 +162,7 @@ using .Engine: SquareBandEngine, square_halo_engine, generic_halo_engine,
 # shared arithmetic and geometry their own files call.
 using .Fallbacks: nbasefaces, systemname, idname,
     subtree_curve, subtree_orientation,
-    nside, checked_id, chart_perimeter, sampled_cap,
+    nside, checked_id, chart_perimeter, sampled_cap, corner_cap,
     morton_encode, morton_decode
 
 # The Snyder/icosahedron basis IGeo7 and ISEA4R share, before either of them.
@@ -235,6 +235,13 @@ Base.include(CopernicusDEM, joinpath(@__DIR__, "systems", "CopernicusDEM", "poin
 # After it: a target resolution may be spelled as a raster or a regrid space.
 include("sizing.jl")
 include("deprecated.jl")
+
+# Package-owned raster verbs: keyword destinations cannot dispatch Rasters verbs.
+include("raster/common.jl")
+include("raster/selection.jl")
+include("raster/rasterize.jl")
+include("raster/extract.jl")
+include("raster/zonal.jl")
 
 # CopernicusDEM is deliberately absent: registering a system enrols it in every
 # cross-system sweep, whose hardcoded cases and level choices assume a globally
@@ -453,6 +460,19 @@ public cellfield
 public cap_inflation
 # Caught, not called.
 public NeighborCallbackError
+
+# The raster verbs. Rasters.jl owns the same ten names, so callers spell them
+# qualified and neither package shadows the other on `using`.
+public rasterize
+public rasterize!
+public extract
+public zonal
+public mask
+public mask!
+public boolmask
+public boolmask!
+public missingmask
+public missingmask!
 
 # --- Query predicates (DE9IM.jl types, our semantics) ----------------------
 export DE9IMPredicate

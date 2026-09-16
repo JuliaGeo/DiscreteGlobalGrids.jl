@@ -78,7 +78,7 @@ fig
 # ## Run the chunks in parallel
 #
 # `chunkplan` records each owned chunk and its surrounding input data.
-# `mapneighbors!` supplies one-ring neighbors only, so this kernel uses `halo=1`.
+# This kernel uses the default one-ring neighborhood, so `halo=1` is sufficient.
 # A larger halo does not enlarge that callback neighborhood. A built-in
 # second-order convolution is not currently available.
 

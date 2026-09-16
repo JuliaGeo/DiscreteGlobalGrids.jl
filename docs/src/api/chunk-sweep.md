@@ -76,14 +76,23 @@ globalindices
 
 ## The sweeps built on it
 
-Halo width describes available input data, not the callback's neighborhood.
-The built-in `mapneighbors` and `mapneighbors!` sweeps always supply one-ring
-neighbors. Setting `halo=2` does not request a second-order convolution.
-Wider context is available inside `foreachchunk`, but there is no built-in
-radius-k sweep. Repeating a one-ring sweep is a separate diffusion operation.
+Halo width describes available input data. The `neighborhood` selector
+chooses which cells the callback receives. Repeating a one-ring sweep
+is a different operation from one sweep over a wider neighborhood.
 
-For the supported one-ring sweep, a width-one halo supplies the surrounding
-axis members needed at owned chunk boundaries.
+[`mapneighbors!`](@ref DiscreteGlobalGrids.mapneighbors!) keeps that invariant itself. Its `halo` defaults to
+the radius of the `neighborhood` selector, `k` for both [`Disc`](@ref)`(k)`
+and [`Ring`](@ref)`(k)` and one ring for `Disc(0)`, and a supplied plan must carry at least that many
+rings: [`halowidth`](@ref)`(plan)` narrower than the radius throws an
+`ArgumentError` naming both widths. A wider halo than the radius is allowed.
+With `A` a stored cube, `out` a destination of the same shape and `kernel` a
+`(cell, value, values)` function:
+
+```julia
+plan = chunkplan(A; halo = 3)
+mapneighbors!(out, kernel, A, plan; neighborhood = Ring(3))   # halowidth(plan) ≥ 3
+mapneighbors!(out, kernel, A; neighborhood = Disc(3))         # plans halo = 3 itself
+```
 
 [`mapneighbors!`](@ref DiscreteGlobalGrids.mapneighbors!) is the streaming form: results are written into `dest` a
 chunk at a time, so neither the input nor the output has to fit in memory.

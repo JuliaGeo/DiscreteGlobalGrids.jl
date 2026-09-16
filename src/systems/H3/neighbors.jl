@@ -19,7 +19,9 @@ azimuth order with id tie-breaking.
 `k <= 1` returns a `SmallVector{6,H3Cell}` and **allocates nothing at all**,
 including at pentagons.
 
-`k >= 2` returns a `Vector{H3Cell}`, since `3k(k+1)` outgrows any static bound.
+`k >= 2` returns a `Vector{H3Cell}`, since `3k(k+1)` outgrows any static bound;
+the `Val(k)` form answers the same cells in the same order from a stack buffer
+while `3k(k+1)` fits [`static_capacity`](@ref).
 """
 Base.@constprop :aggressive function neighbors(grid::LevelGrid, c::H3Cell, k::Integer=1;
         connectivity::Connectivity=Vertex())
@@ -100,7 +102,71 @@ function one_ring(::LevelGrid, c::H3Cell, ::Connectivity)
     return out
 end
 
-# Rings at k >= 2, where the answer outgrows any static bound.
+# The `Val` forms: `K` is a type parameter, so the ring bound `6K` and the
+# disc bound `3K(K + 1)` are constants and libh3 writes each shell straight
+# into a stack buffer. The order is the native one the `Integer` forms above
+# answer, cell for cell; only the container changes.
+function neighbors(grid::LevelGrid, c::H3Cell, ::Val{K};
+        connectivity::Connectivity=Vertex()) where {K}
+    DGG.checked_steps(K)
+    K == 0 && return SmallVector{MAX_NEIGHBORS,H3Cell}()
+    K == 1 && return one_ring(grid, c, connectivity)
+    bound = DGG.static_capacity(DGG.Fallbacks._disc_bound(grid, Val(K),
+        connectivity), H3Cell)
+    bound === nothing && return neighbors(grid, c, K; connectivity)
+    out = _shellbuf(bound)
+    for x in one_ring(grid, c, connectivity)
+        push!(out, x)
+    end
+    for j in 2:K
+        _ring_into!(out, c, j, Val(K))
+    end
+    return SmallVector(out)
+end
+
+function ring(grid::LevelGrid, c::H3Cell, ::Val{K};
+        connectivity::Connectivity=Vertex()) where {K}
+    DGG.checked_steps(K)
+    K == 0 && return H3Cell[c]
+    K == 1 && return one_ring(grid, c, connectivity)
+    cap = DGG.static_capacity(DGG.maxring(grid, K, connectivity), H3Cell)
+    cap === nothing && return ring(grid, c, K; connectivity)
+    out = _shellbuf(cap)
+    _ring_into!(out, c, K, Val(K))
+    return SmallVector(out)
+end
+
+@inline _shellbuf(::Val{N}) where {N} = SmallCollections.MutableSmallVector{N,H3Cell}()
+
+# Append the shell at distance `k <= K` to `out`: libh3's ring walk, or at a
+# pentagon distortion the distance-bucketed disk sorted by azimuth, both into
+# buffers sized by `K` so they stay on the stack.
+@inline function _ring_into!(out, c::H3Cell, k::Int, ::Val{K}) where {K}
+    shell = H3Native.grid_ring_unsafe_static(c.id, k, Val(6K))
+    if shell !== nothing
+        for i in 1:6k
+            id = @inbounds shell[i]
+            id == 0 && continue
+            push!(out, H3Cell(id))
+        end
+        return nothing
+    end
+    cells, dists = H3Native.grid_disk_distances_static(c.id, k,
+        Val(3K * (K + 1) + 1))
+    frame = _tangent_frame(c.id)
+    keyed = SmallVector{6K,Tuple{Float64,H3Cell}}()
+    for i in eachindex(cells)
+        id = @inbounds cells[i]
+        (id == 0 || Int(@inbounds dists[i]) != k) && continue
+        keyed = _insert_sorted(keyed, (_azimuth(frame, id), H3Cell(id)))
+    end
+    for (_, cell) in keyed
+        push!(out, cell)
+    end
+    return nothing
+end
+
+# Rings at k >= 2 with a run-time `k`, where the answer outgrows any static bound.
 function _ring_vector(c::H3Cell, k::Int)
     shell = H3Native.grid_ring_unsafe(c.id, k)
     shell !== nothing && return [H3Cell(id) for id in shell if id != 0]

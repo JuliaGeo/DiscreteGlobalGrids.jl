@@ -36,7 +36,7 @@ import ..DiscreteGlobalGrids.Engine: PartialGrid, SubtreeIds,
 import ..DiscreteGlobalGrids.Engine: CellVector, cellset, covering,
     covering_indices, predicate_indices, windows, nwindows, RangeWindows, CellWindows, _derive,
     _windows, SubsetIndexedCell, mapneighbors, foreachneighbors,
-    StorageOrder, _capacity, _ringtype
+    StorageOrder, _capacity, _ringtype, Neighborhood, Disc, Ring, _steps, _checkneighborhood
 
 import SmallCollections
 import DimensionalData as DD
@@ -317,8 +317,9 @@ adjacency(lk::AbstractCellLookup, hpos::AbstractVector{<:Integer}; kw...) =
     adjacency(parent(lk), hpos; kw...)
 
 # Indexed handles use the parent vector's indices.
-neighbors(lk::AbstractCellLookup; connectivity::Connectivity=Vertex()) =
-    neighbors(parent(lk); connectivity)
+neighbors(lk::AbstractCellLookup; connectivity::Connectivity=Vertex(),
+        neighborhood=Disc(1)) =
+    neighbors(parent(lk); connectivity, neighborhood)
 
 # Delegate neighbourhood sweeps to the parent vector.
 mapneighbors(f, lk::AbstractCellLookup; kw...) = mapneighbors(f, parent(lk); kw...)
@@ -614,13 +615,15 @@ _checkpass(pass) = _needs_pass(pass)
 
 """
     mapneighbors(f, A::AbstractDimArray; spatialdim = nothing, pass = Neighbors(),
-                 order = StorageOrder(), threaded = true, connectivity = Vertex())
+                 order = StorageOrder(), threaded = true, connectivity = Vertex(),
+                 neighborhood = Disc(1))
     mapneighbors(f, A::AbstractDimArray; needs = (Value(a), Centroid()), ...)
 
-Apply a one-ring callback along a cell dimension. The default dimension is the
+Apply a neighborhood callback along a cell dimension. The default dimension is the
 first cell lookup; `spatialdim` accepts a DimensionalData dimension selector.
-A missing or non-cell dimension raises `ArgumentError`. Wider-radius sweeps
-are not currently supported.
+A missing or non-cell dimension raises `ArgumentError`.
+`neighborhood = Disc(k)` selects cells within `k` steps, excluding the center.
+`Ring(k)` selects cells at exactly `k` steps. The default is `Disc(1)`.
 
 [`Neighbors`](@ref) passes handles and returns one result per cell.
 [`Values`](@ref) passes scalar values and preserves all input dimensions.
@@ -639,15 +642,17 @@ mode examples and [Workflow execution details](@ref) for routing details.
 """
 function mapneighbors(f::F, A::DD.AbstractDimArray; spatialdim = nothing,
         needs = nothing, pass = Neighbors(), order = StorageOrder(),
-        threaded = true, connectivity::Connectivity = Vertex()) where {F}
+        threaded = true, connectivity::Connectivity = Vertex(),
+        neighborhood = Disc(1)) where {F}
     dnum = _cells_dimnum(A, spatialdim)
-    return _map_needs(needs, pass, f, A, dnum, order, threaded, connectivity)
+    nb = _checkneighborhood(neighborhood)
+    return _map_needs(needs, pass, f, A, dnum, order, threaded, connectivity, nb)
 end
 
 # No field request: `pass` picks the callback form, exactly as before —
 # `needs = nothing` reaches those methods by dispatch, not by a branch.
-_map_needs(::Nothing, pass, f::F, A, dnum, order, threaded, conn) where {F} =
-    _map_dimarray(pass, f, A, dnum, order, threaded, conn)
+_map_needs(::Nothing, pass, f::F, A, dnum, order, threaded, conn, nb) where {F} =
+    _map_dimarray(pass, f, A, dnum, order, threaded, conn, nb)
 
 # A field request is answered by the cell axis alone, whatever `A`'s
 # dimensionality: the callback's values arrive through the request's `Value`
@@ -658,13 +663,15 @@ _map_needs(::Nothing, pass, f::F, A, dnum, order, threaded, conn) where {F} =
 # array, as a `Value`, and reading those along the chunk lines is the same win.
 # The route is `chunks.jl`'s; a permutation `order` keeps the whole-axis path,
 # because a chunked sweep visits by chunk and cannot honour one.
-function _map_needs(needs, pass, f::F, A, dnum, order, threaded, conn) where {F}
+function _map_needs(needs, pass, f::F, A, dnum, order, threaded, conn,
+        nb) where {F}
     _checkpass(pass)
-    plan = _chunkedvalues(A, dnum, order, conn)
+    plan = _chunkedvalues(A, dnum, order, conn, nb)
     plan === nothing || return _rebuilt_on_cells(A, DD.dims(A)[dnum],
-        _map_needs_chunked(f, A, dnum, plan, needs, threaded, conn))
+        _map_needs_chunked(f, A, dnum, plan, needs, threaded, conn, nb))
     cv = parent(DD.lookup(A, dnum))
-    out = mapneighbors(f, cv; needs, order, threaded, connectivity = conn)
+    out = mapneighbors(f, cv; needs, order, threaded, connectivity = conn,
+        neighborhood = nb)
     return _rebuilt_on_cells(A, DD.dims(A)[dnum], out)
 end
 
@@ -673,21 +680,23 @@ function _map_needs_chunked end
 function _foreach_needs_chunked end
 
 function _map_dimarray(::Neighbors, f::F, A, dnum, order, threaded,
-        conn) where {F}
+        conn, nb) where {F}
     cv = parent(DD.lookup(A, dnum))
-    out = mapneighbors(f, cv; order, threaded, connectivity = conn)
+    out = mapneighbors(f, cv; order, threaded, connectivity = conn,
+        neighborhood = nb)
     return _rebuilt_on_cells(A, DD.dims(A)[dnum], out)
 end
 
 function _map_dimarray(::Values, f::F, A, dnum, order, threaded,
-        conn) where {F}
-    plan = _chunkedvalues(A, dnum, order, conn)
+        conn, nb) where {F}
+    plan = _chunkedvalues(A, dnum, order, conn, nb)
     plan === nothing || return _rebuilt(A,
-        _map_values_chunked(f, A, dnum, plan, threaded, conn))
+        _map_values_chunked(f, A, dnum, plan, threaded, conn, nb))
     cv = parent(DD.lookup(A, dnum))
     ndims(A) == 1 && return _rebuilt(A,
-        mapneighbors(f, cv, parent(A); order, threaded, connectivity = conn))
-    return _rebuilt(A, _map_slices(f, A, dnum, cv, order, threaded, conn))
+        mapneighbors(f, cv, parent(A); order, threaded, connectivity = conn,
+            neighborhood = nb))
+    return _rebuilt(A, _map_slices(f, A, dnum, cv, order, threaded, conn, nb))
 end
 
 # Values flow through the traversal rather than being fetched by the callback,
@@ -699,36 +708,37 @@ end
 # ORIGINAL array and indexes it by the handles it is given, so a sweep over
 # blocks would hand it indices into a block and it would read them from the
 # whole cube. `foreachchunk` is the chunk-following form of that pass.
-_chunkedvalues(A, dnum, order, conn) = nothing
+_chunkedvalues(A, dnum, order, conn, nb) = nothing
 function _map_values_chunked end
 
 function _map_dimarray(::NeighborSlices, f::F, A, dnum, order, threaded,
-        conn) where {F}
+        conn, nb) where {F}
     _need_slices(A)
     cv = parent(DD.lookup(A, dnum))
-    out = _map_cell_slices(f, A, Val(dnum), cv, order, threaded, conn)
+    out = _map_cell_slices(f, A, Val(dnum), cv, order, threaded, conn, nb)
     return _rebuilt_on_cells(A, DD.dims(A)[dnum], out)
 end
 
-_map_dimarray(pass, f, A, dnum, order, threaded, conn) = _bad_pass(pass)
+_map_dimarray(pass, f, A, dnum, order, threaded, conn, nb) = _bad_pass(pass)
 
 # Function barrier: the cell dimension's number becomes a constant, so the
 # slice views are concretely typed.
 function _map_cell_slices(f::F, A, ::Val{D}, cv, order, threaded,
-        conn) where {F,D}
+        conn, nb) where {F,D}
     g = (c, nbrs) -> f(c, _handle_slice(A, Val(D), localindex(c)),
         [_handle_slice(A, Val(D), localindex(h)) for h in nbrs])
-    return mapneighbors(g, cv; order, threaded, connectivity = conn)
+    return mapneighbors(g, cv; order, threaded, connectivity = conn,
+        neighborhood = nb)
 end
 
 # Run a separate buffered 1-D sweep for each non-cell index, so the
 # CellVector kernels own all traversal and the slices cannot interact.
 function _map_slices(f::F, A, dnum::Int, cv::AbstractCellVector, order, threaded,
-        connectivity::Connectivity) where {F}
+        connectivity::Connectivity, nb::Neighborhood) where {F}
     data = parent(A)
     pre = CartesianIndices(axes(data)[1:(dnum-1)])
     post = CartesianIndices(axes(data)[(dnum+1):end])
-    cap = _capacity(system(cv), connectivity)
+    cap = _capacity(cv.grid, nb, connectivity)
     H = SubsetIndexedCell{eltype(cv)}
     T = Base.promote_op(f, H, eltype(A), _ringtype(cap, eltype(A)))
     outs = T <: Tuple && isconcretetype(T) ?
@@ -738,7 +748,8 @@ function _map_slices(f::F, A, dnum::Int, cv::AbstractCellVector, order, threaded
     for jpost in post, jpre in pre
         copyto!(buf, view(data, jpre, :, jpost))
         _slice_store!(outs,
-            mapneighbors(f, cv, buf; order, threaded, connectivity),
+            mapneighbors(f, cv, buf; order, threaded, connectivity,
+                neighborhood = nb),
             jpre, jpost)
     end
     return outs
@@ -752,44 +763,50 @@ _slice_store!(out::AbstractArray, res::AbstractVector, jpre, jpost) =
 """
     foreachneighbors(f, A::AbstractDimArray; spatialdim = nothing, pass = Neighbors(),
                      order = StorageOrder(), threaded = false,
-                     connectivity = Vertex())
+                     connectivity = Vertex(), neighborhood = Disc(1))
     foreachneighbors(f, A::AbstractDimArray; needs = (Value(a), Centroid()), ...)
 
-Call `f` for each cell and its neighbors without collecting results.
-`spatialdim`, `pass` and `needs` behave as in [`mapneighbors`](@ref).
+Call `f` for each cell and its neighbourhood without collecting results.
+`spatialdim`, `pass`, `needs` and `neighborhood` behave as in
+[`mapneighbors`](@ref).
 """
 function foreachneighbors(f::F, A::DD.AbstractDimArray; spatialdim = nothing,
         needs = nothing, pass = Neighbors(), order = StorageOrder(),
-        threaded = false, connectivity::Connectivity = Vertex()) where {F}
+        threaded = false, connectivity::Connectivity = Vertex(),
+        neighborhood = Disc(1)) where {F}
     dnum = _cells_dimnum(A, spatialdim)
-    _foreach_needs(needs, pass, f, A, dnum, order, threaded, connectivity)
+    nb = _checkneighborhood(neighborhood)
+    _foreach_needs(needs, pass, f, A, dnum, order, threaded, connectivity, nb)
     return nothing
 end
 
-_foreach_needs(::Nothing, pass, f::F, A, dnum, order, threaded, conn) where {F} =
-    _foreach_dimarray(pass, f, A, dnum, order, threaded, conn)
+_foreach_needs(::Nothing, pass, f::F, A, dnum, order, threaded, conn,
+        nb) where {F} =
+    _foreach_dimarray(pass, f, A, dnum, order, threaded, conn, nb)
 
 function _foreach_needs(needs, pass, f::F, A, dnum, order, threaded,
-        conn) where {F}
+        conn, nb) where {F}
     _checkpass(pass)
-    plan = _chunkedvalues(A, dnum, order, conn)
+    plan = _chunkedvalues(A, dnum, order, conn, nb)
     plan === nothing ||
-        return _foreach_needs_chunked(f, A, dnum, plan, needs, threaded, conn)
+        return _foreach_needs_chunked(f, A, dnum, plan, needs, threaded, conn, nb)
     foreachneighbors(f, parent(DD.lookup(A, dnum)); needs, order, threaded,
-        connectivity = conn)
+        connectivity = conn, neighborhood = nb)
     return nothing
 end
 
-_foreach_dimarray(::Neighbors, f::F, A, dnum, order, threaded, conn) where {F} =
+_foreach_dimarray(::Neighbors, f::F, A, dnum, order, threaded, conn,
+        nb) where {F} =
     foreachneighbors(f, parent(DD.lookup(A, dnum)); order, threaded,
-        connectivity = conn)
+        connectivity = conn, neighborhood = nb)
 
 function _foreach_dimarray(::Values, f::F, A, dnum, order, threaded,
-        conn) where {F}
+        conn, nb) where {F}
     cv = parent(DD.lookup(A, dnum))
     data = parent(A)
     if ndims(A) == 1
-        foreachneighbors(f, cv, data; order, threaded, connectivity = conn)
+        foreachneighbors(f, cv, data; order, threaded, connectivity = conn,
+            neighborhood = nb)
         return nothing
     end
     pre = CartesianIndices(axes(data)[1:(dnum-1)])
@@ -797,34 +814,37 @@ function _foreach_dimarray(::Values, f::F, A, dnum, order, threaded,
     buf = Vector{eltype(A)}(undef, size(data, dnum))
     for jpost in post, jpre in pre
         copyto!(buf, view(data, jpre, :, jpost))
-        foreachneighbors(f, cv, buf; order, threaded, connectivity = conn)
+        foreachneighbors(f, cv, buf; order, threaded, connectivity = conn,
+            neighborhood = nb)
     end
     return nothing
 end
 
 function _foreach_dimarray(::NeighborSlices, f::F, A, dnum, order, threaded,
-        conn) where {F}
+        conn, nb) where {F}
     _need_slices(A)
     return _foreach_cell_slices(f, A, Val(dnum), parent(DD.lookup(A, dnum)),
-        order, threaded, conn)
+        order, threaded, conn, nb)
 end
 
-_foreach_dimarray(pass, f, A, dnum, order, threaded, conn) = _bad_pass(pass)
+_foreach_dimarray(pass, f, A, dnum, order, threaded, conn, nb) = _bad_pass(pass)
 
 function _foreach_cell_slices(f::F, A, ::Val{D}, cv, order, threaded,
-        conn) where {F,D}
+        conn, nb) where {F,D}
     g = (c, nbrs) -> (f(c, _handle_slice(A, Val(D), localindex(c)),
         [_handle_slice(A, Val(D), localindex(h)) for h in nbrs]); nothing)
-    foreachneighbors(g, cv; order, threaded, connectivity = conn)
+    foreachneighbors(g, cv; order, threaded, connectivity = conn,
+        neighborhood = nb)
     return nothing
 end
 
 """
-    neighbors(A::AbstractDimArray; connectivity = Vertex())
-    neighbors(A::AbstractDimArray, dims; connectivity = Vertex())
+    neighbors(A::AbstractDimArray; connectivity = Vertex(), neighborhood = Disc(1))
+    neighbors(A::AbstractDimArray, dims; connectivity = Vertex(), neighborhood = Disc(1))
 
-Iterate over each cell and its indexed neighbor handles; the minted indices
-are the cell dimension's axis indices.
+Iterate over each cell and its indexed neighbour handles; the minted indices
+are the cell dimension's axis indices, and `neighborhood` is
+[`mapneighbors`](@ref)'s.
 
 `dims` names the cell dimension the way `DimensionalData.dims(A, dims)` does —
 `Cells`, `:Cells`, or a `Dimension` (any `DimensionalData` dimension
@@ -833,12 +853,15 @@ lookup. Without it, the first dimension carrying one is used. An array without
 one, or a `dims` that misses or names a non-cell dimension, is an
 `ArgumentError`.
 """
-neighbors(A::DD.AbstractDimArray; connectivity::Connectivity = Vertex()) =
-    neighbors(parent(DD.lookup(A, _cells_dimnum(A, nothing))); connectivity)
+neighbors(A::DD.AbstractDimArray; connectivity::Connectivity = Vertex(),
+        neighborhood = Disc(1)) =
+    neighbors(parent(DD.lookup(A, _cells_dimnum(A, nothing))); connectivity,
+        neighborhood = _checkneighborhood(neighborhood))
 
 neighbors(A::DD.AbstractDimArray, dims::DimSelector;
-        connectivity::Connectivity = Vertex()) =
-    neighbors(parent(DD.lookup(A, _cells_dimnum(A, dims))); connectivity)
+        connectivity::Connectivity = Vertex(), neighborhood = Disc(1)) =
+    neighbors(parent(DD.lookup(A, _cells_dimnum(A, dims))); connectivity,
+        neighborhood = _checkneighborhood(neighborhood))
 
 """
     adjacency(A::AbstractDimArray; kw...) -> AdjacencyTable

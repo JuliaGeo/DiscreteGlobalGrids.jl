@@ -40,16 +40,14 @@ field = DGG.regrid(tavg; to = grid)
 
 # ## Average the field over every country
 #
-# `field[Cells(Covering(geom))]` selects a cell coverage for a polygon. Applying
-# `mean` to that selection gives a grid-based estimate; any reduction can be
-# used in its place.
+# `DGG.zonal` selects cells once per country and applies the reduction.
+# The default includes cells whose canonical centre lies in the country.
 
 countries = NaturalEarth.naturalearth("admin_0_countries", 50)
 
 #
 
-percountry = [mean(skipmissing(field[DGG.Cells(DGG.Covering(g))]))
-              for g in countries.geometry]
+percountry = parent(DGG.zonal(mean, field; of=countries.geometry, emptyval=NaN))
 
 # At this resolution, small islands may have no selected land cell, and the
 # source has no observations for some Antarctic regions. Those means are
@@ -83,10 +81,9 @@ poly!(ax2, countries.geometry; color = percountry, colormap = :thermal,
 Colorbar(fig[2, 2]; colormap = :thermal, colorrange = crange, label = "°C")
 fig
 
-# `Covering` returns a cell set that contains the polygon and may include a rim
-# extending beyond the border. The country value is therefore an approximation,
-# not an exact polygon statistic. [Count only cells wholly inside the outline](@ref)
-# is a stricter alternative.
+# Whole cells approximate each country. `boundary=:inside` selects cells wholly
+# within its boundary; `boundary=:intersects` includes any intersecting cell.
+# These are membership rules, not fractional polygon-area weights.
 #
 # ## Select the cells covering one region
 #
@@ -99,7 +96,7 @@ tx = field[DGG.Cells(DGG.Covering(texas))]
 
 #
 
-mean(skipmissing(tx))
+DGG.zonal(mean, field; of=texas, emptyval=NaN)
 
 # HEALPix cells have equal area, so the plain mean is area-weighted for this
 # grid. On a system with unequal cells, weight by
@@ -132,12 +129,13 @@ fig
 # | rule | cells kept | spelling |
 # |---|---|---|
 # | `Covering` | a cell set containing the outline, possibly with an outer rim | `field[Cells(Covering(geom))]` |
-# | centre-in-zone | every cell whose centre is inside | No current selector |
+# | centre-in-zone | every cell whose centre is inside | `boundary=:center` in raster operations |
 # | `Within` | every cell wholly inside the outline | `field[Cells(Within(geom))]` |
 
 #
-# The current predicates test cell footprints. A centroid-in-zone selector is
-# not available; `Intersects` and `Within` do not substitute for that rule.
+# The `Cells` predicates shown here test cell footprints. `Intersects` and
+# `Within` do not select cells by centroid containment. For that rule, use
+# `boundary=:center` with the [raster APIs](../api/raster-work.md).
 
 inside = field[DGG.Cells(DGG.Within(texas))]
 
@@ -186,3 +184,10 @@ DGG.covering_indices(cells, texas)
 #
 
 DGG.localindex(cells, -97.74, 30.27)
+
+# ## Extract values and labelled slices
+#
+# Extraction returns named-tuple rows, including local cell-axis positions.
+
+texas_rows = DGG.extract(field, texas; index=true, skipmissing=true)
+first(texas_rows, 5)

@@ -297,7 +297,7 @@ end
     STATIC_RING_CAP
     STATIC_RING_BYTES
 
-Where a declared bound stops buying a stack container: `64` elements, and `512`
+Where a declared bound stops buying a stack container: `64` elements, and `768`
 bytes of them. Past either, [`static_capacity`](@ref) reports no bound and the
 heap path runs instead, exactly as for a system that declared nothing.
 
@@ -312,7 +312,7 @@ and 492 at `N == 65` — a 56% step for one more slot, with no recovery above it
 (752 at `N == 96`). `STATIC_RING_BYTES` is not; a 16-byte id shows no such step,
 but costs roughly 3.6x as much emitted code per element everywhere, so the byte
 limit bounds the total rather than catching a jump — it stops `S2`'s 16-byte
-`LevelIndex` at 32 elements. For a 4-byte id neither limit is tight: no cliff
+`LevelIndex` at 48 elements, its radius-3 disc. For a 4-byte id neither limit is tight: no cliff
 appears through `N == 160`, and the element cap is simply conservative.
 
 `benchmark/maxneighbors.jl` part 4 reproduces the ladder.
@@ -320,7 +320,7 @@ appears through `N == 160`, and the element cap is simply conservative.
 const STATIC_RING_CAP = 64
 
 @doc (@doc STATIC_RING_CAP)
-const STATIC_RING_BYTES = 512
+const STATIC_RING_BYTES = 768
 
 """
     static_capacity(M, ::Type{T}) -> Union{Val,Nothing}

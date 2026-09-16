@@ -1055,7 +1055,7 @@ end
     # a single answer: this is the same query with the arcs suppressed.
     target = targets["triangle"]
     prepared = GO.prepare(GO.RelateNG(; manifold=GO.Spherical()), target)
-    plain = EN.GeometryTarget(prepared, target, EN._geometry_cap(prepared, target), nothing)
+    plain = EN.GeometryTarget(prepared, EN._geometry_cap(prepared, target), nothing)
     @test EN._run_query(grid, Intersects(target), plain) == query(grid, Intersects(target))
 
     # The system-level form answers at the requested level.

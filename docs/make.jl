@@ -107,6 +107,7 @@ const DOCS_PAGES = [
     "API" => [
         "The grid interface" => "api/grid-interface.md",
         "Selecting cells" => "api/selecting-cells.md",
+        "Rasterize, extract, and zonal" => "api/raster-work.md",
         "Regridding calls and plans" => "api/regridding.md",
         "Choosing a regridding method" => "api/regridding-methods.md",
         "Region boundaries" => "api/boundaries.md",

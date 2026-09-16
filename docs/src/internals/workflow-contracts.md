@@ -9,25 +9,25 @@ Start with [Neighbours and stencils](../api/neighbors.md),
 [Requesting neighbour fields](../api/neighbor-fields.md), or
 [Reading and writing DGGS stores](../api/store-io.md) for normal use.
 
-All neighborhood sweeps described here use one-ring callbacks. Input halo
-width does not change that reach. Cache behavior is an implementation detail;
+Neighborhood sweeps accept `Disc(k)` and `Ring(k)`; the default is `Disc(1)`.
+Chunk halos must cover the selected radius. Cache behavior is an implementation detail;
 cell identity and callback/output alignment remain the public contract.
 
 ## Cell-vector sweep execution
 
 mapneighbors(f, cv; order = StorageOrder(), threaded = true,
-                 connectivity = Vertex())
+                 connectivity = Vertex(), neighborhood = Disc(1))
     mapneighbors(f, cv, data::AbstractVector; ...)
     mapneighbors(f, cv; needs = (Value(data), Centroid()), ...)
 
-Apply `f` to each cell and its clipped one-ring. `cv` may be a
+Apply `f` to each cell and its clipped neighborhood. `cv` may be a
 [`CellVector`](@ref), [`PartialGrid`](@ref), or [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup).
 
 Without `data`, `f(cell, nbrs)` receives the same indexed handles yielded
 by the one-argument [`neighbors`](@ref) iterator. With a vector laid out
 against the subset, `f(cell, value, values)` receives the cell value and its
 neighbour values in the counter-clockwise order [`neighbors`](@ref) states, so
-slot `j` of the callback's ring names a direction.
+each ring follows directional order. A disc concatenates rings without boundary markers.
 
 `needs` names the per-neighbour fields the kernel reads — a tuple of `Cell`,
 `Index`, `Value` and `Centroid` requests — and the callback becomes
@@ -100,15 +100,17 @@ own. A permutation `order` names a visit order over the whole axis and a
 chunked sweep visits by chunk, so the two cannot both be honoured and the
 permutation wins.
 
-## Stored one-ring execution
+## Stored neighborhood execution
 
-mapneighbors!(dest, f, A::AbstractDimArray; halo = 1, chunks = :auto,
+mapneighbors!(dest, f, A::AbstractDimArray; neighborhood = Disc(1),
+                  halo = nothing, chunks = :auto,
                   spatialdim = nothing, connectivity = Vertex(), threaded = true)
     mapneighbors!(dest, f, A, plan::MapChunkPlan;
                   needs = (Value(a), Centroid()), threaded = true)
 
 Apply `f` to each cell of `A` and its neighbours, chunk by chunk, writing one
-result per cell into `dest`.
+result per cell into `dest`. The default halo is `max(1, k)` for radius `k`.
+A supplied plan with a narrower halo raises `ArgumentError`.
 
 This is [`mapneighbors`](@ref)'s out-of-core form, and the difference is where
 the results go: `mapneighbors` collects them, which needs one array of them in

@@ -251,6 +251,15 @@ ring(grid::AuthalicGrid, c::AbstractCellIndex, k::Integer;
     connectivity::Connectivity=Vertex()) =
     ring(grid.grid, c, k; connectivity)
 
+# The `Val` forms reach the wrapped grid's own, so its stack path is kept.
+neighbors(grid::AuthalicGrid, c::AbstractCellIndex, ::Val{K};
+    connectivity::Connectivity=Vertex()) where {K} =
+    neighbors(grid.grid, c, Val(K); connectivity)
+
+ring(grid::AuthalicGrid, c::AbstractCellIndex, ::Val{K};
+    connectivity::Connectivity=Vertex()) where {K} =
+    ring(grid.grid, c, Val(K); connectivity)
+
 """
     GeometryOpsCore.best_manifold(grid::AuthalicGrid) -> GO.Spherical
 

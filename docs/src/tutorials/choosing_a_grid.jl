@@ -29,8 +29,8 @@ fig                                                                            #
 #
 # This tutorial compares the global systems, finds a level from a size in metres,
 # and checks the coordinate convention used to locate cells. The globes above
-# show cells roughly 800 km across; the [DGGS gallery](../all_dggs.md) includes
-# the six registered global systems. CopernicusDEM is a separate raster lattice.
+# show cells roughly 800 km across. This tutorial compares five systems;
+# the [DGGS gallery](../all_dggs.md) shows the supported global systems.
 
 import DiscreteGlobalGrids as DGG
 import GeometryOps as GO
@@ -47,20 +47,10 @@ using Statistics
 # | A5 | Pentagons | A single cell shape with nearly equal areas |
 # | HEALPix | Curved quadrilaterals | Equal-area cells and compatibility with HEALPix maps |
 # | ISEA4R | Rhombi | Equal-area cells with four edge neighbours |
-# | S2 | Geodesic quadrilaterals | A congruent hierarchy on six cube faces; unequal cell areas |
 #
 # H3 supports native H3 identifiers. HEALPix supports nested and ring index
-# conversion; reorder values when changing pixel order. S2 uses this package's
-# ordinal IDs, not native 64-bit S2 cell IDs. ISEA4R numbering is package-defined;
+# conversion; reorder values when changing pixel order. ISEA4R numbering is package-defined;
 # compatibility with external ISEA4R identifiers is not established.
-#
-# ### Copernicus DEM's raster lattice
-#
-# `CopernicusDEMSystem(30)` and `(90)` describe GLO-30 and GLO-90 products.
-# Level 0 contains one-degree tiles; level 1 contains pixels. Pixel widths vary
-# by latitude band. Construct this system directly: `systems()` omits it because
-# its lattice does not share the uniform-size assumptions of registry sweeps.
-# Its constructor describes geometry; it does not download elevation values.
 #
 # ### Compare physical resolution
 #

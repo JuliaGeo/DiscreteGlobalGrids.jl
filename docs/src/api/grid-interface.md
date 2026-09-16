@@ -54,8 +54,9 @@ level
 
 `cellsize` measures a typical cell width in metres. `levelfor` finds the
 closest available level for a requested width or another dataset's resolution.
-Its `over` keyword restricts candidate grid sampling only; target dataset size
-is still measured over its full extent.
+Both take an `over` keyword naming an area of interest; `levelfor` measures the
+candidate levels and a raster, grid, or regridding-space target within it, so a
+global lon/lat raster is matched by the cells it has in that region.
 
 ```@docs
 cellsize

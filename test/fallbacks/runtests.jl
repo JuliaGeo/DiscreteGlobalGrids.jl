@@ -1083,6 +1083,15 @@ end
     @test length(query(octants, Intersects(small))) == 1
 end
 
+@testset "cellsize: a standalone grid measures an area of interest through its space" begin
+    # The octants share one area, so a regional median equals the global one;
+    # the space route reaches it where the grid route has no hierarchy to sample.
+    octants = OctantGrid()
+    arctic = Extents.Extent(X = (-180.0, 180.0), Y = (75.0, 90.0))
+    @test cellsize(DGG.DGGSpace(octants); over = arctic) == cellsize(octants)
+    @test_throws "belongs to a grid system" cellsize(octants; over = arctic)
+end
+
 @testset "query: predicate direction" begin
     # The engine prepares the TARGET and asks GeometryOps for the converse
     # relation, so a swapped mapping would be invisible to an oracle built the

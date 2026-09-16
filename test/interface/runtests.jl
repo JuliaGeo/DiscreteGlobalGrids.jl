@@ -170,7 +170,7 @@ end
     node_extent_doc = docstring(DiscreteGlobalGrids, :node_extent)
     @test occursin("covering law", lowercase(node_extent_doc))
     @test occursin("every descendant", node_extent_doc)
-    @test occursin("every depth", node_extent_doc)
+    @test occursin("every level", node_extent_doc)
 
     grid_doc = docstring(DiscreteGlobalGrids, :AbstractGrid)
     @test occursin("index", lowercase(grid_doc))

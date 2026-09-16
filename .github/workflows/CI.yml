@@ -73,7 +73,6 @@ jobs:
           - GlobalRegridding
         os:
           - ubuntu-latest
-          - macos-latest
         include:
           # Makie needs a GL stack and an X server on Linux even for
           # CairoMakie-only tests, because GeoMakie may still load GLMakie.

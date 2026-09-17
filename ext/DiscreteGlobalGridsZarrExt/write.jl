@@ -451,19 +451,20 @@ function _chunkplan(chunks::Symbol, grid, cells, target)
     chunks === :auto || throw(ArgumentError(
         "chunks is :auto or a positive integer, not $(repr(chunks))"))
     n = length(cells)
-    sys = system(grid)
-    L = level(grid)
     plain = WriteChunkPlan(clamp(target, 1, n), nothing, false)
-    (L < 1 || !has_sorted_subtrees(sys)) && return plain
+    sys = _plansystem(grid, cells)
+    has_sorted_subtrees(sys) || return plain
+    floor = Int(first(levels(sys)))
+    A = _deepestlevel(grid, cells) - 1
+    A < floor && return plain
 
     # Runs at level L-1 cost one `ancestor` per cell; every coarser level is then
     # a merge over the runs already found, so the whole descent is one pass.
-    ends = _runends(grid, cells, L - 1, 1:n)
+    ends = _runends(grid, cells, A, 1:n)
     best, bestlevel = nothing, nothing
-    A = L - 1
     while _maxrun(ends) <= target
         best, bestlevel = ends, A
-        A == 0 && break
+        A == floor && break
         A -= 1
         ends = _runends(grid, cells, A, _runstarts(ends))
     end
@@ -478,14 +479,24 @@ function _chunkplan(chunks::Symbol, grid, cells, target)
     return WriteChunkPlan(cl, bestlevel, _allaligned(best, cl, n))
 end
 
+# `grid === nothing` marks a mixed-level axis; `cells` is then the MultiOrderVector.
+_plansystem(grid, cells) = system(grid)
+_plansystem(::Nothing, mov) = system(mov)
+_deepestlevel(grid, cells) = level(grid)
+_deepestlevel(::Nothing, mov) = maximum(level, mov)
+_plancell(grid, cells, k) = idcell(grid, cells[k])
+_plancell(::Nothing, mov, k) = mov[k]
+
 # `starts` samples every cell on the first pass and one representative per run on
 # later coarsening passes; typed wrappers are reconstructed one at a time.
 function _runends(grid, cells, A::Int, starts)
-    sys = system(grid)
+    sys = _plansystem(grid, cells)
     ends = Int[]
     previous = nothing
     for k in starts
-        a = ancestor(sys, idcell(grid, cells[k]), A)
+        c = _plancell(grid, cells, k)
+        # Cells at or above level `A` key their own complete-subtree run.
+        a = level(c) <= A ? c : ancestor(sys, c, A)
         previous === nothing || a == previous || push!(ends, k - 1)
         previous = a
     end
@@ -505,48 +516,6 @@ function _allaligned(ends, cl::Int, n::Int)
         b in boundaries || return false
     end
     return true
-end
-
-# --- the mixed-level plan ---------------------------------------------------
-
-# `grid === nothing` marks a mixed-level axis, whose ancestor descent stops at the
-# system's coarsest level.
-function _chunkplan(chunks::Symbol, ::Nothing, mov, target)
-    chunks === :auto || throw(ArgumentError(
-        "chunks is :auto or a positive integer, not $(repr(chunks))"))
-    n = length(mov)
-    plain = WriteChunkPlan(clamp(target, 1, n), nothing, false)
-    floor = Int(first(levels(system(mov))))
-    A = maximum(level, mov) - 1
-    A < floor && return plain
-    ends = _movrunends(mov, A, 1:n)
-    best, bestlevel = nothing, nothing
-    while _maxrun(ends) <= target
-        best, bestlevel = ends, A
-        A == floor && break
-        A -= 1
-        ends = _movrunends(mov, A, _runstarts(ends))
-    end
-    best === nothing && return plain
-    j = searchsortedlast(best, target)
-    @assert j >= 1
-    cl = best[j]
-    return WriteChunkPlan(cl, bestlevel, _allaligned(best, cl, n))
-end
-
-# Cells at or above level `A` key their own complete-subtree run.
-function _movrunends(mov, A::Int, starts)
-    sys = system(mov)
-    ends = Int[]
-    previous = nothing
-    for k in starts
-        c = mov[k]
-        a = level(c) <= A ? c : ancestor(sys, c, A)
-        previous === nothing || a == previous || push!(ends, k - 1)
-        previous = a
-    end
-    isempty(mov) || push!(ends, length(mov))
-    return ends
 end
 
 # Reference-level interval endpoints give each compacted chunk searchable bounds.

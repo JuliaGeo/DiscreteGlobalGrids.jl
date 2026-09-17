@@ -2,7 +2,10 @@
 
 import ConservativeRegridding as CR
 import DimensionalData as DD
+import DiscreteGlobalGrids as DGG
 import GeometryOps: SpatialTreeInterface as STI
+import LinearAlgebra
+import Random
 
 """
     DensifiedCellSpace(lon, lat, n)
@@ -907,5 +910,124 @@ end
         @test GR.SparseArrays.nnz(seam.weights) == 0
         @test seam.denom == zeros(2)
         @test seam.reference === seam.denom
+    end
+
+    @testset "the analytic locator builds the tree locator's block" begin
+        healpix = DGG.DGGSpace(DGG.levelgrid(DGG.HEALPixSystem(), 3))
+        igeo7 = DGG.DGGSpace(DGG.levelgrid(DGG.IGeo7System(), 2))
+        rng = Random.MersenneTwister(7)
+
+        function identical(a, b)
+            @test a.weights.colptr == b.weights.colptr
+            @test a.weights.rowval == b.weights.rowval
+            @test all(a.weights.nzval .=== b.weights.nzval)
+            @test all(a.denom .=== b.denom)
+        end
+
+        # The `(src, dst)` pairs a block holds weights for, in space indices.
+        function weightedpairs(block, dinds, sinds)
+            W = block.weights
+            return Set((sinds[col], dinds[W.rowval[t]])
+                for col in axes(W, 2) for t in GR.SparseArrays.nzrange(W, col))
+        end
+
+        for (dst, src) in ((igeo7, healpix), (healpix, igeo7))
+            ndst, nsrc = ncells(dst), ncells(src)
+            whole = 1:ndst
+            chunk = (ndst ÷ 3):(2ndst ÷ 3)
+            scattered = sort!(Random.randperm(rng, ndst)[1:ndst ÷ 4])
+            for dinds in (whole, chunk, scattered), threaded in (false, true)
+                # A restricted tree bounds its cells more loosely than the
+                # walk's caps do, so the candidate sets agree only on the whole
+                # space; both must hold every pair that carries weight.
+                tree = GR.overlappairs(TreeLocator(), dst, dinds, src, 1:nsrc; threaded)
+                walk = GR.overlappairs(AnalyticLocator(), dst, dinds, src, 1:nsrc; threaded)
+                weighted = weightedpairs(
+                    GR.pairblock(Conservative(), dst, dinds, src, 1:nsrc), dinds, 1:nsrc)
+                @test weighted ⊆ Set(walk)
+                @test weighted ⊆ Set(tree)
+                dinds === whole && @test Set(tree) == Set(walk)
+                @test allunique(walk)
+                @test walk == GR.overlappairs(AnalyticLocator(), dst, dinds, src, 1:nsrc;
+                    threaded = false)
+
+                # `pairblock` reads the module's threading policy, so both
+                # states of it are exercised through `OUTER_PARALLEL`.
+                GR.@with GR.OUTER_PARALLEL => !threaded begin
+                    identical(GR.pairblock(Conservative(), dst, dinds, src, 1:nsrc, AnalyticLocator()),
+                        GR.pairblock(Conservative(), dst, dinds, src, 1:nsrc))
+                    coo = WeightCOO(length(dinds))
+                    buildweights!(coo, Conservative(), dst, dinds, src, 1:nsrc, AnalyticLocator())
+                    identical(WeightBlock(coo, length(dinds), nsrc),
+                        GR.pairblock(Conservative(), dst, dinds, src, 1:nsrc))
+                end
+            end
+
+            # A prepared destination takes the locator too.
+            cache = GR.DestinationCache(dst, chunk)
+            identical(GR.pairblock(Conservative(), dst, cache, src, 1:nsrc, AnalyticLocator()),
+                GR.pairblock(Conservative(), dst, chunk, src, 1:nsrc))
+
+            # The plan carries the locator down to every block.
+            data = rand(rng, nsrc)
+            plain = plan_regrid(data; from = src, to = dst, lazy = false)
+            analytic = plan_regrid(data; from = src, to = dst, lazy = false,
+                locator = AnalyticLocator())
+            @test analytic.locator === AnalyticLocator()
+            identical(analytic.block, plain.block)
+            @test occursin("AnalyticLocator", sprint(show, analytic))
+            @test !occursin("Locator", sprint(show, plain))
+            lazyplan = plan_regrid(data; from = src, to = dst, lazy = true,
+                locator = AnalyticLocator())
+            @test lazyplan.locator === AnalyticLocator()
+            identical(GR.buildblock(lazyplan, 1, 1),
+                GR.buildblock(plan_regrid(data; from = src, to = dst, lazy = true), 1, 1))
+        end
+
+        @testset "locatecell agrees between locators" begin
+            for space in (healpix, igeo7)
+                n = ncells(space)
+                inds = (n ÷ 4):(3n ÷ 4)
+                # Both systems' chart edges are curves the polygon replaces by
+                # chords, so the two answers may name neighbours for a point in
+                # that sliver, and nothing else.
+                disagreements = 0
+                for _ in 1:400
+                    p = GO.UnitSphericalPoint(LinearAlgebra.normalize(randn(rng, 3)))
+                    tree = GR.locatecell(TreeLocator(), space, 1:n, p)
+                    walk = GR.locatecell(AnalyticLocator(), space, 1:n, p)
+                    @test walk != 0
+                    if tree != walk
+                        disagreements += 1
+                        @test tree in GR.cellneighbors(space, walk)
+                    end
+                    restricted = GR.locatecell(TreeLocator(), space, inds, p)
+                    @test restricted == (tree in inds ? tree - first(inds) + 1 : 0)
+                    @test GR.locatecell(AnalyticLocator(), space, inds, p) ==
+                          (walk in inds ? walk - first(inds) + 1 : 0)
+                end
+                @test disagreements < 20
+                @test GR.locatecell(AnalyticLocator(), space, 1:n, cellcentroid(space, 5)) == 5
+                @test GR.locatecell(TreeLocator(), space, 1:n, cellcentroid(space, 5)) == 5
+                @test GR.locatecell(TreeLocator(), space, 6:n, cellcentroid(space, 5)) == 0
+            end
+        end
+
+        @testset "a raster walks the DGGS side and two rasters refuse" begin
+            raster = RasterGrid(DD.DimArray(zeros(24, 12),
+                (DD.X(range(-172.5, 172.5; length = 24)),
+                    DD.Y(range(-82.5, 82.5; length = 12)))))
+            @test !GR.hasanalyticlocation(raster)
+            @test GR.hasanalyticlocation(healpix)
+            @test_throws ArgumentError GR.overlappairs(AnalyticLocator(),
+                raster, 1:ncells(raster), raster, 1:ncells(raster); threaded = false)
+            @test_throws ArgumentError GR.pairblock(Conservative(),
+                raster, 1:ncells(raster), raster, 1:ncells(raster), AnalyticLocator())
+            for (dst, src) in ((healpix, raster), (raster, healpix))
+                identical(GR.pairblock(Conservative(), dst, 1:ncells(dst), src, 1:ncells(src),
+                        AnalyticLocator()),
+                    GR.pairblock(Conservative(), dst, 1:ncells(dst), src, 1:ncells(src)))
+            end
+        end
     end
 end

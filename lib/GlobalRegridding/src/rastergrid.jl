@@ -444,6 +444,10 @@ manifold(::RasterGrid) = GOCore.Spherical(; radius = 1.0)
 # Interpolation requires an inverse transform into the cell-centre chart.
 hascellchart(space::RasterGrid) = space.unit_sphere_to_native !== nothing
 
+# A raster locates a point through its chart but has no `cellneighbors` yet,
+# so an `AnalyticLocator` walks the other side of a raster regrid.
+hasanalyticlocation(::RasterGrid) = false
+
 """
     cellsubscript(space::RasterGrid, i::Int) -> (ix, iy)
     localindex(space::RasterGrid, ix::Integer, iy::Integer) -> Int

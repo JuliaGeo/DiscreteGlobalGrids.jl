@@ -409,7 +409,7 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         planmethods = [m for m in methods(plan_regrid)
                        if !isempty(Base.kwarg_decl(m))]
         @test Set(Base.kwarg_decl(only(planmethods))) ==
-              Set((:to, :from, :method, :missingpolicy, :missingval, :lazy,
+              Set((:to, :from, :method, :missingpolicy, :missingval, :lazy, :locator,
             :chunks, :budget, :storage, :sampling, :dependencies, :refine,
             :narrow))
 

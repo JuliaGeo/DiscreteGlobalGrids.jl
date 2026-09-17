@@ -231,11 +231,15 @@ Whether `status` says the row carries a stencil.
 @inline ismapped(status::WeightStatus) = status === WeightsMapped
 
 """
-    buildweights!(coo, method, dst_space, dst_inds, src_space, src_inds)
+    buildweights!(coo, method, dst_space, dst_inds, src_space, src_inds, locator = TreeLocator())
 
 Append chunk-local weights for `dst_inds` and `src_inds`, then return `coo`.
 Builders may inspect geometry outside `src_inds`, but must emit weights only for
 sources inside it. Otherwise weights are duplicated across chunk blocks.
+
+`locator` is the plan's [`CandidateLocator`](@ref). A method that discovers
+candidate cells takes it; a method that does not may define the six-argument
+form alone, which the locator form falls back to.
 
 Weight construction must not depend on field data or execution order.
 
@@ -252,6 +256,11 @@ function buildweights!(coo::WeightCOO, method::AbstractRegriddingMethod,
         "buildweights! is not implemented for $(typeof(method)) from " *
         "$(typeof(src_space)) to $(typeof(dst_space))"))
 end
+
+buildweights!(coo::WeightCOO, method::AbstractRegriddingMethod,
+    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds,
+    ::CandidateLocator) =
+    buildweights!(coo, method, dst_space, dst_inds, src_space, src_inds)
 
 """
     supportradius(method, src_space::RegridSpace) -> Float64

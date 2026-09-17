@@ -88,19 +88,22 @@ Base.show(io::IO, plan::NearestDirectPlan) =
         ncells(plan.src_space), " cells, no weights)")
 
 """
-    eagerplan(method, missingpolicy, dst_space, src_space, missingval, sampling)
+    eagerplan(method, missingpolicy, dst_space, src_space, missingval, sampling,
+              locator = TreeLocator())
 
 The eager plan `method` wants. The default is one whole-domain
-[`DirectPlan`](@ref) built through [`wholeblock`](@ref); a method whose apply
-needs no weights returns a plan of its own here instead.
+[`DirectPlan`](@ref) built through [`wholeblock`](@ref) with `locator`; a
+method whose apply needs no weights returns a plan of its own here instead.
 """
 eagerplan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
-    dst_space::RegridSpace, src_space::RegridSpace, missingval, sampling) =
+    dst_space::RegridSpace, src_space::RegridSpace, missingval, sampling,
+    locator::CandidateLocator = TreeLocator()) =
     DirectPlan(method, missingpolicy, dst_space, src_space,
-        wholeblock(method, dst_space, src_space), missingval, sampling)
+        wholeblock(method, dst_space, src_space, locator), missingval, sampling, locator)
 
 eagerplan(method::DirectNearest, missingpolicy::AbstractMissingPolicy,
-    dst_space::RegridSpace, src_space::RegridSpace, missingval, sampling) =
+    dst_space::RegridSpace, src_space::RegridSpace, missingval, sampling,
+    ::CandidateLocator = TreeLocator()) =
     NearestDirectPlan(method, missingpolicy, dst_space, src_space, missingval, sampling)
 
 destinationdims(plan::NearestDirectPlan) = destinationdims(plan.dst_space,

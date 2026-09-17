@@ -276,6 +276,12 @@ _destinationtree(dst_space::RegridSpace, dst_inds) =
 # A preparation holds its tree opaque already.
 _destinationtree(cache::DestinationCache) = cache.tree
 _destinationtree(prepared::DestinationTree) = prepared.tree
+_destinationtree(::RegridSpace, prepared::Union{DestinationCache,DestinationTree}) =
+    _destinationtree(prepared)
+
+# The index set a block's destination stands for, however it was named.
+_destinationinds(dst_inds) = dst_inds
+_destinationinds(prepared::Union{DestinationCache,DestinationTree}) = prepared.inds
 
 # Intersection operator
 
@@ -384,19 +390,23 @@ end
 # Conservative method
 
 """
-    buildweights!(coo, ::Conservative, dst_space, dst_inds, src_space, src_inds)
+    buildweights!(coo, ::Conservative, dst_space, dst_inds, src_space, src_inds,
+                  locator = TreeLocator())
 
 Append spherical intersection areas for the two chunks. Each destination
 denominator accumulates its covered area. A conservative block always carries a
 denominator, including when coverage is zero. Source and destination manifolds
-must match. Intersection discovery and clipping may run in parallel.
+must match. Intersection discovery and clipping may run in parallel. `locator`
+chooses how candidate pairs are discovered ([`CandidateLocator`](@ref)); the
+weights do not depend on it.
 
 This is the generic [`WeightCOO`](@ref) route, which any method may build
 through. [`pairblock`](@ref)`(::Conservative, …)` is the route a conservative
 plan takes, and reaches the same weights without a coordinate list.
 """
 function buildweights!(coo::WeightCOO, ::Conservative,
-    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
+    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds,
+    locator::CandidateLocator = TreeLocator())
     isempty(dst_inds) && return coo
     markdenominated!(coo)
     isempty(src_inds) && return coo
@@ -405,20 +415,21 @@ function buildweights!(coo::WeightCOO, ::Conservative,
     op = BlockAreaOperator(_intersectionoperator(m),
         indexmap(dst_inds), indexmap(src_inds),
         _cellmemo(src_space, src_inds), _cellmemo(dst_space, dst_inds))
-    block = _intersectionareas(m, _destinationtree(dst_space, dst_inds),
-        subtree(src_space, src_inds), op)
+    block = _intersectionareas(m, locator, dst_space, dst_inds, src_space, src_inds, op)
 
     return _fillcoo!(coo, block)
 end
 
 """
-    pairblock(::Conservative, dst_space, dst_inds, src_space, src_inds) -> WeightBlock
-    pairblock(::Conservative, dst_space, dst_cache::DestinationCache, src_space, src_inds)
-    pairblock(::Conservative, dst_space, prepared::DestinationTree, src_space, src_inds)
+    pairblock(::Conservative, dst_space, dst_inds, src_space, src_inds[, locator]) -> WeightBlock
+    pairblock(::Conservative, dst_space, dst_cache::DestinationCache, src_space, src_inds[, locator])
+    pairblock(::Conservative, dst_space, prepared::DestinationTree, src_space, src_inds[, locator])
 
 Adopt the assembled sparse matrix of intersection areas as the block's weights,
 reading each destination's denominator off it once. Every conservative block —
-the eager whole domain and a chunk pair alike — is built here.
+the eager whole domain and a chunk pair alike — is built here. `locator`
+([`CandidateLocator`](@ref), default [`TreeLocator`](@ref)) chooses how the
+candidate pairs are discovered and leaves the weights unchanged.
 
   - The values, their CSC layout, and the denominator accumulation order are the
     generic [`WeightCOO`](@ref) route's, bit for bit.
@@ -429,37 +440,36 @@ the eager whole domain and a chunk pair alike — is built here.
     prepared polygons. The weights are the same, entry for entry.
 """
 function pairblock(::Conservative, dst_space::RegridSpace, dst_inds,
-    src_space::RegridSpace, src_inds)
+    src_space::RegridSpace, src_inds, locator::CandidateLocator = TreeLocator())
     ndst = length(dst_inds)
     # A degenerate side keeps the generic route's exact semantics, including
     # which of the two sides reports a denominator.
     (ndst == 0 || isempty(src_inds)) && return invoke(pairblock,
-        Tuple{AbstractRegriddingMethod,RegridSpace,Any,RegridSpace,Any},
-        Conservative(), dst_space, dst_inds, src_space, src_inds)
+        Tuple{AbstractRegriddingMethod,RegridSpace,Any,RegridSpace,Any,CandidateLocator},
+        Conservative(), dst_space, dst_inds, src_space, src_inds, locator)
 
     m = _sharedmanifold(dst_space, src_space)
     op = BlockAreaOperator(_intersectionoperator(m),
         indexmap(dst_inds), indexmap(src_inds),
         _cellmemo(src_space, src_inds), _cellmemo(dst_space, dst_inds))
-    block = _intersectionareas(m, _destinationtree(dst_space, dst_inds),
-        subtree(src_space, src_inds), op)
+    block = _intersectionareas(m, locator, dst_space, dst_inds, src_space, src_inds, op)
 
     return WeightBlock(block, _blockdenom(block, ndst))
 end
 
 function pairblock(::Conservative, dst_space::RegridSpace,
-    dst_cache::DestinationCache, src_space::RegridSpace, src_inds)
+    dst_cache::DestinationCache, src_space::RegridSpace, src_inds,
+    locator::CandidateLocator = TreeLocator())
     ndst = length(dst_cache.inds)
     (ndst == 0 || isempty(src_inds)) && return invoke(pairblock,
-        Tuple{AbstractRegriddingMethod,RegridSpace,Any,RegridSpace,Any},
-        Conservative(), dst_space, dst_cache.inds, src_space, src_inds)
+        Tuple{AbstractRegriddingMethod,RegridSpace,Any,RegridSpace,Any,CandidateLocator},
+        Conservative(), dst_space, dst_cache.inds, src_space, src_inds, locator)
 
     m = _sharedmanifold(dst_space, src_space)
     op = BlockAreaOperator(_intersectionoperator(m),
         dst_cache.map, indexmap(src_inds),
         _cellmemo(src_space, src_inds), dst_cache)
-    block = _intersectionareas(m, _destinationtree(dst_cache),
-        subtree(src_space, src_inds), op)
+    block = _intersectionareas(m, locator, dst_space, dst_cache, src_space, src_inds, op)
 
     return WeightBlock(block, _blockdenom(block, ndst))
 end
@@ -468,18 +478,18 @@ end
 # geometry it holds no slots for. Same assembly as the index-set spelling, one
 # tree build per tile rather than one per block.
 function pairblock(::Conservative, dst_space::RegridSpace,
-    prepared::DestinationTree, src_space::RegridSpace, src_inds)
+    prepared::DestinationTree, src_space::RegridSpace, src_inds,
+    locator::CandidateLocator = TreeLocator())
     ndst = length(prepared.inds)
     (ndst == 0 || isempty(src_inds)) && return invoke(pairblock,
-        Tuple{AbstractRegriddingMethod,RegridSpace,Any,RegridSpace,Any},
-        Conservative(), dst_space, prepared.inds, src_space, src_inds)
+        Tuple{AbstractRegriddingMethod,RegridSpace,Any,RegridSpace,Any,CandidateLocator},
+        Conservative(), dst_space, prepared.inds, src_space, src_inds, locator)
 
     m = _sharedmanifold(dst_space, src_space)
     op = BlockAreaOperator(_intersectionoperator(m),
         prepared.map, indexmap(src_inds),
         _cellmemo(src_space, src_inds), _cellmemo(dst_space, prepared.inds))
-    block = _intersectionareas(m, _destinationtree(prepared),
-        subtree(src_space, src_inds), op)
+    block = _intersectionareas(m, locator, dst_space, prepared, src_space, src_inds, op)
 
     return WeightBlock(block, _blockdenom(block, ndst))
 end
@@ -493,6 +503,16 @@ pairblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
 pairblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
     prepared::DestinationTree, src_space::RegridSpace, src_inds) =
     pairblock(method, dst_space, prepared.inds, src_space, src_inds)
+
+pairblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
+    dst_cache::DestinationCache, src_space::RegridSpace, src_inds,
+    locator::CandidateLocator) =
+    pairblock(method, dst_space, dst_cache.inds, src_space, src_inds, locator)
+
+pairblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
+    prepared::DestinationTree, src_space::RegridSpace, src_inds,
+    locator::CandidateLocator) =
+    pairblock(method, dst_space, prepared.inds, src_space, src_inds, locator)
 
 function _sharedmanifold(dst_space::RegridSpace, src_space::RegridSpace)
     m = manifold(dst_space)
@@ -517,11 +537,48 @@ function _blockdenom(block::SparseArrays.AbstractSparseMatrixCSC, ndst::Int)
 end
 
 """
+    _intersectionareas(manifold, locator, dst_space, dst, src_space, src_inds, op)
     _intersectionareas(manifold, dst_tree, src_tree, op) -> SparseMatrixCSC
 
 Compute intersection areas, threaded when more than one thread is available
-and no outer loop is already parallel ([`OUTER_PARALLEL`](@ref)).
+and no outer loop is already parallel ([`OUTER_PARALLEL`](@ref)). `dst` is the
+destination's index set or its [`preparedestination`](@ref) result.
+
+A [`TreeLocator`](@ref) hands both trees to
+`ConservativeRegridding.intersection_areas`. An [`AnalyticLocator`](@ref)
+discovers the pairs itself with [`overlappairs`](@ref) and runs
+ConservativeRegridding's own clipping and assembly over them, addressing the
+spaces where the trees would stand: the operator reads cells through
+`Trees.getcell`, which every space answers. The two routes assemble the same
+matrix, entry for entry.
 """
+function _intersectionareas(m::GOCore.Manifold, ::TreeLocator, dst_space::RegridSpace,
+    dst, src_space::RegridSpace, src_inds, op)
+    return _intersectionareas(m, _destinationtree(dst_space, dst),
+        subtree(src_space, src_inds), op)
+end
+
+function _intersectionareas(m::GOCore.Manifold, locator::AnalyticLocator,
+    dst_space::RegridSpace, dst, src_space::RegridSpace, src_inds, op)
+    threaded = _innerthreaded()
+    pairs = overlappairs(locator, dst_space, _destinationinds(dst), src_space, src_inds;
+        threaded = threaded isa GOCore.True)
+    ValType = ConservativeRegridding.output_eltype(op, src_space, dst_space)
+    return _with_sparse_assembly_cache(ValType) do cache
+        scratch = ConservativeRegridding._assembly_cache(ValType, cache)
+        try
+            items = ConservativeRegridding.work_items(op, pairs)
+            nrows, ncols = ConservativeRegridding.output_matrix_size(op, src_space, dst_space)
+            ConservativeRegridding._assemble_sparse(
+                ConservativeRegridding.IntersectionReturnStyle(op), op, items,
+                src_space, dst_space, threaded, nrows, ncols, scratch;
+                npartitions = Threads.nthreads() * 4, progress = false)
+        finally
+            empty!(scratch)
+        end
+    end
+end
+
 function _intersectionareas(m::GOCore.Manifold, dst_tree, src_tree, op)
     threaded = _innerthreaded()
     dst_tree, src_tree = _task_prepared_intersection_trees(

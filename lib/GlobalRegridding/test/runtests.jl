@@ -105,6 +105,7 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
 
     include("test_rastergrid.jl")
     include("test_proj.jl")
+    include("test_rastercrs.jl")
     include("test_conservative.jl")
     include("test_interpolation.jl")
     include("test_barycentric.jl")

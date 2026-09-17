@@ -57,9 +57,12 @@ plan = plan_regrid(data; to = target, method = Conservative())
 result = regrid(data, plan)
 ```
 
-`RasterGrid` assumes longitude and latitude in degrees; projected coordinates
-require an explicit transform. For plain arrays, supply a source space with
-`from`. Put spatial dimensions first, in the source space's cell order.
+`RasterGrid` reads a `Rasters.Raster`'s CRS: a geographic CRS is treated as
+longitude and latitude in degrees, and a projected CRS is charted through Proj
+when both Rasters and Proj are loaded. Dimensional arrays with no CRS are
+assumed geographic; pass `native_to_unit_sphere` to chart them otherwise. For
+plain arrays, supply a source space with `from`. Put spatial dimensions first,
+in the source space's cell order.
 Dimensional results use the destination's axes and retain non-spatial dimensions,
 such as time.
 

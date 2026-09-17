@@ -110,7 +110,7 @@ import GlobalRegridding: cellat, regrid, regrid!, plan_regrid
 # keyword arguments, so a session that can call `regrid` can also spell
 # `method = Conservative()` without a second import.
 using GlobalRegridding: Conservative, NearestCell, DirectNearest,
-    BarycentricPoint, Weighted, Extensive, PerChunk, Spilled
+    BarycentricPoint, Auto, Weighted, Extensive, PerChunk, Spilled
 
 include("Helpers/Helpers.jl")
 
@@ -425,7 +425,7 @@ public authalic_sphere
 # Methods, policies, and storage flavors are re-exported so the verbs' keyword
 # arguments are spellable without importing `GlobalRegridding`.
 export regrid, regrid!, plan_regrid, DGGSpace
-export Conservative, NearestCell, DirectNearest, BarycentricPoint
+export Conservative, NearestCell, DirectNearest, BarycentricPoint, Auto
 export Weighted, Extensive
 export PerChunk, Spilled
 

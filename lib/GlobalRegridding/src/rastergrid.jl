@@ -134,7 +134,8 @@ Build a [`RegridSpace`](@ref) from a dimensional raster or dimension tuple.
 Construction reads no array values. Spatial lookups provide cell edges and
 array chunking provides spatial chunks. X/Y traits are preferred, then common
 dimension names; `xdim` and `ydim` override detection. Interval lookups use
-their bounds, while point lookups are midpointed. Edge order matches lookup order.
+their bounds, while point lookups are midpointed; a point lookup's own
+coordinates remain its cells' sample sites. Edge order matches lookup order.
 
 # Cell order
 
@@ -320,6 +321,14 @@ function _withsampling(dim, edges::Vector{Float64}, sampling::DD.Lookups.Interva
     return DD.rebuild(dim, DD.Lookups.Sampled(DD.val(lk); order = DD.order(lk),
         span = DD.Lookups.Explicit(bounds), sampling, metadata = DD.metadata(lk)))
 end
+
+"""
+    spacesampling(space::RasterGrid)
+
+Return the sampling the X and Y lookups agree on, or `nothing` when neither
+says `Points` or `Intervals`. Lookups that disagree are an error.
+"""
+spacesampling(space::RasterGrid) = _commonsampling((space.xdim, space.ydim))
 
 # Dimension and edge extraction
 
@@ -550,9 +559,18 @@ end
 
 function cellcentroid(space::RasterGrid, i::Int)
     ix, iy = cellsubscript(space, i)
-    return space.native_to_unit_sphere(((space.xedges[ix] + space.xedges[ix+1]) / 2,
-        (space.yedges[iy] + space.yedges[iy+1]) / 2))
+    return space.native_to_unit_sphere((_site(space.xdim, space.xedges, ix),
+        _site(space.ydim, space.yedges, iy)))
 end
+
+# A cell's sample site on one axis: the lookup's own coordinate for `Points`,
+# which midpointed edges do not centre when the spacing is irregular, and the
+# centre between the edges otherwise.
+_site(dim, edges::Vector{Float64}, k::Int) =
+    DD.sampling(DD.lookup(dim)) isa DD.Lookups.Points ? Float64(DD.lookup(dim)[k]) :
+    (edges[k] + edges[k+1]) / 2
+
+_sites(dim, edges::Vector{Float64}) = [_site(dim, edges, k) for k in 1:(length(edges)-1)]
 
 """
     cellat(space::RasterGrid, p) -> Union{Int,Nothing}
@@ -1002,10 +1020,12 @@ _lattice(space::RasterGrid, (a0, a1, b0, b1)) =
 """
     chartaxes(space::RasterGrid)
 
-Return cell-centre coordinates in lookup order. Reverse-ordered dimensions
+Return sample-site coordinates in lookup order: the lookup values of a `Points`
+dimension and the cell centres of an `Intervals` one. Reverse-ordered dimensions
 therefore return descending coordinates.
 """
-chartaxes(space::RasterGrid) = (_centres(space.xedges), _centres(space.yedges))
+chartaxes(space::RasterGrid) =
+    (_sites(space.xdim, space.xedges), _sites(space.ydim, space.yedges))
 
 _centres(e::Vector{Float64}) = [(e[k] + e[k+1]) / 2 for k in 1:(length(e)-1)]
 
@@ -1047,11 +1067,14 @@ end
 """
     chartspacing(space::RasterGrid)
 
-Return the largest edge step on each axis in radians of arc.
+Return the largest edge or sample-site step on each axis in radians of arc.
+Irregular `Points` sites can lie further apart than any two of the edges
+midpointed between them, so both bound the adjacent-site distance.
 """
 chartspacing(space::RasterGrid) =
     _spherical_step_bounds_radians(space.native_to_unit_sphere,
-        _maxstep(space.xedges), _maxstep(space.yedges))
+        max(_maxstep(space.xedges), _maxstep(_sites(space.xdim, space.xedges))),
+        max(_maxstep(space.yedges), _maxstep(_sites(space.ydim, space.yedges))))
 
 _maxstep(e::Vector{Float64}) =
-    maximum(abs(e[k+1] - e[k]) for k in 1:(length(e)-1))
+    maximum((abs(e[k+1] - e[k]) for k in 1:(length(e)-1)); init = 0.0)

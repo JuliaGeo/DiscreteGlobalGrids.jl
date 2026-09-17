@@ -58,6 +58,7 @@ it and `NaN` otherwise.
   - `from`: source space, spelled any of those ways; `nothing` derives a
     `RasterGrid` from `data`.
   - `method`: weight-building method; defaults to [`Conservative`](@ref).
+    [`Auto`](@ref) chooses it from the source's and destination's sampling.
   - `missingpolicy`: [`Weighted`](@ref) means or [`Extensive`](@ref) sums.
   - `missingval`: the nodata sentinel of the regrid — invalid in the source, and
     written into blanked destination cells. Left out, the source's comes from
@@ -222,6 +223,7 @@ function plan_regrid(data; to, from = nothing,
     narrow::Union{Nothing,Symbol} = nothing)
     src_space = from === nothing ? _sourcespace(data) : _asspace(from, "from")
     dst_space = _asspace(to, "to", src_space)
+    method = resolvemethod(method, data, src_space, dst_space)
     manifold(dst_space) == manifold(src_space) || throw(ArgumentError(
         "the two sides of a regrid must live on one manifold, but the source " *
         "is on $(manifold(src_space)) and the destination on $(manifold(dst_space))"))
@@ -239,6 +241,28 @@ function plan_regrid(data; to, from = nothing,
     return ChunkedPlan(method, missingpolicy, dst_space, src_space;
         storage, budget = something(budget, DEFAULT_BUDGET), chunks, missingval,
         dependencies, refine, narrow)
+end
+
+# An explicit method stands for itself; `Auto()` becomes the one both sides'
+# sampling selects. The source's is read from its spatial lookups before its space.
+resolvemethod(method::AbstractRegriddingMethod, data, src_space::RegridSpace,
+    dst_space::RegridSpace) = method
+
+function resolvemethod(::Auto, data, src_space::RegridSpace, dst_space::RegridSpace)
+    src = data isa DD.AbstractDimArray ? _commonsampling(
+        DD.dims(data, resolvespatialdims(data, ncells(src_space)))) : nothing
+    src === nothing && (src = spacesampling(src_space))
+    dst = spacesampling(dst_space)
+    # `Points` onto `Intervals` is not settled yet: interpolating at each
+    # destination's site suits cells no coarser than the source's sample
+    # spacing, but much coarser cells would be better served by averaging the
+    # samples inside them.
+    (src isa DD.Lookups.Points || dst isa DD.Lookups.Points) && return BarycentricPoint()
+    src isa DD.Lookups.Intervals && return Conservative()
+    throw(ArgumentError(
+        "`method = Auto()` chooses from the sampling of the source's spatial " *
+        "lookups, but neither the data nor $(typeof(src_space).name.name) says " *
+        "whether its values are `Points` or `Intervals`; pass `method` explicitly"))
 end
 
 function _rejectlazykeywords(chunks, budget, storage, dependencies, refine, narrow)

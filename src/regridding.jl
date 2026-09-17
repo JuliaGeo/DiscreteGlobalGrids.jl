@@ -306,6 +306,10 @@ GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString,
 # raster lattice in, so a source given no `from` can point at the grid itself.
 GR.dimsource(lk::AbstractCellLookup) = cellset(lk)
 
+# A cell is a region, as its `CellLookup` says, so `Auto()` reads a value on a
+# bare grid as that region's mean.
+GR.spacesampling(::DGGSpace) = DD.Lookups.Intervals(DD.Lookups.Center())
+
 # Labelling the output
 
 """

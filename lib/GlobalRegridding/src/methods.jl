@@ -70,6 +70,26 @@ Base.show(io::IO, m::BarycentricPoint) = print(io, "BarycentricPoint(",
     m.poles isa NearestCell ? "" : "poles = $(repr(m.poles))", ")")
 
 """
+    Auto()
+
+Choose the method from what the values on either side represent, as their
+spatial lookups' sampling says: `Points` on either side selects
+[`BarycentricPoint`](@ref), and `Intervals` onto `Intervals` selects
+[`Conservative`](@ref).
+
+[`plan_regrid`](@ref) resolves it once, before any weight is built, so a plan
+holds the chosen method. The source's sampling is read from a dimensional
+source's spatial lookups, and otherwise from the source space; the
+destination's from its space ([`spacesampling`](@ref)). Spatial lookups that
+mix `Points` and `Intervals`, or a source that says neither and a destination
+that is not `Points`, are refused: pass the method explicitly.
+
+DimensionalData gives a lookup constructed without an explicit sampling
+`Points`, so check that a source built in memory says what its values mean.
+"""
+struct Auto <: AbstractRegriddingMethod end
+
+"""
     outputsampling(method::AbstractRegriddingMethod) -> DimensionalData.Lookups.Sampling
 
 Return the sampling a method gives the destination it writes. Area-based methods

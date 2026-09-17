@@ -1032,6 +1032,20 @@ end
             end
         end
 
+        @testset "the ConservativeRegridding internals the walk assembles through" begin
+            # `_intersectionareas(::AnalyticLocator)` reaches past CR's public
+            # `intersection_areas` to its assembly, so a CR change must fail here.
+            Cache = CR.SparseMatrixAssemblyCache{Float64}
+            @test hasmethod(CR._assembly_cache, Tuple{Type{Float64},Cache})
+            @test hasmethod(CR._assemble_sparse, Tuple{CR.InPlace,Any,
+                Vector{Tuple{Int,Int}},Any,Any,GOCore.True,Int,Int,Cache})
+            @test hasmethod(CR._assemble_sparse, Tuple{CR.InPlace,Any,
+                Vector{Tuple{Int,Int}},Any,Any,GOCore.False,Int,Int,Cache})
+            @test hasmethod(CR.get_all_candidate_pairs,
+                Tuple{GOCore.True,typeof(GR.Extents.intersects),Any,Any})
+            @test hasmethod(CR.work_items, Tuple{Any,Vector{Tuple{Int,Int}}})
+        end
+
         @testset "a method that knows no locator keeps its own build" begin
             n = ncells(healpix)
             for (method, value) in ((T5PairOnly(), 2.0), (T5SeamOnly(), 3.0))

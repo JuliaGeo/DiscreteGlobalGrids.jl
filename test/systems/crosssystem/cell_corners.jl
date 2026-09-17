@@ -61,6 +61,17 @@ end
         end
     end
 
+    @testset "PartialGrid forwards to its complete grid" begin
+        sys = DGG.HEALPixSystem()
+        grid = levelgrid(sys, LEVEL)
+        held = [cellindex(grid, i) for i in 1:5:ncells(grid)]
+        pg = DGG.PartialGrid(sys, LEVEL, held)
+        for c in held
+            @test length(cell_corners(pg, c)) == 4
+            @test collect(cell_corners(pg, c)) == collect(cell_corners(grid, c))
+        end
+    end
+
     @testset "CopernicusDEMSystem" begin
         sys = DGG.CopernicusDEMSystem(90)
         grid = levelgrid(sys, first(DGG.levels(sys)))

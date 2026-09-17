@@ -62,6 +62,8 @@ Each query uses its own fixed-capacity working buffers.
 GR.samplerstate(space::DGGSpace) = _dualtopology(space.grid)
 
 const _DualSampler{V} = GR.Sampler{<:DGGSpace,V,<:DualTopology}
+const _MixedSampler{V} = GR.Sampler{<:DGGSpace,V,<:MultiOrderDualTopology}
+const _GridSampler{V} = GR.Sampler{<:DGGSpace,V,<:Union{DualTopology,MultiOrderDualTopology}}
 
 """
     GlobalRegridding.chartat(s::Sampler{<:DGGSpace}, p)
@@ -70,15 +72,17 @@ Return the origin `(0.0, 0.0)`. A `DGGSpace` writes dual cells in the
 azimuthal-equidistant chart centered on the query point, preserving each
 node's geodesic distance and bearing.
 """
-GR.chartat(::_DualSampler, p) = (0.0, 0.0)
+GR.chartat(::_GridSampler, p) = (0.0, 0.0)
 
 """
     GlobalRegridding.dualcellat(s::Sampler{<:DGGSpace}, p) -> GridDualCell
 
 Return the `MeanValue` dual cell containing `p`, or an empty cell. Edge
-neighbors delimit candidate fans within the host's vertex ring.
+neighbors delimit candidate fans within the host's vertex ring. On a
+`MultiOrderGrid` the cell is the triangle of the host and the two resolved ring
+sites bracketing the query bearing.
 """
-GR.dualcellat(s::_DualSampler, p) = first(_locatedual(s, p))
+GR.dualcellat(s::_GridSampler, p) = first(_locatedual(s, p))
 
 """
     GlobalRegridding.weightsat!(row, s::Sampler{<:DGGSpace}, p)
@@ -93,7 +97,7 @@ unsuccessful query leaves the row empty.
   - `WeightsDegenerate`: the fan exceeds capacity, crosses the chart's
     antipode, or fails to form a simple cell.
 """
-function GR.weightsat!(row::GR.WeightRow, s::_DualSampler, p)
+function GR.weightsat!(row::GR.WeightRow, s::_GridSampler, p)
     empty!(row)
     cell, status = _locatedual(s, p)
     GR.nodecount(cell) == 0 && return status
@@ -222,8 +226,6 @@ end
 
 # --- mixed levels -----------------------------------------------------------
 
-const _MixedSampler{V} = GR.Sampler{<:DGGSpace,V,<:MultiOrderDualTopology}
-
 @inline function _storedsite(mov::MultiOrderVector, k::Int)
     c = @inbounds mov.cells[k]
     return cell_centroid(levelgrid(mov.system, level(c)), c)
@@ -244,37 +246,7 @@ function _nearestunder(mov::MultiOrderVector, n::AbstractCellIndex, p)
     return best
 end
 
-"""
-    GlobalRegridding.chartat(s::Sampler{<:DGGSpace,V,<:MultiOrderDualTopology}, p)
-
-Return the origin used by every query-centered `DGGSpace` chart.
-"""
-GR.chartat(::_MixedSampler, p) = (0.0, 0.0)
-
-"""
-    GlobalRegridding.dualcellat(s::Sampler{<:DGGSpace,V,<:MultiOrderDualTopology}, p)
-
-Return the `MeanValue` triangle of stored sample sites containing `p`, or an
-empty cell. The triangle uses the host and the two resolved ring sites that
-bracket the query bearing.
-"""
-GR.dualcellat(s::_MixedSampler, p) = first(_locatemixeddual(s, p))
-
-"""
-    GlobalRegridding.weightsat!(row, s::Sampler{<:DGGSpace,V,<:MultiOrderDualTopology}, p)
-
-Weight the mixed-level triangle containing `p`. The function clears the row on
-entry and leaves it empty unless it returns `WeightsMapped`. See
-[Dual-cell weight statuses](@ref).
-"""
-function GR.weightsat!(row::GR.WeightRow, s::_MixedSampler, p)
-    empty!(row)
-    cell, status = _locatemixeddual(s, p)
-    GR.nodecount(cell) == 0 && return status
-    return GR.dualweights!(row, cell, (0.0, 0.0))
-end
-
-function _locatemixeddual(s::_MixedSampler, p)
+function _locatedual(s::_MixedSampler, p)
     mov = s.state.cells
     sys = mov.system
     host = localindex(mov, p)

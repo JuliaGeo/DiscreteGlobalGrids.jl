@@ -353,16 +353,13 @@ _expandsleaves(mov::MultiOrderVector) = _leafcount(mov) != length(mov)
 """
     GlobalRegridding.dimsource(lk::AbstractCellLookup)
 
-Return the exact source target named by a cell lookup.
-
-This is usually [`cellset`](@ref). A lookup produced by expanding a
-[`MultiOrderVector`](@ref) names itself because the container has
-method-specific geometry that differs from the lookup's leaf cells.
+A single-level cell lookup names itself as the source target: its own cells, in
+its own order, resolve through [`GlobalRegridding._asspace`](@ref) to the
+[`PartialGrid`](@ref) the values are written against. The backing
+[`cellset`](@ref) is not that target: a lookup refined below its set, or expanded
+from a [`MultiOrderVector`](@ref), holds other cells than its backing does.
 """
-GR.dimsource(lk::AbstractCellLookup) = _axissource(lk, cellset(lk))
-
-_axissource(::AbstractCellLookup, set) = set
-_axissource(lk::AbstractCellLookup, ::MultiOrderVector) = lk
+GR.dimsource(lk::AbstractCellLookup) = lk
 
 GR.dimsource(lk::MultiOrderLookup) = cellset(lk)
 

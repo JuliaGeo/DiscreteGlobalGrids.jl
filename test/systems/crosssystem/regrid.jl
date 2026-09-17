@@ -467,8 +467,8 @@ end
     end
 
     # A `Cells` axis is not a lattice, so `to` refuses it, naming the keyword it
-    # was handed and the grid the axis holds.
-    named = DGG.cellset(DD.lookup(onto, 1))
+    # was handed and the cell axis to pass instead.
+    named = DD.lookup(onto, 1)
     @test_throws "`to` was given a dimensional raster" DGG.regrid(RASTER; to = onto)
     @test_throws "to = $named" DGG.regrid(RASTER; to = onto)
 
@@ -934,8 +934,10 @@ end
           parent(DGG.regrid(plain; to = MOCDST))
     @test length(coarse) != DGG.ncells(grid)
 
-    # Expanded leaf cells must name their lookup because the container is method-specific.
-    exp_lk = DD.lookup(DGG.expand(MOCCUBE, MOCREF), DGG.Cells)
+    # A lookup names itself whatever backs it: a whole level, or a container its
+    # cells were expanded from.
+    @test GR.dimsource(DD.lookup(plain, DGG.Cells)) === DD.lookup(plain, DGG.Cells)
+    exp_lk =DD.lookup(DGG.expand(MOCCUBE, MOCREF), DGG.Cells)
     @test DGG.cellset(exp_lk) === MOV
     @test GR.dimsource(exp_lk) === exp_lk
     @test DGG.ncells(GR._asspace(GR.dimsource(exp_lk), "from")) ==

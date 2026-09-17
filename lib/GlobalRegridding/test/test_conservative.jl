@@ -957,16 +957,14 @@ end
             chunk = (ndst ÷ 3):(2ndst ÷ 3)
             scattered = sort!(Random.randperm(rng, ndst)[1:ndst ÷ 4])
             for dinds in (whole, chunk, scattered), threaded in (false, true)
-                # A restricted tree bounds its cells more loosely than the
-                # walk's caps do, so the candidate sets agree only on the whole
-                # space; both must hold every pair that carries weight.
+                # Tree nodes and walk caps bound cells differently, so the two
+                # candidate sets differ; both must hold every weighted pair.
                 tree = GR.overlappairs(TreeLocator(), dst, dinds, src, 1:nsrc; threaded)
                 walk = GR.overlappairs(AnalyticLocator(), dst, dinds, src, 1:nsrc; threaded)
                 weighted = weightedpairs(
                     GR.pairblock(Conservative(), dst, dinds, src, 1:nsrc), dinds, 1:nsrc)
                 @test weighted ⊆ Set(walk)
                 @test weighted ⊆ Set(tree)
-                dinds === whole && @test Set(tree) == Set(walk)
                 @test allunique(walk)
                 @test walk == GR.overlappairs(AnalyticLocator(), dst, dinds, src, 1:nsrc;
                     threaded = false)

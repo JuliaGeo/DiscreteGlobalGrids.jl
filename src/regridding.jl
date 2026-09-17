@@ -168,7 +168,13 @@ GR.hasanalyticlocation(::DGGSpace) = true
 GR.cellneighbors(space::DGGSpace, i::Int) =
     Engine._indices(space.grid, neighbors(space.grid, cellindex(space.grid, i), Val(1)))
 GR.cellcap(space::DGGSpace, i::Int) =
-    Fallbacks.cell_cap(space.grid, cellindex(space.grid, i))
+    _cellcap(Fallbacks.cell_cap_is_cheap(space.grid), space.grid, cellindex(space.grid, i))
+
+_cellcap(::Val{true}, grid, c) = Fallbacks.cell_cap(grid, c)
+# The cap over the corners holds every great-circle chord between them, which is
+# all the clipper measures; the margin covers rounding in the cap arithmetic.
+_cellcap(::Val{false}, grid, c) =
+    Extents.grow(Fallbacks.points_cap(cell_corners(grid, c)), 5e-5)
 GR.cellcorners(space::DGGSpace, i::Int) =
     cell_corners(space.grid, cellindex(space.grid, i))
 

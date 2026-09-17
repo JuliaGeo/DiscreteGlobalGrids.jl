@@ -1010,14 +1010,16 @@ Lookups.order(::MultiOrderLookup) = Lookups.Unordered()
 
 _rebuild(lk::MultiOrderLookup, mov::MultiOrderVector) = MultiOrderLookup(mov)
 
-# Concatenation preserves this lookup only for strictly ascending ids.
+# Concatenation preserves this lookup only for ascending, pairwise disjoint ids.
 function _rebuild(lk::MultiOrderLookup, ids::AbstractVector{<:AbstractCellIndex})
     mov = parent(lk)
     sys = system(mov)
     # Key the concatenated axis at its deepest cell level.
     ref = maximum(level, ids; init=reference_level(mov))
-    starts = [first(descendant_range(sys, c, ref)) for c in ids]
-    issorted(starts; lt=<=) ||
+    ranges = [descendant_range(sys, c, ref) for c in ids]
+    # Each leaf interval ends before the next begins; an ancestor beside its own
+    # descendant ascends by start but overlaps.
+    all(i -> last(ranges[i]) < first(ranges[i+1]), 1:length(ranges)-1) ||
         return Lookups.Categorical(collect(ids); order=Lookups.Unordered())
     return MultiOrderLookup(MultiOrderVector(sys, ids; reference_level=ref))
 end

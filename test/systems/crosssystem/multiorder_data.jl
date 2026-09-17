@@ -376,6 +376,9 @@ end
         @test DD.Lookups.rebuild(lk; data=ids) == lk
         @test DD.Lookups.rebuild(lk; data=mov) isa DGG.MultiOrderLookup
         @test DD.Lookups.rebuild(lk; data=reverse(ids)) isa DD.Lookups.Categorical
+        # An ancestor beside its own later descendant ascends by start but overlaps.
+        inner = last(collect(DGG.descendants(sys, ids[1], L + 1)))
+        @test DD.Lookups.rebuild(lk; data=[ids[1], inner]) isa DD.Lookups.Categorical
         @test_throws ArgumentError DD.Lookups.rebuild(lk; data=[1, 2, 3])
         @test occursin("cat", sprint(showerror,
             try

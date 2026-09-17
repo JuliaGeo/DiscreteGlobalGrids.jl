@@ -265,8 +265,13 @@ end
 
 # --- the axis ---------------------------------------------------------------
 
-# The cube axis: a `ChunkedCellLookup` over `storedaxis` for a single-level store,
-# a `MultiOrderLookup` over the two validated columns for a compacted one.
+"""
+    storedlookup(encoding, group, snapshot, desc, n, validate, samples) -> Lookup
+
+The cube axis of the store: a [`ChunkedCellLookup`](@ref) over the
+single-level axis `storedaxis` builds, or — for a `compacted` store — a
+`MultiOrderLookup` over the validated `MultiOrderVector` its two columns name.
+"""
 storedlookup(enc::CellEncoding, group, snap, desc, n, validate, samples) =
     ChunkedCellLookup(storedaxis(enc, describedgrid(desc), group, snap, desc, n,
         validate, samples))

@@ -245,6 +245,7 @@ GR.dimsource(::DD.Lookups.Lookup{T6LooseCell}) = T6Unresolved()
                   regrid(values; to = dst, from = src, method)
         end
         @test GR.plan_regrid(data; to = dst, lazy = false).src_space isa RasterGrid
+        @test_throws "must be a dimensional array" GR._presentedspace(values, Conservative())
 
         # Explicit source geometry takes precedence over lookup inference.
         coarse = t6_space(t6_centres(-180, 180, 4), t6_centres(-90, 90, 8))

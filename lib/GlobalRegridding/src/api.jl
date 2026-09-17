@@ -310,6 +310,10 @@ function _presentedspace(view::DD.AbstractDimArray, method)
         "$(DD.dims(view)) names none"))
 end
 
+_presentedspace(view, method) = throw(ArgumentError(
+    "a presented source must be a dimensional array naming its own cells, " *
+    "got a $(typeof(view))"))
+
 _sourcespace(data, method) = throw(ArgumentError(
     "a $(typeof(data)) carries no coordinates, so no source space can be " *
     "derived from it; pass `from = ` a RegridSpace."))

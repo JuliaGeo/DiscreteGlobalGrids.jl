@@ -2,8 +2,8 @@
 #
 # This page stores *data* on cells of mixed levels: one value per cell, coarse
 # where the field is flat and fine where it varies, as in adaptive mesh
-# refinement. A smooth field then fits a stated tolerance in a fraction of the
-# leaf count and still answers every leaf query.
+# refinement. A smooth field is then held to a stated tolerance in a fraction
+# of the leaf count, and still answers every leaf query.
 #
 # Astronomers store sky regions the same way, as **Multi-Order Coverage** maps:
 # HEALPix cells at mixed orders, coarse inside, fine along the edge. The
@@ -376,8 +376,8 @@ fig
 #     cell and steps at leaf spacing at its edge. Request it explicitly with
 #     `regrid(expand(M, ref); to = ...)`.
 #
-# Put the values on the cube axis and omit `from`. The axis names the storage
-# layout, and an explicit `from` must agree with it:
+# `from` names a source space; the cube axis names its storage layout. Put the
+# values on the axis and omit `from`; an explicit one must agree with the axis:
 #
 #   - a method that reads stored cells rejects values paired with leaves;
 #   - a method that reads leaves rejects values paired with stored cells;

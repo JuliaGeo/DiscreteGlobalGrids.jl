@@ -24,6 +24,7 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
         integration_hooks = (
             :resolvespatialdims,
             :_prepare_raster_transform_pair, :_task_prepared_raster_transform,
+            :_crs_native_to_unit_sphere, :_projected_crs_native_to_unit_sphere,
         )
         @test all(name -> Base.ispublic(GR, name), (hooks..., integration_hooks...))
         docs = Base.Docs.meta(GR)

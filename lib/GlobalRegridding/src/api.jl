@@ -221,9 +221,12 @@ function plan_regrid(data; to, from = nothing,
     dependencies = nothing, refine = nothing,
     narrow::Union{Nothing,Symbol} = nothing,
     locator::CandidateLocator = TreeLocator())
-    src_space = from === nothing ? _sourcespace(data, method) :
-                sourcespacefor(from, method)
-    from === nothing || checksource(from, data, src_space)
+    if from === nothing
+        src_space = _sourcespace(data, method)
+    else
+        src_space = sourcespacefor(from, method)
+        checksource(from, data, src_space)
+    end
     dst_space = _asspace(to, "to", src_space)
     manifold(dst_space) == manifold(src_space) || throw(ArgumentError(
         "the two sides of a regrid must live on one manifold, but the source " *
@@ -285,15 +288,14 @@ wholeblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
         src_space, 1:Int(ncells(src_space)), locator)
 
 # Only dimensional arrays carry enough geometry to infer a source space. A
-# dimension that already names cells resolves to the source it holds.
+# presented view or a cell-naming dimension wins over raster inference.
 function _sourcespace(data::DD.AbstractDimArray, method)
     for d in DD.dims(data)
         lookup = DD.lookup(d)
         view = sourceview(lookup, data, method)
         view === nothing || return _presentedspace(view, method)
         named = dimsource(lookup)
-        named === nothing && continue
-        return sourcespacefor(named, method)
+        named === nothing || return sourcespacefor(named, method)
     end
     return RasterGrid(data)
 end
@@ -307,10 +309,6 @@ function _presentedspace(view::DD.AbstractDimArray, method)
         "a presented source must name the cells it is written against, but " *
         "$(DD.dims(view)) names none"))
 end
-
-_presentedspace(view) = throw(ArgumentError(
-    "a presented source must be a dimensional array naming its own cells, " *
-    "got a $(typeof(view))"))
 
 _sourcespace(data, method) = throw(ArgumentError(
     "a $(typeof(data)) carries no coordinates, so no source space can be " *

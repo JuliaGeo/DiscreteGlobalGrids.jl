@@ -53,6 +53,56 @@ dggread
 dggwrite
 ```
 
+## Writing a store for xdggs
+
+[xdggs](https://xdggs.readthedocs.io)'s default convention reads a
+one-dimensional `cell_ids` coordinate whose attributes are the fields of its
+grid-info dataclass, for a grid its registry knows. `target = :xdggs` writes
+that layout and checks the store's description against it before the group is
+created:
+
+```julia
+using DiscreteGlobalGrids, Zarr
+dggwrite("tas.zarr", cube; target = :xdggs)
+```
+
+The store then opens in Python with no arguments beyond the path:
+
+```python
+import xarray as xr, xdggs
+ds = xr.open_dataset("tas.zarr", engine="zarr").pipe(xdggs.decode)
+ds.dggs.cell_centers()
+```
+
+What the target chooses and checks, and why:
+
+| Choice | Reason |
+|---|---|
+| `encoding = :dense` | `:auto` prefers the ranges encoding, which stores `(n, 2)` intervals and no `cell_ids` array; xdggs finds nothing to decode there. |
+| the coordinate is `cell_ids` and carries a level | `xdggs.decode` looks the coordinate up by that name, and its grid info has no default level. |
+| grid in [`XDGGS_GRIDS`](@ref) | `healpix` and `h3` ship with xdggs; `igeo7` needs the `xdggs-dggrid4py` plugin from its main branch, whose grid info takes the attributes [`XdggsConvention`](@ref) writes. |
+
+Two properties every dense store from this writer already has matter to xdggs:
+the coordinate's attributes are grid keys only, because xdggs forwards every
+attribute but `grid_name` to its dataclass constructor and a stray `units` is
+a `TypeError` there; and `cell_ids` has no fill value, because xarray reads a
+Zarr v2 fill value as a mask and promotes the ids to `Float64`.
+
+Both write conventions are stamped, so `ds.dggs.decode(convention="zarr")`
+opens the same store through the `zarr-conventions/dggs` group attributes.
+`xdggs.decode` strips the grid attributes off the coordinate as it builds its
+index, so a dataset edited in Python is written back with
+`ds.dggs.encode("xdggs").to_zarr(...)`.
+
+The chunk manifest sidecar rides along as a data variable on dimensions of its
+own, which xdggs ignores.
+
+```@docs
+DiscreteGlobalGrids.require_xdggs_readable
+DiscreteGlobalGrids.XDGGS_GRIDS
+DiscreteGlobalGrids.xdggs_ellipsoid_attrs
+```
+
 ## The stored axis
 
 ```@docs

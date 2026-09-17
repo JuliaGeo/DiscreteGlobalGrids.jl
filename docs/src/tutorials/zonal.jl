@@ -121,7 +121,7 @@ Colorbar(fig[1, 2]; colormap = :thermal, colorrange = extrema(skipmissing(tx)),
     label = "°C")
 fig
 
-# ## Count only cells wholly inside the outline
+# ## Narrow the selection by boundary rule
 #
 # These boundary rules select progressively narrower sets of cells. A raster
 # zonal tool commonly uses the centre-in-zone rule for its pixels.
@@ -129,22 +129,22 @@ fig
 # | rule | cells kept | spelling |
 # |---|---|---|
 # | `Covering` | a cell set containing the outline, possibly with an outer rim | `field[Cells(Covering(geom))]` |
-# | centre-in-zone | every cell whose centre is inside | `boundary=:center` in raster operations |
+# | `CentroidCovered` | every cell whose centre is inside | `field[Cells(CentroidCovered(geom))]` |
 # | `Within` | every cell wholly inside the outline | `field[Cells(Within(geom))]` |
 
 #
-# The `Cells` predicates shown here test cell footprints. `Intersects` and
-# `Within` do not select cells by centroid containment. For that rule, use
-# `boundary=:center` with the [raster APIs](../api/raster-work.md).
+# `CentroidCovered` is the centre-in-zone rule the raster operations spell
+# `boundary=:center`; see the [raster APIs](../api/raster-work.md).
 
+centred = field[DGG.Cells(DGG.CentroidCovered(texas))]
 inside = field[DGG.Cells(DGG.Within(texas))]
 
 #
 
-mean(skipmissing(tx)), mean(skipmissing(inside))
+mean(skipmissing(tx)), mean(skipmissing(centred)), mean(skipmissing(inside))
 
-# The two means differ because boundary cells change which ground contributes
-# to the statistic.
+# The means differ because boundary cells change which ground contributes to
+# the statistic.
 #
 # ## Read the cell holding a point
 #

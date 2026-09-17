@@ -59,7 +59,7 @@ The exact boundary ring of cell `c`, as points on the unit sphere.
 Contract:
 
   - The ring is **implicitly closed**: the first vertex is *not* repeated at the
-    end. The internal `cell_polygon` wrapper is what closes it.
+    end. [`cell_polygon`](@ref) closes it.
   - Vertices are in **counter-clockwise order seen from outside the sphere**
     (right-hand rule about the outward normal), so the ring bounds the cell
     rather than its complement and spherical signed area comes out positive.
@@ -246,10 +246,38 @@ localindex(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex) =
 """
     cell_polygon(grid::AbstractGrid, c::AbstractCellIndex) -> GI.Polygon
 
-Internal. The GeoInterface wrapper over [`cell_boundary`](@ref): the ring,
-explicitly closed, as a `GI.Polygon` in unit-sphere `(x, y, z)`. It is what the
-[`query`](@ref) predicates, [`getcell`](@ref) and regridding read a cell's
-geometry through; a caller wanting the geometry itself reads `cell_boundary`.
+Cell `c` as a GeoInterface polygon on the unit sphere: the form the
+[`query`](@ref) predicates, [`getcell`](@ref), regridding, and GeometryOps
+operations under the `GO.Spherical()` manifold all read a cell through.
+
+Contract:
+
+  - A `GI.Polygon` with one exterior `GI.LinearRing` and no holes.
+  - The ring is **explicitly closed**: the first vertex is repeated as the last.
+  - Vertices are `GO.UnitSphericalPoint`s in unit-sphere `(x, y, z)`, joined by
+    great-circle arcs.
+  - Vertices wind **counter-clockwise seen from outside the sphere**, so the
+    spherical area of the polygon is positive.
+
+[`cell_boundary`](@ref) returns the same vertices as an implicitly closed
+`AbstractVector`; `cell_polygon` closes that ring and wraps it. Systems provide
+`cell_boundary`; the generic method here builds the polygon from it.
+
+Accepted inputs:
+
+  - A grid and a typed cell index: a [`levelgrid`](@ref), a
+    [`PartialGrid`](@ref), or a standalone [`AbstractGrid`](@ref).
+  - A [`MultiOrderCellSet`](@ref) and a cell index at any of its levels.
+  - A `SubsetIndexedCell` handle from a [`mapneighbors`](@ref) sweep in the
+    cell slot, answering for its cell.
+  - A local `Int` index, through [`getcell`](@ref)`(grid, i)`.
+
+A grid is required in the first slot; a grid *system* answers through
+`levelgrid(sys, level(c))`.
+
+Longitude/latitude vertices in degrees come from a coordinate transform:
+
+    GO.transform(GO.GeographicFromUnitSphere(), cell_polygon(grid, c))
 """
 function cell_polygon end
 
@@ -744,21 +772,21 @@ function raster_cap end
 # ===========================================================================
 
 """
-    query(grid::AbstractGrid, pred::DE9IM.DE9IMPredicate) -> Vector{<:AbstractCellIndex}
-    query(sys::AbstractHierarchicalGridSystem, pred::DE9IM.DE9IMPredicate; level::Integer) -> Vector{<:AbstractCellIndex}
+    query(grid::AbstractGrid, pred) -> Vector{<:AbstractCellIndex}
+    query(sys::AbstractHierarchicalGridSystem, pred; level::Integer) -> Vector{<:AbstractCellIndex}
 
 Every cell satisfying the spatial predicate `pred`, as a **sorted** `Vector` of
 typed cell ids.
 
 # Predicates
 
-Predicates are re-exported DE9IM.jl wrappers such as `Intersects(target)`,
-`Covers(target)`, and `Touches(target)`. `Base.parent(pred)` returns the target.
-This package defines their spherical semantics.
+Predicates are the re-exported DE9IM.jl wrappers (`Intersects(target)`,
+`Covers(target)`, `Touches(target)`, ...) and the centroid rule
+[`CentroidCovered`](@ref)`(target)`, given spherical semantics by this package.
 
-The target may be a GeoInterface geometry, an `Extents.Extent`, or a
-`GO.UnitSpherical.SphericalCap`. Longitude/latitude targets are lifted to the
-unit sphere once, at the boundary of the call.
+The target is a GeoInterface geometry, an `Extents.Extent`, or a
+`GO.UnitSpherical.SphericalCap`; `Base.parent(pred)` returns it. Lon/lat
+targets are lifted to the unit sphere once, at the boundary of the call.
 
 # Semantics
 

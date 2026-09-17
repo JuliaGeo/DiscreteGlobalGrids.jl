@@ -44,6 +44,9 @@ box(x, y, r) = GI.Polygon([GI.LinearRing([(x-r,y-r),(x+r,y-r),
                 end
                 @test issubset(selections[:inside], selections[:center])
                 @test issubset(selections[:center], selections[:intersects])
+                # `:center` is the `CentroidCovered` rule.
+                @test selections[:center] == [DGG.localindex(grid, c)
+                    for c in DGG.query(grid, DGG.CentroidCovered(geometry))]
                 @test DGG._raster_indices(grid, geometry; boundary=:touches) == selections[:intersects]
             end
             partial = DGG.PartialGrid(sys, lev, [DGG.cellindex(grid,i) for i in 1:2:DGG.ncells(grid)])

@@ -10,6 +10,7 @@ import Random
 
 import GeometryOps as GO
 const USph = GO.UnitSpherical
+const GI = GO.GI
 
 import DiscreteGlobalGrids as DGG
 using DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
@@ -283,6 +284,60 @@ function boundary_problems(pts; unit_atol::Real = DEFAULT_UNIT_ATOL,
 end
 
 """
+    polygon_problems(poly, pts; unit_atol, area_atol) -> Vector{String}
+
+Everything wrong with one [`cell_polygon`](@ref) against the
+[`cell_boundary`](@ref) ring `pts` of the same cell:
+
+  - a GeoInterface trait other than `PolygonTrait`;
+  - holes;
+  - an exterior ring whose points differ from `pts` closed by repeating its
+    first vertex;
+  - a spherical area that is zero or negative.
+
+The area is read off [`spherical_signed_area`](@ref) and so assumes a cell
+encloses less than half the sphere; see that function's warning.
+"""
+function polygon_problems(poly, pts; unit_atol::Real = DEFAULT_UNIT_ATOL,
+        area_atol::Real = 1e-12)
+    problems = String[]
+    trait = GI.trait(poly)
+    if !(trait isa GI.PolygonTrait)
+        push!(problems, "cell_polygon has GeoInterface trait $trait; a PolygonTrait is required")
+        return problems
+    end
+    nhole = GI.nhole(poly)
+    nhole == 0 || push!(problems,
+        "cell_polygon has $nhole hole$(nhole == 1 ? "" : "s"); a cell has none")
+
+    ring = collect(GI.getpoint(GI.getexterior(poly)))
+    expected = vcat(collect(pts), [first(pts)])
+    if length(ring) != length(expected)
+        push!(problems,
+            "cell_polygon's exterior ring has $(length(ring)) points; cell_boundary closed " *
+            "by its first vertex has $(length(expected))")
+    else
+        worst = 0.0
+        for (a, b) in zip(ring, expected)
+            worst = max(worst, _chord(a, b))
+        end
+        worst <= unit_atol || push!(problems,
+            "cell_polygon's exterior ring differs from the closed cell_boundary ring by " *
+            "$worst (tolerance $unit_atol)")
+    end
+
+    area = spherical_signed_area(ring)
+    if abs(area) <= area_atol
+        push!(problems, "cell_polygon encloses no area ($area sr)")
+    elseif area < 0
+        push!(problems,
+            "cell_polygon's spherical signed area is $area sr; the exterior ring must " *
+            "wind counter-clockwise seen from outside")
+    end
+    return problems
+end
+
+"""
     centroid_problems(centroid, pts; unit_atol) -> Vector{String}
 
 Everything wrong with one [`cell_centroid`](@ref): off the unit sphere, outside
@@ -353,6 +408,10 @@ function grid_interface_problems(grid;
 
         centroid = DGG.cell_centroid(grid, c)
         for p in centroid_problems(centroid, pts; unit_atol)
+            push!(problems, "cell $c: $p")
+        end
+
+        for p in polygon_problems(DGG.cell_polygon(grid, c), pts; unit_atol)
             push!(problems, "cell $c: $p")
         end
 
@@ -1455,12 +1514,17 @@ end
                         label = <grid type>)
 
 Property-test `grid` against the base-interface contracts, as a labelled
-`Test.@testset`: the [`cellindex`](@ref)/[`localindex`](@ref) bijection over
-sampled indices (including `nothing` for a cell that is not in the grid),
-boundary rings of unit-norm points that are implicitly closed and wind
-counter-clockwise seen from outside, centroids strictly inside their own cell,
-`cellat(cell_centroid(grid, c)) == c` where [`cellat`](@ref) is implemented, and
-determinism of repeated calls.
+`Test.@testset` checking:
+
+  - the [`cellindex`](@ref)/[`localindex`](@ref) bijection over sampled
+    indices, `nothing` included for a cell outside the grid;
+  - boundary rings of unit-norm points, implicitly closed and winding
+    counter-clockwise seen from outside;
+  - centroids strictly inside their own cell;
+  - polygons closing the boundary ring as a hole-free `GI.Polygon` of positive
+    spherical area;
+  - `cellat(cell_centroid(grid, c)) == c` where [`cellat`](@ref) is implemented;
+  - determinism of repeated calls.
 
 Each law is its own nested test set, so a failure names the contract it
 violated rather than a line number. Every law examines the same sampled cells,
@@ -1593,6 +1657,13 @@ function test_grid_interface(grid;
         @testset "cell_centroid" begin
             for c in cells
                 @test centroid_problems(DGG.cell_centroid(grid, c),
+                    DGG.cell_boundary(grid, c); unit_atol) == String[]
+            end
+        end
+
+        @testset "cell_polygon" begin
+            for c in cells
+                @test polygon_problems(DGG.cell_polygon(grid, c),
                     DGG.cell_boundary(grid, c); unit_atol) == String[]
             end
         end

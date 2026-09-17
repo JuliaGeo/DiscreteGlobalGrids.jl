@@ -141,6 +141,7 @@ using .Engine: PartialGrid,
     MultiOrderCoverage, MultiOrderCellSet, level_ranges,
     iscontained, coarsest_contained, cell_polygons,
     CellVector, cellset, covering, covering_indices, predicate_indices,
+    CentroidCovered, QueryPredicate,
     grow, expand, compact, member_neighbors,
     SubtreeHaloIterator, SubsetHaloIterator, HaloIndexIterator, RegionSide,
     halo_indices, sizehint,
@@ -289,7 +290,7 @@ export Winding, CounterClockwise, Clockwise, CustomOrder, Unordered
 export UnitSphericalPoint
 
 # --- Base grid interface ---------------------------------------------------
-export ncells, cellindex, cell_boundary, cell_corners, cell_centroid
+export ncells, cellindex, cell_boundary, cell_corners, cell_centroid, cell_polygon
 export localindex, globalindex
 # `cellposition` stays exported for the deprecation shim in `deprecated.jl`.
 export cellposition, rawid, reindex, cellindextypes
@@ -377,6 +378,7 @@ public missingmask!
 export DE9IMPredicate
 export Intersects, Disjoint, Contains, Within, Covers, CoveredBy
 export Touches, Crosses, Overlaps, Equals
+export CentroidCovered
 
 # --- Fallback substrate ----------------------------------------------------
 # These fallback types are bound before system modules extend them.
@@ -476,6 +478,7 @@ public CONVENTION_REGISTRY
 public DEFAULT_WRITE_CONVENTIONS
 public ENCODING_REGISTRY
 public GRID_REFERENCE
+public XDGGS_GRIDS, require_xdggs_readable, xdggs_ellipsoid_attrs
 
 function __init__()
     Base.Experimental.register_error_hint(PartitionBackendUnavailable) do io, err

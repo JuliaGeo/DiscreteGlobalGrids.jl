@@ -131,6 +131,11 @@ fig
 # | `:ranges` | `(n, 2)` inclusive `[start, stop]` id intervals | the axis is sorted, unique and one level |
 # | `:dense` | one id per cell | otherwise; also the interop choice for readers without interval support |
 #
+# The Python package [xdggs](https://xdggs.readthedocs.io) reads the dense
+# layout only. `target = :xdggs` chooses it and checks the rest of what xdggs
+# needs, so `xr.open_dataset(path, engine="zarr").pipe(xdggs.decode)` opens the
+# result; see [Writing a store for xdggs](../api/store-io.md#writing-a-store-for-xdggs).
+#
 # A ranges axis opens without reading coordinate data: length, chunk boundaries
 # and selectors use rank/select arithmetic over its intervals. This store uses
 # `RangesEncoding`, with one row per interval:

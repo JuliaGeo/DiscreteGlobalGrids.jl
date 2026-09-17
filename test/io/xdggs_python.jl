@@ -1,9 +1,9 @@
 # The cross-language check: a store written with `target = :xdggs` opens in the
 # real xdggs, through `xdggs.decode`, and its cell centres agree with this
-# package's. Runs when `DGG_XDGGS_PYTHON` names a Python interpreter that has
-# xarray, zarr and xdggs installed, and skips otherwise: the Julia suite has no
-# Python of its own, and everything the store must contain for xdggs is also
-# asserted byte-for-byte in `write.jl`.
+# package's. The interpreter is the one CondaPkg resolves from
+# `test/CondaPkg.toml`, or whatever `DGG_XDGGS_PYTHON` names when set.
+# Everything the store must contain for xdggs is also asserted byte-for-byte in
+# `write.jl`, so the skip when Zarr.jl is unavailable loses only the Python run.
 
 module DGGSIOXdggsPythonTests
 
@@ -12,8 +12,8 @@ import DiscreteGlobalGrids as DGG
 using DiscreteGlobalGrids: HEALPixSystem, CellVector, CellLookup, Cells, LevelIndex,
     levelgrid, ncells, cellindex, cell_centroid
 import DimensionalData as DD
+import CondaPkg
 
-const PYTHON = get(ENV, "DGG_XDGGS_PYTHON", "")
 const ZARR_LOADED = try
     @eval using Zarr
     true
@@ -21,9 +21,19 @@ catch
     false
 end
 
-if isempty(PYTHON) || !ZARR_LOADED
-    @info "DGG_XDGGS_PYTHON is unset or Zarr.jl is unavailable: the xdggs decode check is skipped."
+# An explicit interpreter wins, so a local xdggs checkout or a pip venv can be
+# put under the same test without touching the conda environment.
+function python()
+    override = get(ENV, "DGG_XDGGS_PYTHON", "")
+    isempty(override) || return override
+    return CondaPkg.which("python")
+end
+
+if !ZARR_LOADED
+    @info "Zarr.jl is unavailable: the xdggs decode check is skipped."
 else
+
+    const PYTHON = python()
 
     const SCRIPT = joinpath(@__DIR__, "xdggs_decode.py")
 

@@ -288,29 +288,22 @@ wholeblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
         src_space, 1:Int(ncells(src_space)), locator)
 
 # Only dimensional arrays carry enough geometry to infer a source space. A
-# presented view or a cell-naming dimension wins over raster inference.
-function _sourcespace(data::DD.AbstractDimArray, method)
-    for d in DD.dims(data)
-        lookup = DD.lookup(d)
-        view = sourceview(lookup, data, method)
-        view === nothing || return _presentedspace(view, method)
-        named = dimsource(lookup)
-        named === nothing || return sourcespacefor(named, method)
-    end
-    return RasterGrid(data)
-end
+# cell-naming dimension of the presented view wins over raster inference.
+_sourcespace(data::DD.AbstractDimArray, method) =
+    _presentedspace(sourceview(data, method), data, method)
 
-function _presentedspace(view::DD.AbstractDimArray, method)
+function _presentedspace(view::DD.AbstractDimArray, data, method)
     for d in DD.dims(view)
         named = dimsource(DD.lookup(d))
         named === nothing || return sourcespacefor(named, method)
     end
+    view === data && return RasterGrid(data)
     throw(ArgumentError(
         "a presented source must name the cells it is written against, but " *
         "$(DD.dims(view)) names none"))
 end
 
-_presentedspace(view, method) = throw(ArgumentError(
+_presentedspace(view, data, method) = throw(ArgumentError(
     "a presented source must be a dimensional array naming its own cells, " *
     "got a $(typeof(view))"))
 

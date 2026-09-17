@@ -201,7 +201,7 @@ Base.getindex(lk::AbstractCellLookup,
     i::SmallCollections.AbstractFixedOrSmallOrPackedVector{<:Integer}) = _subset(lk, i)
 
 # Concrete mask methods avoid the `Bool <: Integer` catch-all ambiguity.
-function _masksubset(lk::AbstractCellLookup, mask::AbstractArray{Bool})
+function _masksubset(lk::Lookups.Lookup, mask::AbstractArray{Bool})
     axes(mask) == axes(lk) || throw(BoundsError(lk, (mask,)))
     return _subset(lk, findall(mask))
 end
@@ -975,10 +975,7 @@ Base.reverse(lk::MultiOrderLookup) = lk[lastindex(lk):-1:firstindex(lk)]
 Base.getindex(lk::MultiOrderLookup,
     i::SmallCollections.AbstractFixedOrSmallOrPackedVector{<:Integer}) = _subset(lk, i)
 
-function _subset(lk::MultiOrderLookup, mask::AbstractArray{Bool})
-    axes(mask) == axes(lk) || throw(BoundsError(lk, (mask,)))
-    return _subset(lk, findall(mask))
-end
+_subset(lk::MultiOrderLookup, mask::AbstractArray{Bool}) = _masksubset(lk, mask)
 
 # Ascending subsets preserve disjoint interval order.
 function _subset(lk::MultiOrderLookup, idx)

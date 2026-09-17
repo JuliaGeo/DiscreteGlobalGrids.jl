@@ -139,10 +139,9 @@ function GR.chunkat(space::DGGSpace, i::Integer)
     return k
 end
 
+# `CentroidSites` reads these lazily, so vast multi-root collections never materialize.
 GR.cellcentroid(space::DGGSpace, i::Int) =
     cell_centroid(space.grid, cellindex(space.grid, i))
-
-# Lazy centroid sites avoid materializing vast multi-root cell collections.
 
 # `PartialGrid` lookup must return collection-local indices.
 cellat(space::DGGSpace, p::GO.UnitSphericalPoint) = localindex(space.grid, p)
@@ -370,16 +369,14 @@ GR.dimsource(lk::MultiOrderLookup) = cellset(lk)
 """
     GlobalRegridding.sourceview(lk::MultiOrderLookup, A, method)
 
-Present a mixed-level cube as the array `method` reads, matching whichever
-space [`GlobalRegridding.sourcespacefor`](@ref) resolves for the same `method`.
-The cube therefore needs neither `from` nor a manual [`expand`](@ref).
+Present a mixed-level cube as the array `method` reads, aligned with the space
+[`GlobalRegridding.sourcespacefor`](@ref) resolves for the same `method`. The
+cube needs neither `from` nor a manual [`expand`](@ref).
 
-  - Point sampling returns `A`, with one value per stored cell, against
-    `DGGSpace(MultiOrderGrid(mov))`. This route supports pass-through dimensions.
-  - Area sampling returns `expand(A, ref)` against the same reference-level
-    cells resolved by [`GlobalRegridding._asspace`](@ref). Both enumerate each
-    stored cell's descendants in stored order, preserving leaf alignment. The
-    view remains lazy over the stored values.
+  - Point sampling returns `A`, one value per stored cell, and supports
+    pass-through dimensions.
+  - Area sampling returns the lazy `expand(A, ref)`. It enumerates descendants
+    in stored order, as [`GlobalRegridding._asspace`](@ref) does, so leaves align.
   - A genuine expansion requires
     [`GlobalRegridding.refinementinvariant`](@ref). Replicated leaf values change
     methods that interpolate by sample-site position.
@@ -416,15 +413,11 @@ GR.sourceview(::MultiOrderLookup, A, method) = nothing
     GlobalRegridding.checksource(mov::MultiOrderVector, data, space)
 
 Validate an explicit mixed-level `from` against the source value layout.
+[`GlobalRegridding.sourcespacefor`](@ref) reads one value per stored cell for
+point methods and one per reference-level leaf for area methods.
 
-[`GlobalRegridding.sourcespacefor`](@ref) gives `from = mov` two presentations:
-
-  - point methods use one value per stored cell;
-  - area methods use one value per reference-level leaf.
-
-A cube carrying [`MultiOrderLookup`](@ref) selects the matching presentation.
-Its explicit `from` must name the same cells and reference level because the
-axis determines the value ordering even when two containers have equal counts.
+A cube carrying [`MultiOrderLookup`](@ref) fixes the value ordering, so its
+explicit `from` must name the same cells and reference level.
 """
 function GR.checksource(mov::MultiOrderVector, data, space::GR.RegridSpace)
     data isa AbstractArray || return nothing

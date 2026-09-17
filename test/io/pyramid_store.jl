@@ -311,8 +311,14 @@ end
         democube(cv; name=:level3); layout=:pyramid)
 
     # Writing over a store that already holds the variable, and the way past it.
+    # A path names the whole store, so `overwrite` clears the whole store; a
+    # group names one variable of it.
     d = dest("again")
     dggwrite(d, wholeearth(); layout=:pyramid, chunks=49)
+    @test_throws Exception dggwrite(d, wholeearth(); layout=:pyramid, chunks=49)
+    dggwrite(d, wholeearth(); layout=:pyramid, chunks=49, overwrite=true)
+    @test collect(dggread(d)[LEVEL][:elevation]) == Float64.(1:N)
+
     g = Zarr.zopen(d, "w")
     @test_throws DGGSFormatError dggwrite(g, wholeearth(); layout=:pyramid, chunks=49)
     dggwrite(g, wholeearth(); layout=:pyramid, chunks=49, overwrite=true)

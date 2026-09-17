@@ -18,16 +18,14 @@
 module DGGSZarrPyramid
 
 import DiscreteGlobalGrids as DGG
-using DiscreteGlobalGrids: AbstractCellIndex, AbstractCellLookup,
-    AbstractHierarchicalGridSystem, CellLookup, CellVector, Cells,
-    DGGSFormatError, PyramidLayout, PyramidRun, StorePyramid,
-    DEFAULT_PYRAMID_CHUNK_EXPONENT, PYRAMID_BLOCK, PYRAMID_LEVEL_PREFIX,
-    ancestor, cellindex, chunkcount, chunkexponent, chunkindices, chunklength,
-    chunkroot, chunkrootlevel, chunkslots, descendant_range, globalindex,
-    ispyramidstore, level, levelfromname, levelgrid, levelname, levels,
-    levelslots, ncells, pyramid_attrs, pyramid_layout, pyramid_level_attrs,
-    pyramid_dimension, pyramid_reduce, pyramid_runs, slotindex, system,
-    with_store_context
+using DiscreteGlobalGrids: AbstractCellLookup, CellLookup, CellVector, Cells,
+    DGGSFormatError, PyramidLayout, StorePyramid,
+    DEFAULT_PYRAMID_CHUNK_EXPONENT, PYRAMID_LEVEL_PREFIX,
+    ancestor, cellindex, chunkindices, chunklength, chunkrootlevel, chunkslots,
+    descendant_range, globalindex, level, levelfromname, levelgrid, levelname,
+    levels, levelslots, ncells, pyramid_attrs, pyramid_layout,
+    pyramid_level_attrs, pyramid_dimension, pyramid_reduce, pyramid_runs,
+    slotindex, system, with_store_context
 import ..DiscreteGlobalGridsZarrExt
 using ..DiscreteGlobalGridsZarrExt: ARRAY_DIMENSIONS, selectvars, storeidentifier
 import DimensionalData as DD
@@ -163,10 +161,7 @@ end
 
 # A variable is a subgroup, and a subgroup is a directory. Removing one is
 # exact where the store is a directory and has no store-agnostic spelling
-# anywhere else, so that is the only place `overwrite` is offered.
-_dropvariables(path::AbstractString, layers) =
-    _dropvariables(Zarr.DirectoryStore(String(path)), "", layers)
-
+# anywhere else, so that is the only place a group-level `overwrite` works.
 function _dropvariables(g::Zarr.ZGroup, layers)
     _dropvariables(g.storage, g.path, layers)
     for (name, _) in layers
@@ -461,13 +456,13 @@ Read-only: a pyramid is written through
 [`dggwrite`](@ref DiscreteGlobalGrids.dggwrite), which writes whole chunks and
 can therefore keep every level consistent with the one above it.
 """
-struct PyramidLevelArray{T,L<:PyramidLayout,Z,G} <: DiskArrays.AbstractDiskArray{T,1}
+struct PyramidLevelArray{T,L<:PyramidLayout,Z,G,C} <: DiskArrays.AbstractDiskArray{T,1}
     z::Z
     layout::L
     level::Int
     grid::G
     len::Int
-    chunks::DiskArrays.GridChunks{1,Tuple{PyramidChunks{L,G}}}
+    chunks::C
 end
 
 function PyramidLevelArray(z, layout::PyramidLayout, J::Integer)
@@ -475,8 +470,8 @@ function PyramidLevelArray(z, layout::PyramidLayout, J::Integer)
     sys = system(layout)
     grid = levelgrid(sys, j)
     chunks = DiskArrays.GridChunks(PyramidChunks(layout, j))
-    return PyramidLevelArray{eltype(z),typeof(layout),typeof(z),typeof(chunks.chunks[1].rootgrid)}(
-        z, layout, j, grid, Int(ncells(sys, j)), chunks)
+    return PyramidLevelArray{eltype(z),typeof(layout),typeof(z),typeof(grid),
+        typeof(chunks)}(z, layout, j, grid, Int(ncells(sys, j)), chunks)
 end
 
 Base.size(A::PyramidLevelArray) = (A.len,)

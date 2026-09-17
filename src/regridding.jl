@@ -160,6 +160,25 @@ GR.cellcentroid(space::DGGSpace, i::Int) =
 # a different numbering from the grid's own cell ids.
 cellat(space::DGGSpace, p::GO.UnitSphericalPoint) = localindex(space.grid, p)
 
+# Every shipped system places a point and names a one-ring in closed form, so
+# an `AnalyticLocator` can walk any DGG space.
+GR.hasanalyticlocation(::DGGSpace) = true
+# The `Val` ring form: the `Integer` form's return type depends on `k`, and the
+# walk that reads this ring is a hot loop.
+GR.cellneighbors(space::DGGSpace, i::Int) =
+    Engine._indices(space.grid, neighbors(space.grid, cellindex(space.grid, i), Val(1)))
+GR.cellcap(space::DGGSpace, i::Int) =
+    _cellcap(Fallbacks.cell_cap_is_cheap(space.grid), space.grid, cellindex(space.grid, i))
+
+_cellcap(::Val{true}, grid, c) = Fallbacks.cell_cap(grid, c)
+# The clipper measures the densified ring `getcell` returns. On every shipped
+# system that ring stays inside the cap over the corners, so the corners bound
+# it; the relative margin absorbs rounding in the cap arithmetic.
+_cellcap(::Val{false}, grid, c) =
+    Extents.grow(Fallbacks.points_cap(cell_corners(grid, c)), 5e-5)
+GR.cellcorners(space::DGGSpace, i::Int) =
+    cell_corners(space.grid, cellindex(space.grid, i))
+
 GR.celltree(space::DGGSpace) = treeify(space.grid)
 
 GR.chunkextents(space::DGGSpace) = space.caps

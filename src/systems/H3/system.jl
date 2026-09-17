@@ -12,7 +12,7 @@ Canonical ordering makes `has_sorted_subtrees` true.
 struct H3System <: AbstractHierarchicalGridSystem end
 
 # Grid descriptor for all cells at one H3 resolution.
-const LevelGrid = HierarchicalLevelGrid{H3System}
+const H3LevelGrid = HierarchicalLevelGrid{H3System}
 
 Base.show(io::IO, ::H3System) = print(io, "H3System()")
 

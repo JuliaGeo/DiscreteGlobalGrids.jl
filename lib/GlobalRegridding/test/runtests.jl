@@ -14,6 +14,8 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
     @testset "qualified space extension contract" begin
         hooks = (
             :subtree, :expensivecellgeometry,
+            :hasanalyticlocation, :cellneighbors, :cellcap, :cellcorners,
+            :overlappairs, :locatecell,
             :chunkextents, :chunkextent, :chunkindex, :candidatechunks!,
             :chunkranges,
             :chartaxes, :chartcoords, :chartlocalindex, :chartperiod, :chartspacing,

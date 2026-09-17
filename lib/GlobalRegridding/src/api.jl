@@ -32,7 +32,7 @@ end
     regrid(data; to, from = nothing, method = Conservative(),
            missingpolicy = Weighted(0.5), missingval = sourcemissingval(data),
            lazy = declareschunks(data), chunks = nothing, budget = nothing,
-           storage = nothing, sampling = nothing)
+           storage = nothing, sampling = nothing, locator = TreeLocator())
     regrid(data, plan::AbstractRegriddingPlan; missingval = outputmissingval(data))
 
 Regrid `data` onto `to`. Spatial dimensions must come first and flatten in the
@@ -58,6 +58,9 @@ it and `NaN` otherwise.
   - `from`: source space, spelled any of those ways; `nothing` derives a
     `RasterGrid` from `data`.
   - `method`: weight-building method; defaults to [`Conservative`](@ref).
+  - `locator`: how candidate cells are found while weights are built, a
+    `CandidateLocator`; defaults to [`TreeLocator`](@ref). The weights
+    do not depend on it.
   - `missingpolicy`: [`Weighted`](@ref) means or [`Extensive`](@ref) sums.
   - `missingval`: the nodata sentinel of the regrid — invalid in the source, and
     written into blanked destination cells. Left out, the source's comes from
@@ -219,7 +222,8 @@ function plan_regrid(data; to, from = nothing,
     storage::Union{Nothing,AbstractBlockStorage} = nothing,
     sampling::Union{Nothing,DD.Lookups.Sampling} = nothing,
     dependencies = nothing, refine = nothing,
-    narrow::Union{Nothing,Symbol} = nothing)
+    narrow::Union{Nothing,Symbol} = nothing,
+    locator::CandidateLocator = TreeLocator())
     src_space = from === nothing ? _sourcespace(data) : _asspace(from, "from")
     dst_space = _asspace(to, "to", src_space)
     manifold(dst_space) == manifold(src_space) || throw(ArgumentError(
@@ -228,7 +232,7 @@ function plan_regrid(data; to, from = nothing,
     if !lazy
         _rejectlazykeywords(chunks, budget, storage, dependencies, refine, narrow)
         return eagerplan(method, missingpolicy, dst_space, src_space,
-            missingval, sampling)
+            missingval, sampling, locator)
     end
     sampling === nothing || throw(ArgumentError(
         "a lazy regrid returns an unlabelled disk array, so there is no lookup " *
@@ -238,7 +242,7 @@ function plan_regrid(data; to, from = nothing,
         throw(ArgumentError("budget must be positive, got $budget"))
     return ChunkedPlan(method, missingpolicy, dst_space, src_space;
         storage, budget = something(budget, DEFAULT_BUDGET), chunks, missingval,
-        dependencies, refine, narrow)
+        dependencies, refine, narrow, locator)
 end
 
 function _rejectlazykeywords(chunks, budget, storage, dependencies, refine, narrow)
@@ -272,7 +276,7 @@ function _rejectplankeywords(kwargs, name::AbstractString)
 end
 
 """
-    wholeblock(method, dst_space, src_space) -> WeightBlock
+    wholeblock(method, dst_space, src_space, locator = TreeLocator()) -> WeightBlock
 
 Build one [`WeightBlock`](@ref) over all source and destination cells. The build
 path is [`weightblock`](@ref)'s, so the eager domain and a chunk pair are built
@@ -283,9 +287,9 @@ The whole domain is one block, so it prepares no destination geometry
 memo is cheaper than a slot per destination cell.
 """
 wholeblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
-    src_space::RegridSpace) =
+    src_space::RegridSpace, locator::CandidateLocator = TreeLocator()) =
     weightblock(method, dst_space, 1:Int(ncells(dst_space)),
-        src_space, 1:Int(ncells(src_space)))
+        src_space, 1:Int(ncells(src_space)), locator)
 
 # Only dimensional arrays carry enough geometry to infer a source space.
 function _sourcespace(data::DD.AbstractDimArray)

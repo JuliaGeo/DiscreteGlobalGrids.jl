@@ -41,6 +41,7 @@ see [Choosing a grid](../tutorials/choosing_a_grid.md) for authalic and geodetic
 ncells
 levelgrid
 cell_boundary
+cell_corners
 cell_centroid
 cell_polygon
 cell_area

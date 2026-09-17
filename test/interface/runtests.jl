@@ -80,7 +80,7 @@ end
     @test UnimplementedIndex() isa AbstractCellIndex
 
     # Required interface names are exported.
-    for n in (:ncells, :cellindex, :cell_boundary, :cell_centroid, :cell_polygon, :localindex,
+    for n in (:ncells, :cellindex, :cell_boundary, :cell_corners, :cell_centroid, :cell_polygon, :localindex,
               :globalindex, :rawid, :reindex, :cellindextypes,
               :cell_area, :cell_extent, :getcell, :cellat, :neighbors, :ring,
               :treeify, :query, :system, :level, :cellindextype, :levels,

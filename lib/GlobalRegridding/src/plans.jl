@@ -72,17 +72,19 @@ end
 
 """
     DirectPlan(method, missingpolicy, dst_space, src_space, block, missingval = nothing,
-               sampling = nothing)
+               sampling = nothing, locator = TreeLocator())
 
 Store one [`WeightBlock`](@ref) over both complete spaces. The block size is
 `(ncells(dst_space), ncells(src_space))`, so its chunk-local indices are the
 spaces' own local indices.
 `missingval` is an optional source nodata sentinel. `sampling` overrides the
 destination lookup sampling the method would imply ([`outputsampling`](@ref)).
+`locator` is the [`CandidateLocator`](@ref) the block was built with.
 """
 struct DirectPlan{M<:AbstractRegriddingMethod,P<:AbstractMissingPolicy,
                   D<:RegridSpace,S<:RegridSpace,B<:WeightBlock,V,
-                  L<:Union{Nothing,DD.Lookups.Sampling}} <: AbstractRegriddingPlan
+                  L<:Union{Nothing,DD.Lookups.Sampling},
+                  C<:CandidateLocator} <: AbstractRegriddingPlan
     method::M
     missingpolicy::P
     dst_space::D
@@ -90,16 +92,21 @@ struct DirectPlan{M<:AbstractRegriddingMethod,P<:AbstractMissingPolicy,
     block::B
     missingval::V
     sampling::L
+    locator::C
 end
 
 DirectPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
     dst_space::RegridSpace, src_space::RegridSpace, block::WeightBlock,
-    missingval = nothing) =
-    DirectPlan(method, missingpolicy, dst_space, src_space, block, missingval, nothing)
+    missingval = nothing, sampling::Union{Nothing,DD.Lookups.Sampling} = nothing) =
+    DirectPlan(method, missingpolicy, dst_space, src_space, block, missingval,
+        sampling, TreeLocator())
 
-Base.show(io::IO, plan::DirectPlan) =
+function Base.show(io::IO, plan::DirectPlan)
     print(io, "DirectPlan(", typeof(plan.method).name.name, ", ",
-        size(plan.block, 1), " ← ", size(plan.block, 2), " cells)")
+        size(plan.block, 1), " ← ", size(plan.block, 2), " cells")
+    plan.locator isa TreeLocator || print(io, ", ", plan.locator)
+    print(io, ")")
+end
 
 """
     AbstractBlockStorage
@@ -632,10 +639,11 @@ end
 
 """
     ChunkedPlan(method, missingpolicy, dst_space, src_space, storage, budget, chunks,
-                missingval = nothing, dependencies = nothing)
+                missingval = nothing, dependencies = nothing, locator = TreeLocator())
     ChunkedPlan(method, missingpolicy, dst_space, src_space;
                 storage = nothing, budget = 2^31, chunks = nothing, missingval = nothing,
-                dependencies = nothing, refine = nothing, narrow = nothing)
+                dependencies = nothing, refine = nothing, narrow = nothing,
+                locator = TreeLocator())
 
 Build and store [`WeightBlock`](@ref)s by `(destination tile, source chunk)` on
 first use. Construction reads no data and builds no weights.
@@ -648,10 +656,12 @@ first use. Construction reads no data and builds no weights.
     `dependencies` selects once, at construction. See [`dependencies`](@ref) for
     the whole contract and [`plan_regrid`](@ref) for the keywords as an API user
     meets them.
+  - `locator` is the [`CandidateLocator`](@ref) every block is built with.
 """
 struct ChunkedPlan{M<:AbstractRegriddingMethod,P<:AbstractMissingPolicy,
                    D<:RegridSpace,S<:RegridSpace,T<:AbstractBlockStorage,C,V,
-                   G<:Union{Nothing,ChunkDependencyGraph}} <: AbstractRegriddingPlan
+                   G<:Union{Nothing,ChunkDependencyGraph},
+                   L<:CandidateLocator} <: AbstractRegriddingPlan
     method::M
     missingpolicy::P
     dst_space::D
@@ -661,11 +671,12 @@ struct ChunkedPlan{M<:AbstractRegriddingMethod,P<:AbstractMissingPolicy,
     chunks::C
     missingval::V
     dependencies::G
+    locator::L
 end
 
-# The positional forms build the relation too; the nine-argument field
-# constructor is the one way to assemble a plan around an existing relation, or
-# around none.
+# The positional forms build the relation too; the forms that take
+# `dependencies` are the one way to assemble a plan around an existing
+# relation, or around none.
 ChunkedPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
     dst_space::RegridSpace, src_space::RegridSpace, storage::AbstractBlockStorage,
     budget::Integer, chunks) =
@@ -681,14 +692,23 @@ ChunkedPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPoli
         _plandependencies(nothing, nothing, nothing, method, dst_space, src_space))
 
 ChunkedPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
+    dst_space::RegridSpace, src_space::RegridSpace, storage::AbstractBlockStorage,
+    budget::Integer, chunks, missingval,
+    dependencies::Union{Nothing,ChunkDependencyGraph}) =
+    ChunkedPlan(method, missingpolicy, dst_space, src_space, storage, Int(budget),
+        chunks, missingval, dependencies, TreeLocator())
+
+ChunkedPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
     dst_space::RegridSpace, src_space::RegridSpace;
     storage::Union{Nothing,AbstractBlockStorage} = nothing,
     budget::Integer = DEFAULT_BUDGET, chunks = nothing, missingval = nothing,
-    dependencies = nothing, refine = nothing, narrow = nothing) =
+    dependencies = nothing, refine = nothing, narrow = nothing,
+    locator::CandidateLocator = TreeLocator()) =
     ChunkedPlan(method, missingpolicy, dst_space, src_space,
         storage === nothing ? PerChunk(; maxbytes = weightbudget(budget)) : storage,
         Int(budget), chunks, missingval,
-        _plandependencies(dependencies, refine, narrow, method, dst_space, src_space))
+        _plandependencies(dependencies, refine, narrow, method, dst_space, src_space),
+        locator)
 
 function Base.show(io::IO, plan::ChunkedPlan)
     print(io, "ChunkedPlan(", typeof(plan.method).name.name, ", ",
@@ -696,6 +716,7 @@ function Base.show(io::IO, plan::ChunkedPlan)
         ncells(plan.src_space), " cells / ", nchunks(plan.src_space), " chunks")
     g = plan.dependencies
     g === nothing || print(io, ", ", Graphs.ne(g), " dependency edges")
+    plan.locator isa TreeLocator || print(io, ", ", plan.locator)
     print(io, ")")
 end
 
@@ -856,17 +877,19 @@ buildblock(plan::ChunkedPlan, dinds, sinds) =
     buildblock(plan, dinds, sinds, dinds)
 
 buildblock(plan::ChunkedPlan, dinds, sinds, destination) =
-    weightblock(plan.method, plan.dst_space, destination, plan.src_space, sinds)
+    weightblock(plan.method, plan.dst_space, destination, plan.src_space, sinds,
+        plan.locator)
 
 buildblock(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer) =
     buildblock(plan, ownedindices(plan.dst_space, Int(dstchunk)),
         ownedindices(plan.src_space, Int(srcchunk)))
 
 """
-    weightblock(method, dst_space, dst_inds, src_space, src_inds) -> WeightBlock
+    weightblock(method, dst_space, dst_inds, src_space, src_inds, locator = TreeLocator())
+        -> WeightBlock
 
 Build the weights destination cells `dst_inds` take from source cells
-`src_inds`.
+`src_inds` with `locator` ([`CandidateLocator`](@ref)) discovering candidates.
 
   - Every builder, eager or chunked, goes through here and dispatches on
     [`outputsampling`](@ref), so a sampling may specialise the assembly and no
@@ -881,17 +904,48 @@ Build the weights destination cells `dst_inds` take from source cells
   - The whole-tile route a point method with a [`sampler`](@ref) takes is not
     chosen here: a chunked plan selects it once, by [`tilesampler`](@ref), in
     [`blockfor`](@ref).
+  - `locator` rides along only where something takes it. A
+    [`TreeLocator`](@ref) always goes to the six-argument sampling seam and
+    from there to the five-argument [`pairblock`](@ref), the route every build
+    took before locators existed. Any other locator goes to the six-argument
+    `pairblock` when the sampling seam is the generic one, and to the seam,
+    without the locator, when a sampling has specialized it; a method with no
+    six-argument `pairblock` of its own then builds through its five-argument
+    one. [`Conservative`](@ref) is the method that takes the locator.
 """
 weightblock(method::AbstractRegriddingMethod, dst_space::RegridSpace, dst_inds,
-    src_space::RegridSpace, src_inds) =
-    weightblock(outputsampling(method), method, dst_space, dst_inds, src_space, src_inds)
+    src_space::RegridSpace, src_inds, locator::CandidateLocator = TreeLocator()) =
+    weightblock(outputsampling(method), method, dst_space, dst_inds, src_space,
+        src_inds, locator)
+
+weightblock(sampling::DD.Lookups.Sampling, method::AbstractRegriddingMethod,
+    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds,
+    ::TreeLocator) =
+    weightblock(sampling, method, dst_space, dst_inds, src_space, src_inds)
 
 weightblock(::DD.Lookups.Sampling, method::AbstractRegriddingMethod,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds) =
     pairblock(method, dst_space, dst_inds, src_space, src_inds)
 
+function weightblock(sampling::DD.Lookups.Sampling, method::AbstractRegriddingMethod,
+    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds,
+    locator::CandidateLocator)
+    _hasownseam(sampling, method, dst_space, dst_inds, src_space, src_inds) &&
+        return weightblock(sampling, method, dst_space, dst_inds, src_space, src_inds)
+    return pairblock(method, dst_space, dst_inds, src_space, src_inds, locator)
+end
+
+# Whether a sampling has specialized the six-argument seam for these arguments,
+# in which case that build must be taken and there is nowhere to hand a locator.
+_hasownseam(sampling, method, dst_space, dst_inds, src_space, src_inds) =
+    which(weightblock, (typeof(sampling), typeof(method), typeof(dst_space),
+        typeof(dst_inds), typeof(src_space), typeof(src_inds))) !== _GENERIC_SEAM
+
+const _GENERIC_SEAM = which(weightblock, Tuple{DD.Lookups.Sampling,
+    AbstractRegriddingMethod, RegridSpace, Any, RegridSpace, Any})
+
 """
-    pairblock(method, dst_space, dst_inds, src_space, src_inds) -> WeightBlock
+    pairblock(method, dst_space, dst_inds, src_space, src_inds[, locator]) -> WeightBlock
 
 Assemble one `(destination cells, source chunk)` pair. Rows are chunk-local
 within `dst_inds`, columns chunk-local within `src_inds`.
@@ -904,7 +958,17 @@ within `dst_inds`, columns chunk-local within `src_inds`.
     `pairblock` — and [`sampler`](@ref) too, for a point method. Forwarding
     [`buildweights!`](@ref) alone reaches the generic route whatever the inner
     method assembles for itself.
+  - `locator` is the plan's [`CandidateLocator`](@ref). The five-argument form
+    is the [`TreeLocator`](@ref) build. A method that discovers candidates
+    specializes the six-argument form, as [`Conservative`](@ref) does; for
+    every other method the six-argument generic drops the locator and takes the
+    method's five-argument build, so a method that knows nothing of locators is
+    built the same way under every locator. A wrapper forwards both forms.
 """
+pairblock(method::AbstractRegriddingMethod, dst_space::RegridSpace, dst_inds,
+    src_space::RegridSpace, src_inds, ::CandidateLocator) =
+    pairblock(method, dst_space, dst_inds, src_space, src_inds)
+
 function pairblock(method::AbstractRegriddingMethod, dst_space::RegridSpace, dst_inds,
     src_space::RegridSpace, src_inds)
     coo = WeightCOO(length(dst_inds))

@@ -39,6 +39,22 @@ function cell_boundary(::A5System, c::A5Cell)
 end
 
 """
+    cell_corners(::A5System, c::A5Cell) -> Vector{UnitSphericalPoint}
+
+The pentagon's (or a level-1 triangle's) own vertices, with one segment per
+edge, in the order [`cell_boundary`](@ref) visits them. The densified ring
+starts one edge in, so its first corner is its `segments`-th vertex.
+"""
+function DGG.cell_corners(::A5System, c::A5Cell)
+    ring = A5Native.cell_boundary(c.id; closed_ring=false, segments=1)
+    out = Vector{USPoint}(undef, length(ring))
+    for (i, p) in enumerate(ring)
+        @inbounds out[i] = _unit_point(p[1], p[2])
+    end
+    return out
+end
+
+"""
     cell_centroid(::A5System, c::A5Cell) -> UnitSphericalPoint
 
 The interior face-plane polygon centre, inverse-projected with A5's
@@ -55,8 +71,8 @@ end
 # ===========================================================================
 
 """
-    cellat(grid::LevelGrid, p::UnitSphericalPoint) -> A5Cell
-    cellat(grid::LevelGrid, lon::Real, lat::Real) -> A5Cell
+    cellat(grid::A5LevelGrid, p::UnitSphericalPoint) -> A5Cell
+    cellat(grid::A5LevelGrid, lon::Real, lat::Real) -> A5Cell
 
 The cell containing a point, computed by A5's O(1) `lonlat_to_cell` inverse.
 
@@ -66,11 +82,11 @@ Shared-boundary ties follow A5's deterministic inverse-projection rule.
 
 The `(lon, lat)` overload takes degrees.
 """
-function cellat(grid::LevelGrid, lon::Real, lat::Real)
+function cellat(grid::A5LevelGrid, lon::Real, lat::Real)
     return A5Cell(A5Native.lonlat_to_cell(lon, lat, grid.level))
 end
 
-function cellat(grid::LevelGrid, p::GO.UnitSphericalPoint)
+function cellat(grid::A5LevelGrid, p::GO.UnitSphericalPoint)
     lon = atand(p[2], p[1])
     lat = asind(clamp(p[3], -1.0, 1.0))
     return cellat(grid, lon, lat)

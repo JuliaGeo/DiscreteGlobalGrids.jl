@@ -47,6 +47,7 @@ const FlexibleRTrees = GO.FlexibleRTrees
 
 include("shared.jl")
 include("spaces.jl")
+include("locators.jl")
 include("rastergrid.jl")
 include("methods.jl")
 include("conservative.jl")
@@ -82,6 +83,10 @@ export Conservative, NearestCell, BarycentricPoint
 export DirectNearest
 export buildweights!, supportradius
 
+# Candidate locators
+export CandidateLocator, TreeLocator, AnalyticLocator
+public overlappairs, locatecell
+
 # `build_weights!` and `support_radius` stay exported for the deprecation shims
 # in `methods.jl`.
 export build_weights!, support_radius
@@ -116,6 +121,7 @@ public outputsampling, destinationdims, dimsource
 # grouped by responsibility in spaces.jl; they stay unexported to avoid generic
 # names in user namespaces.
 public subtree, expensivecellgeometry
+public hasanalyticlocation, cellneighbors, cellcap, cellcorners
 public chunkextents, chunkextent, chunkindex, candidatechunks!
 # Making a source space point-samplable. `hasdualcells` declares it,
 # `samplerstate` prepares whatever the lookup reads, and `dualcellat` answers

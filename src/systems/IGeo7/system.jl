@@ -253,7 +253,7 @@ end
 # ---------------------------------------------------------------------------
 
 # Grid descriptor for all `10·7^l + 2` cells in ascending Z7 order.
-const LevelGrid = DGG.HierarchicalLevelGrid{IGeo7System}
+const IGeo7LevelGrid = DGG.HierarchicalLevelGrid{IGeo7System}
 
 """
     ncells(::IGeo7System, l::Integer) -> Int
@@ -335,18 +335,18 @@ end
 # Override only the complete IGeo7 level. `PartialGrid` forwards to its
 # complete grid, so rooted subtrees and compressed multi-root coverages take
 # this method too without duplicating dispatch here.
-DGG.Fallbacks.cell_cap(::LevelGrid, c::Z7Cell) = _analytical_cell_cap(c)
-DGG.Fallbacks.cell_cap_is_cheap(::LevelGrid) = Val(true)
+DGG.Fallbacks.cell_cap(::IGeo7LevelGrid, c::Z7Cell) = _analytical_cell_cap(c)
+DGG.Fallbacks.cell_cap_is_cheap(::IGeo7LevelGrid) = Val(true)
 
 """
-    cellat(g::LevelGrid, p::UnitSphericalPoint) -> Z7Cell
+    cellat(g::IGeo7LevelGrid, p::UnitSphericalPoint) -> Z7Cell
 
 Return the cell containing `p` by Snyder projection and strict lattice
 re-encoding. Complete levels never return `nothing`. Boundary ties choose an
 incident cell by ascending Voronoi margin; exact ties may differ across
 floating-point platforms.
 """
-DGG.cellat(g::LevelGrid, p::GO.UnitSphericalPoint) =
+DGG.cellat(g::IGeo7LevelGrid, p::GO.UnitSphericalPoint) =
     Z7Cell(_xyz_to_z7((Float64(p[1]), Float64(p[2]), Float64(p[3])), g.level))
 
 # `cell_area` uses the boundary ring; `equal_area_steradians` reports the
@@ -373,7 +373,7 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    neighbors(g::LevelGrid, c::Z7Cell, k = 1; connectivity = Vertex()) -> SmallVector{6,Z7Cell}
+    neighbors(g::IGeo7LevelGrid, c::Z7Cell, k = 1; connectivity = Vertex()) -> SmallVector{6,Z7Cell}
 
 Cells within `k` adjacency steps of `c`, excluding `c`. Vertex and edge
 connectivity coincide. Rings are concatenated outward and ordered
@@ -384,7 +384,7 @@ identifier order.
 `k == 0` is empty and `k < 0` throws. For `k <= 1` the result is a
 `SmallVector{6,Z7Cell}`; larger discs return `Vector{Z7Cell}`.
 """
-Base.@constprop :aggressive function DGG.neighbors(g::LevelGrid, c::Z7Cell, k::Integer=1;
+Base.@constprop :aggressive function DGG.neighbors(g::IGeo7LevelGrid, c::Z7Cell, k::Integer=1;
     connectivity::Connectivity=Vertex())
     steps = DGG.checked_steps(k)
     _level_checked(g, c)
@@ -394,12 +394,12 @@ Base.@constprop :aggressive function DGG.neighbors(g::LevelGrid, c::Z7Cell, k::I
 end
 
 """
-    neighborcount(g::LevelGrid, c::Z7Cell; connectivity = Vertex()) -> Int
+    neighborcount(g::IGeo7LevelGrid, c::Z7Cell; connectivity = Vertex()) -> Int
 
 Return 5 for pentagons and 6 for other cells, for either connectivity, without
 constructing the ring.
 """
-function DGG.neighborcount(g::LevelGrid, c::Z7Cell;
+function DGG.neighborcount(g::IGeo7LevelGrid, c::Z7Cell;
         connectivity::Connectivity=Vertex())
     _level_checked(g, c)
     return is_pentagon(c) ? 5 : 6
@@ -411,7 +411,7 @@ end
 The immediate neighbours of `c`, counter-clockwise from the development frame's
 `+1` direction. Five entries at a pentagon, six elsewhere.
 """
-function DGG.one_ring(::LevelGrid, c::Z7Cell, ::Connectivity)
+function DGG.one_ring(::IGeo7LevelGrid, c::Z7Cell, ::Connectivity)
     out = SmallVector{6,Z7Cell}()
     for z in _cell_neighbors_ccw(c.id)
         out = SmallCollections.push(out, Z7Cell(z))
@@ -420,7 +420,7 @@ function DGG.one_ring(::LevelGrid, c::Z7Cell, ::Connectivity)
 end
 
 """
-    ring(g::LevelGrid, c::Z7Cell, k; connectivity = Vertex())
+    ring(g::IGeo7LevelGrid, c::Z7Cell, k; connectivity = Vertex())
 
 The cells at adjacency distance **exactly** `k`. `ring(g, c, 0)` is `[c]`, and
 `ring(g, c, 1)` is [`neighbors`](@ref) at `k == 1`.
@@ -429,7 +429,7 @@ Shares [`neighbors`](@ref)' walk, so this is that function's trailing block:
 `neighbors(g, c, k)` is `vcat(ring(g, c, 1), ..., ring(g, c, k))`, and the
 order contract is the one stated there.
 """
-Base.@constprop :aggressive function DGG.ring(g::LevelGrid, c::Z7Cell, k::Integer;
+Base.@constprop :aggressive function DGG.ring(g::IGeo7LevelGrid, c::Z7Cell, k::Integer;
     connectivity::Connectivity=Vertex())
     steps = DGG.checked_steps(k)
     _level_checked(g, c)
@@ -443,7 +443,7 @@ end
 # type parameter so the declared ring bound folds to a fixed buffer capacity and
 # the shell is built and returned on the stack. See the interface `Val` methods
 # for why this is opt-in rather than generic.
-function DGG.neighbors(g::LevelGrid, c::Z7Cell, ::Val{K};
+function DGG.neighbors(g::IGeo7LevelGrid, c::Z7Cell, ::Val{K};
         connectivity::Connectivity=Vertex()) where {K}
     _level_checked(g, c)
     DGG.checked_steps(K)
@@ -452,7 +452,7 @@ function DGG.neighbors(g::LevelGrid, c::Z7Cell, ::Val{K};
     return DGG.shell_disc(g, c, Val(K), connectivity)
 end
 
-function DGG.ring(g::LevelGrid, c::Z7Cell, ::Val{K};
+function DGG.ring(g::IGeo7LevelGrid, c::Z7Cell, ::Val{K};
         connectivity::Connectivity=Vertex()) where {K}
     _level_checked(g, c)
     DGG.checked_steps(K)
@@ -463,7 +463,7 @@ end
 
 # A cell handed to a grid operation must belong to that grid's level; otherwise
 # every id below would be silently at the wrong resolution.
-@inline function _level_checked(g::LevelGrid, c::Z7Cell)
+@inline function _level_checked(g::IGeo7LevelGrid, c::Z7Cell)
     res = _geometry_checked(c.id)
     res == g.level || throw(ArgumentError(
         "IGeo7 cell $(z7_to_string(c.id)) is at level $res, not this grid's level $(g.level)"))

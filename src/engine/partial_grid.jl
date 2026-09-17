@@ -144,6 +144,7 @@ cellindex(grid::PartialGrid, i::Int) = grid.ids[i]
 system(grid::PartialGrid) = grid.system
 level(grid::PartialGrid) = grid.level
 cell_boundary(grid::PartialGrid, c::AbstractCellIndex) = cell_boundary(grid.complete, c)
+cell_corners(grid::PartialGrid, c::AbstractCellIndex) = cell_corners(grid.complete, c)
 cell_centroid(grid::PartialGrid, c::AbstractCellIndex) = cell_centroid(grid.complete, c)
 
 # A subset changes membership, never cell geometry. Forward the cap hook as

@@ -110,7 +110,8 @@ import GlobalRegridding: cellat, regrid, regrid!, plan_regrid
 # keyword arguments, so a session that can call `regrid` can also spell
 # `method = Conservative()` without a second import.
 using GlobalRegridding: Conservative, NearestCell, DirectNearest,
-    BarycentricPoint, Weighted, Extensive, PerChunk, Spilled
+    BarycentricPoint, Weighted, Extensive, PerChunk, Spilled,
+    TreeLocator, AnalyticLocator
 
 include("Helpers/Helpers.jl")
 
@@ -289,7 +290,7 @@ export Winding, CounterClockwise, Clockwise, CustomOrder, Unordered
 export UnitSphericalPoint
 
 # --- Base grid interface ---------------------------------------------------
-export ncells, cellindex, cell_boundary, cell_centroid, cell_polygon
+export ncells, cellindex, cell_boundary, cell_corners, cell_centroid, cell_polygon
 export localindex, globalindex
 # `cellposition` stays exported for the deprecation shim in `deprecated.jl`.
 export cellposition, rawid, reindex, cellindextypes
@@ -430,6 +431,7 @@ export regrid, regrid!, plan_regrid, DGGSpace
 export Conservative, NearestCell, DirectNearest, BarycentricPoint
 export Weighted, Extensive
 export PerChunk, Spilled
+export TreeLocator, AnalyticLocator
 
 # --- Chunk partitioning ----------------------------------------------------
 export AbstractPartitioningAlgorithm, WeightedContiguous, MetisPartition, KaHyParPartition, ScotchPartition

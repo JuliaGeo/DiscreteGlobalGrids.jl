@@ -23,10 +23,11 @@ Return `_UNSET_RASTER_KEYWORD` when Proj classifies `crs` as geographic, and
 otherwise a `Proj.Transformation` from `crs` to EPSG:4326 in X/Y order.
 """
 function GlobalRegridding._projected_crs_native_to_unit_sphere(crs::GFT.GeoFormat)
-    definition = convert(String, crs)
-    Proj.is_geographic(Proj.CRS(definition)) &&
+    # The GeoFormat method of `Proj.CRS` accepts a bare PROJ string such as
+    # `+proj=merc`; the String method asserts `proj_is_crs` and rejects it.
+    Proj.is_geographic(Proj.CRS(crs)) &&
         return GlobalRegridding._UNSET_RASTER_KEYWORD
-    return Proj.Transformation(definition, "EPSG:4326"; always_xy = true)
+    return Proj.Transformation(convert(String, crs), "EPSG:4326"; always_xy = true)
 end
 
 end # module GlobalRegriddingRastersProjExt

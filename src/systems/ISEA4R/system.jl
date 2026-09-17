@@ -102,6 +102,18 @@ function DGG.cell_boundary(sys::ISEA4RSystem, c::DGG.LevelIndex)
 end
 
 """
+    cell_corners(grid, c) -> SmallVector{4,UnitSphericalPoint}
+
+The four chart corners of cell `c`, counterclockwise from `(x+,y+)` as
+[`cell_boundary`](@ref) visits them.
+"""
+function DGG.cell_corners(sys::ISEA4RSystem, c::DGG.LevelIndex)
+    nside = DGG.nside(DGG.level(c))
+    ix, iy, d = morton_to_xyd(DGG.checked_id(sys, c), nside)
+    return SmallVector{4,GO.UnitSphericalPoint{Float64}}(cell_corners(ix, iy, d, nside))
+end
+
+"""
     cell_area(grid, c) -> Float64
 
 Exact cell area in steradians: `4π/(10*4^level)`. This `O(1)` value is

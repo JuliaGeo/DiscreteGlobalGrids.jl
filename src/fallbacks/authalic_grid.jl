@@ -206,6 +206,9 @@ cell_boundary(grid::AuthalicGrid, c::AbstractCellIndex) =
 cell_centroid(grid::AuthalicGrid, c::AbstractCellIndex) =
     geodetic_point(grid.transform, cell_centroid(grid.grid, c))
 
+cell_corners(grid::AuthalicGrid, c::AbstractCellIndex) =
+    map(p -> geodetic_point(grid.transform, p), cell_corners(grid.grid, c))
+
 # A closed-form base cap can stay closed-form through the latitude warp. The
 # centre is transformed exactly as the cell centroid is, while the angular
 # radius is multiplied by the warp's Lipschitz constant. For a base cap

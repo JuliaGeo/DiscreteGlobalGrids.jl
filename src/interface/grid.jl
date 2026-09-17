@@ -74,6 +74,20 @@ lazily computed one. Callers must not mutate it.
 function cell_boundary end
 
 """
+    cell_corners(grid::AbstractGrid, c::AbstractCellIndex) -> AbstractVector{<:GO.UnitSphericalPoint}
+
+The corner vertices of cell `c`, as points on the unit sphere: the ring
+[`cell_boundary`](@ref) returns with every densification vertex left out.
+
+Same contract as `cell_boundary` otherwise: implicitly closed, counter-clockwise
+seen from outside the sphere, unit-norm points. The fallback returns
+`cell_boundary` itself, which is exact for a system whose chart edges are
+great-circle arcs; a system that densifies curved edges returns its chart
+corners here. Callers must not mutate the result.
+"""
+function cell_corners end
+
+"""
     cell_centroid(grid::AbstractGrid, c::AbstractCellIndex) -> GO.UnitSphericalPoint
 
 A representative point of cell `c` on the unit sphere.

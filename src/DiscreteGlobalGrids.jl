@@ -288,7 +288,7 @@ export Winding, CounterClockwise, Clockwise, CustomOrder, Unordered
 export UnitSphericalPoint
 
 # --- Base grid interface ---------------------------------------------------
-export ncells, cellindex, cell_boundary, cell_centroid
+export ncells, cellindex, cell_boundary, cell_corners, cell_centroid
 export localindex, globalindex
 # `cellposition` stays exported for the deprecation shim in `deprecated.jl`.
 export cellposition, rawid, reindex, cellindextypes

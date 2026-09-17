@@ -39,6 +39,22 @@ function cell_boundary(::A5System, c::A5Cell)
 end
 
 """
+    cell_corners(::A5System, c::A5Cell) -> Vector{UnitSphericalPoint}
+
+The pentagon's (or a level-1 triangle's) own vertices, with one segment per
+edge, in the order [`cell_boundary`](@ref) visits them. The densified ring
+starts one edge in, so its first corner is its `segments`-th vertex.
+"""
+function DGG.cell_corners(::A5System, c::A5Cell)
+    ring = A5Native.cell_boundary(c.id; closed_ring=false, segments=1)
+    out = Vector{USPoint}(undef, length(ring))
+    for (i, p) in enumerate(ring)
+        @inbounds out[i] = _unit_point(p[1], p[2])
+    end
+    return out
+end
+
+"""
     cell_centroid(::A5System, c::A5Cell) -> UnitSphericalPoint
 
 The interior face-plane polygon centre, inverse-projected with A5's

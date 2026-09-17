@@ -115,6 +115,18 @@ function DGG.cell_boundary(sys::HEALPixSystem, c::DGG.LevelIndex)
 end
 
 """
+    cell_corners(grid, c) -> SmallVector{4,UnitSphericalPoint}
+
+The four chart corners of pixel `c` in the order [`cell_boundary`](@ref) visits
+them: north, west, south, east.
+"""
+function DGG.cell_corners(sys::HEALPixSystem, c::DGG.LevelIndex)
+    nside = DGG.nside(DGG.level(c))
+    ix, iy, face = nested_to_xyf(DGG.checked_id(sys, c), nside)
+    return SmallVector{4,GO.UnitSphericalPoint{Float64}}(pixel_corners(ix, iy, face, nside))
+end
+
+"""
     cell_area(grid, c) -> Float64
 
 Return the exact equal-area solid angle `4π / (12 * 4^level)` in O(1). This is

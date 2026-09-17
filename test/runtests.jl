@@ -32,6 +32,7 @@ using DiscreteGlobalGrids
     include("systems/CopernicusDEM/runtests.jl")
     # Run interface-wide laws after each system's implementation tests.
     include("systems/crosssystem/runtests.jl")
+    include("systems/crosssystem/cell_corners.jl")
     # Multi-order suites share the committed California outline fixture.
     include("systems/crosssystem/multiorder_polygons.jl")
     include("systems/crosssystem/multiorder_budget.jl")

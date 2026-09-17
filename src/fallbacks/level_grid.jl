@@ -87,6 +87,9 @@ cell_boundary(grid::HierarchicalLevelGrid, c::AbstractCellIndex) =
 cell_centroid(grid::HierarchicalLevelGrid, c::AbstractCellIndex) =
     cell_centroid(grid.system, _at_level(grid, c))
 
+cell_corners(grid::HierarchicalLevelGrid, c::AbstractCellIndex) =
+    cell_corners(grid.system, _at_level(grid, c))
+
 # Geometry is a function of the id alone, so forwarding an id from another level
 # would return the geometry of a cell this grid does not contain. That is an
 # error, not an answer.

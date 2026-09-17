@@ -75,7 +75,7 @@ cellat(g::MultiOrderGrid, p::GO.UnitSphericalPoint) = cellat(g.cells, p)
 Build an O(stored cells) [`IndexTree`](@ref) from cell caps. This cap-based tree
 supports the grid's mixed levels.
 """
-treeify(::GOCore.Manifold, g::MultiOrderGrid) = IndexTreeNode(IndexTree(g), 1)
+treeify(::GOCore.Manifold, g::MultiOrderGrid) = IndexTreeNode(IndexTree(g))
 
 # --- unavailable single-level operations -----------------------------------
 

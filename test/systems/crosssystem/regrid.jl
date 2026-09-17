@@ -466,13 +466,14 @@ end
         @test DD.dims(back) == DD.dims(reference)
     end
 
-    # A `Cells` axis is not a lattice, so it is refused wherever it is given.
-    # It is the same guard either way, and it names the keyword it was handed
-    # and the grid the axis holds — not `from` and not `xdim`.
+    # A `Cells` axis is not a lattice, so `to` refuses it, naming the keyword it
+    # was handed and the grid the axis holds.
     named = DGG.cellset(DD.lookup(onto, 1))
     @test_throws "`to` was given a dimensional raster" DGG.regrid(RASTER; to = onto)
     @test_throws "to = $named" DGG.regrid(RASTER; to = onto)
-    @test_throws "from = $named" DGG.regrid(onto; to = GRID)
+
+    # As a source, the same axis names its own space.
+    @test parent(DGG.regrid(onto; to = SRC)) == parent(reference)
 end
 
 @testset "Extensive conserves the global integral" begin

@@ -93,10 +93,10 @@ Thus `Within(zone)` asks for cells inside a zone; `Contains(zone)` asks for
 cells large enough to contain the zone. `CoveredBy(zone)` and `Covers(zone)`
 reverse direction in the same way.
 
-`CentroidCovered(zone)` selects cells by centroid containment, the rule a
-raster zonal tool applies to its pixels; `Within(zone)` selects a subset of it
-and `Intersects(zone)` a superset. The raster operations spell the same rule
-`boundary = :center`; see [Rasterize, extract, and zonal](raster-work.md).
+`CentroidCovered(zone)` selects cells by centroid containment, the raster zonal
+rule `boundary = :center` of [Rasterize, extract, and zonal](raster-work.md);
+`Within(zone)` selects a subset of it and `Intersects(zone)` a superset.
+
 Unsupported query predicates raise `ArgumentError`.
 
 ```@docs

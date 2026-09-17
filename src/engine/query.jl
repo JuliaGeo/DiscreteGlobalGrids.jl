@@ -440,16 +440,13 @@ end
 """
     CentroidCovered(region)
 
-A [`query`](@ref) predicate selecting every cell whose centroid,
-[`cell_centroid`](@ref), lies on or inside `region`. A centroid on the region's
-boundary counts, so the rule is the raster `boundary = :center` rule. Read it as
-**cell centroid COVERED BY region**: `Within(region)` selects a subset of
-it, and `Intersects(region)` a superset.
+A [`query`](@ref) predicate selecting every cell whose [`cell_centroid`](@ref)
+lies on or inside `region` (**cell centroid COVERED BY region**, the raster
+`boundary = :center` rule), so `Within` ⊆ `CentroidCovered` ⊆ `Intersects`.
 
-`region` is any target `query` accepts: a GeoInterface geometry, an
-`Extents.Extent` in lon/lat degrees, or a `GO.UnitSpherical.SphericalCap`.
-`Base.parent(pred)` gives it back. The predicate works through `query` and as a
-[`Cells`](@ref DiscreteGlobalGrids.CellLookups.Cells) selector:
+`region` is any target `query` accepts (geometry, `Extents.Extent`, or
+`SphericalCap`); `Base.parent(pred)` gives it back. It works through `query`
+and as a [`Cells`](@ref DiscreteGlobalGrids.CellLookups.Cells) selector:
 
 ```julia
 query(grid, CentroidCovered(county))    # cells centred in a polygon
@@ -595,11 +592,15 @@ _matches(pred::DE9IM.DE9IMPredicate, ::CapTarget, grid, c) = throw(ArgumentError
 
 Return every cell matching the predicate as a sorted vector of typed ids.
 
-Implemented predicates: `Intersects`, `Disjoint`, `Contains`, `Within`,
-`Covers`, `CoveredBy`, `Touches`, `Overlaps`, `Equals`, and the centroid rule
-[`CentroidCovered`](@ref). `Crosses` throws, since inverting it is not a matter
-of naming its converse. Targets: a GeoInterface geometry, an `Extents.Extent`
-in lon/lat degrees, or a `GO.UnitSpherical.SphericalCap`.
+Predicates: `Intersects`, `Disjoint`, `Contains`, `Within`, `Covers`,
+`CoveredBy`, `Touches`, `Overlaps`, `Equals`, and [`CentroidCovered`](@ref);
+`Crosses` throws, since the descent has no converse of it to name.
+
+Targets:
+
+- a GeoInterface geometry,
+- an `Extents.Extent` in lon/lat degrees, or
+- a `GO.UnitSpherical.SphericalCap`.
 
 `Disjoint` is computed as the full-grid complement of `Intersects` and cannot
 prune the output traversal.

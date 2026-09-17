@@ -232,10 +232,9 @@ localindex(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex) =
 """
     cell_polygon(grid::AbstractGrid, c::AbstractCellIndex) -> GI.Polygon
 
-Cell `c` as a GeoInterface polygon on the unit sphere. This is the form every
-geometry consumer reads a cell through: the [`query`](@ref) predicates,
-[`getcell`](@ref), regridding, and any GeometryOps operation run with the
-`GO.Spherical()` manifold.
+Cell `c` as a GeoInterface polygon on the unit sphere: the form the
+[`query`](@ref) predicates, [`getcell`](@ref), regridding, and GeometryOps
+operations under the `GO.Spherical()` manifold all read a cell through.
 
 Contract:
 
@@ -767,14 +766,13 @@ typed cell ids.
 
 # Predicates
 
-Predicates are re-exported DE9IM.jl wrappers such as `Intersects(target)`,
-`Covers(target)`, and `Touches(target)`, plus the centroid rule
-[`CentroidCovered`](@ref)`(target)`. `Base.parent(pred)` returns the target.
-This package defines their spherical semantics.
+Predicates are the re-exported DE9IM.jl wrappers (`Intersects(target)`,
+`Covers(target)`, `Touches(target)`, ...) and the centroid rule
+[`CentroidCovered`](@ref)`(target)`, given spherical semantics by this package.
 
-The target may be a GeoInterface geometry, an `Extents.Extent`, or a
-`GO.UnitSpherical.SphericalCap`. Longitude/latitude targets are lifted to the
-unit sphere once, at the boundary of the call.
+The target is a GeoInterface geometry, an `Extents.Extent`, or a
+`GO.UnitSpherical.SphericalCap`; `Base.parent(pred)` returns it. Lon/lat
+targets are lifted to the unit sphere once, at the boundary of the call.
 
 # Semantics
 

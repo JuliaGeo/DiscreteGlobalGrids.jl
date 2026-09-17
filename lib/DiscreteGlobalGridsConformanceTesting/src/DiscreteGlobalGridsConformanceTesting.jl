@@ -287,10 +287,13 @@ end
     polygon_problems(poly, pts; unit_atol, area_atol) -> Vector{String}
 
 Everything wrong with one [`cell_polygon`](@ref) against the
-[`cell_boundary`](@ref) ring `pts` of the same cell: a GeoInterface trait other
-than `PolygonTrait`, holes, an exterior ring whose points differ from `pts`
-closed by repeating its first vertex, or a spherical area that is zero or
-negative.
+[`cell_boundary`](@ref) ring `pts` of the same cell:
+
+  - a GeoInterface trait other than `PolygonTrait`;
+  - holes;
+  - an exterior ring whose points differ from `pts` closed by repeating its
+    first vertex;
+  - a spherical area that is zero or negative.
 
 The area is read off [`spherical_signed_area`](@ref) and so assumes a cell
 encloses less than half the sphere; see that function's warning.
@@ -1511,13 +1514,17 @@ end
                         label = <grid type>)
 
 Property-test `grid` against the base-interface contracts, as a labelled
-`Test.@testset`: the [`cellindex`](@ref)/[`localindex`](@ref) bijection over
-sampled indices (including `nothing` for a cell that is not in the grid),
-boundary rings of unit-norm points that are implicitly closed and wind
-counter-clockwise seen from outside, centroids strictly inside their own cell,
-polygons that close the boundary ring as a hole-free `GI.Polygon` of positive
-spherical area, `cellat(cell_centroid(grid, c)) == c` where [`cellat`](@ref) is implemented, and
-determinism of repeated calls.
+`Test.@testset` checking:
+
+  - the [`cellindex`](@ref)/[`localindex`](@ref) bijection over sampled
+    indices, `nothing` included for a cell outside the grid;
+  - boundary rings of unit-norm points, implicitly closed and winding
+    counter-clockwise seen from outside;
+  - centroids strictly inside their own cell;
+  - polygons closing the boundary ring as a hole-free `GI.Polygon` of positive
+    spherical area;
+  - `cellat(cell_centroid(grid, c)) == c` where [`cellat`](@ref) is implemented;
+  - determinism of repeated calls.
 
 Each law is its own nested test set, so a failure names the contract it
 violated rather than a line number. Every law examines the same sampled cells,

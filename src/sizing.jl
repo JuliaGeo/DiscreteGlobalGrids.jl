@@ -73,12 +73,14 @@ between two levels takes the geometrically nearer of the two. A target coarser
 than every level of `sys`, or finer than every level, takes that end of
 [`levels`](@ref).
 
-`radius` and `samples` follow [`cellsize`](@ref). `over` restricts sampling to
-an area of interest on both sides of the comparison: the candidate levels of
-`sys` and a raster, grid, or regridding-space `target` are each measured within
-`over`, so a global lon/lat raster asks for a finer level over the Arctic than
-over the equator. A `target` in metres has one size everywhere and ignores
-`over`. An `over` that meets no cell of the target throws an `ArgumentError`.
+`radius` and `samples` follow [`cellsize`](@ref). `over` restricts the
+comparison to an area of interest: the candidate levels of `sys` and a raster,
+grid, or regridding-space `target` are each measured within it.
+
+  - A global lon/lat raster asks for a finer level over the Arctic than over
+    the equator.
+  - A `target` in metres has one size everywhere and ignores `over`.
+  - An `over` meeting no cell of the target throws an `ArgumentError`.
 """
 function levelfor(sys::AbstractHierarchicalGridSystem, target;
         over=nothing, radius::Real=_EARTH_RADIUS, samples::Integer=256)

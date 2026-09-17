@@ -1074,20 +1074,114 @@ end
             end
         end
 
-        @testset "a raster walks the DGGS side and two rasters refuse" begin
-            raster = RasterGrid(DD.DimArray(zeros(24, 12),
-                (DD.X(range(-172.5, 172.5; length = 24)),
-                    DD.Y(range(-82.5, 82.5; length = 12)))))
-            @test !GR.hasanalyticlocation(raster)
-            @test GR.hasanalyticlocation(healpix)
-            @test_throws ArgumentError GR.overlappairs(AnalyticLocator(),
-                raster, 1:ncells(raster), raster, 1:ncells(raster); threaded = false)
-            @test_throws ArgumentError GR.pairblock(Conservative(),
-                raster, 1:ncells(raster), raster, 1:ncells(raster), AnalyticLocator())
-            for (dst, src) in ((healpix, raster), (raster, healpix))
+        @testset "an analytic locator walks a raster" begin
+            geographic(nx, ny; lat = (-90.0, 90.0)) = RasterGrid(DD.DimArray(zeros(nx, ny),
+                (DD.X(range(-180 + 180 / nx, 180 - 180 / nx; length = nx)),
+                    DD.Y(range(lat[1] + (lat[2] - lat[1]) / 2ny,
+                        lat[2] - (lat[2] - lat[1]) / 2ny; length = ny)))))
+            coarse = geographic(24, 12)
+            fine = geographic(48, 24)
+            @test GR.hasanalyticlocation(coarse)
+            @test GR.hasanalyticlocation(fine)
+
+            # Two rasters: the coarser is walked, the finer supplies the seeds.
+            @test GR._walksdestination(coarse, 1:ncells(coarse), fine, 1:ncells(fine))
+            @test !GR._walksdestination(fine, 1:ncells(fine), coarse, 1:ncells(coarse))
+            for (dst, src) in ((coarse, fine), (fine, coarse)), threaded in (false, true)
+                GR.@with GR.OUTER_PARALLEL => threaded begin
+                    identical(GR.pairblock(Conservative(), dst, 1:ncells(dst), src, 1:ncells(src),
+                            AnalyticLocator()),
+                        GR.pairblock(Conservative(), dst, 1:ncells(dst), src, 1:ncells(src)))
+                end
+            end
+
+            # Raster and HEALPix: the raster is walked when it is the coarser side.
+            @test ncells(coarse) < ncells(healpix) < ncells(fine)
+            @test GR._walksdestination(coarse, 1:ncells(coarse), healpix, 1:ncells(healpix))
+            @test !GR._walksdestination(fine, 1:ncells(fine), healpix, 1:ncells(healpix))
+            for (dst, src) in ((coarse, healpix), (healpix, coarse), (fine, healpix), (healpix, fine))
                 identical(GR.pairblock(Conservative(), dst, 1:ncells(dst), src, 1:ncells(src),
                         AnalyticLocator()),
                     GR.pairblock(Conservative(), dst, 1:ncells(dst), src, 1:ncells(src)))
+            end
+
+            # The cap over the corners covers the ring the clipper measures.
+            for space in (fine, geographic(12, 4; lat = (70.0, 90.0)),
+                    geographic(12, 4; lat = (-90.0, -70.0)))
+                @test all(1:ncells(space)) do i
+                    cap = GR.cellcap(space, i)
+                    all(GI.getpoint(getcell(space, i))) do q
+                        GR.US._contains(cap, USPoint(GI.x(q), GI.y(q), GI.z(q)))
+                    end
+                end
+                @test all(i -> length(GR.cellcorners(space, i)) == 4, 1:ncells(space))
+            end
+
+            @testset "lattice neighbours" begin
+                nx, ny = 48, 24
+                interior = GR.localindex(fine, 5, 5)
+                ring = GR.cellneighbors(fine, interior)
+                @test length(ring) == 8
+                @test Set(ring) == Set(GR.localindex(fine, 5 + dx, 5 + dy)
+                    for dx in -1:1, dy in -1:1 if (dx, dy) != (0, 0))
+                @test length(GR.cellneighbors(fine, GR.localindex(fine, 5, 1))) == 5
+                corner = GR.cellneighbors(fine, GR.localindex(fine, 1, 1))
+                @test length(corner) == 5
+                @test GR.localindex(fine, nx, 1) in corner
+                @test GR.localindex(fine, nx, 2) in corner
+                @test GR.localindex(fine, 1, 1) ∉ corner
+                # Every neighbour relation is symmetric.
+                @test all(i -> all(j -> i in GR.cellneighbors(fine, j), GR.cellneighbors(fine, i)),
+                    1:ncells(fine))
+                f(s, i) = (GR.cellneighbors(s, i); @allocated GR.cellneighbors(s, i))
+                @test f(fine, interior) == 0
+
+                open = RasterGrid(DD.DimArray(zeros(nx, ny),
+                    (DD.X(range(-175, 175; length = nx)), DD.Y(range(-85, 85; length = ny))));
+                    xperiod = nothing)
+                @test length(GR.cellneighbors(open, GR.localindex(open, 1, 1))) == 3
+                @test length(GR.cellneighbors(open, GR.localindex(open, nx, ny))) == 3
+                @test length(GR.cellneighbors(open, GR.localindex(open, 1, 5))) == 5
+            end
+
+            @testset "locatecell agrees between locators" begin
+                n = ncells(fine)
+                inds = (n ÷ 4):(3n ÷ 4)
+                # A graticule cell's parallels are curves the polygon replaces
+                # by chords, so as for the DGG systems a point in the sliver
+                # between them may be named to a neighbour by the tree.
+                points = Random.Xoshiro(13)
+                for _ in 1:400
+                    p = GO.UnitSphericalPoint(LinearAlgebra.normalize(randn(points, 3)))
+                    tree = GR.locatecell(TreeLocator(), fine, 1:n, p)
+                    walk = GR.locatecell(AnalyticLocator(), fine, 1:n, p)
+                    @test walk != 0
+                    @test walk == cellat(fine, p)
+                    if tree != walk
+                        @test tree in GR.cellneighbors(fine, walk)
+                        @test GR._cellcontains(getcell(fine, tree), p) === true
+                    end
+                    @test GR.locatecell(AnalyticLocator(), fine, inds, p) ==
+                          (walk in inds ? walk - first(inds) + 1 : 0)
+                end
+                @test GR.locatecell(AnalyticLocator(), fine, 1:n, cellcentroid(fine, 5)) == 5
+            end
+
+            @testset "a raster without an inverse chart is not walked" begin
+                blind = RasterGrid(DD.DimArray(zeros(24, 12),
+                    (DD.X(range(-172.5, 172.5; length = 24)),
+                        DD.Y(range(-82.5, 82.5; length = 12))));
+                    unit_sphere_to_native = nothing)
+                @test !GR.hasanalyticlocation(blind)
+                @test_throws ArgumentError GR.overlappairs(AnalyticLocator(),
+                    blind, 1:ncells(blind), blind, 1:ncells(blind); threaded = false)
+                @test_throws ArgumentError GR.pairblock(Conservative(),
+                    blind, 1:ncells(blind), blind, 1:ncells(blind), AnalyticLocator())
+                # Paired with a walkable side, the other side is walked.
+                @test !GR._walksdestination(blind, 1:ncells(blind), healpix, 1:ncells(healpix))
+                identical(GR.pairblock(Conservative(), blind, 1:ncells(blind), healpix,
+                        1:ncells(healpix), AnalyticLocator()),
+                    GR.pairblock(Conservative(), blind, 1:ncells(blind), healpix, 1:ncells(healpix)))
             end
         end
     end

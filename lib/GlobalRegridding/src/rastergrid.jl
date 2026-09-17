@@ -444,9 +444,85 @@ manifold(::RasterGrid) = GOCore.Spherical(; radius = 1.0)
 # Interpolation requires an inverse transform into the cell-centre chart.
 hascellchart(space::RasterGrid) = space.unit_sphere_to_native !== nothing
 
-# A raster locates a point through its chart but has no `cellneighbors` yet,
-# so an `AnalyticLocator` walks the other side of a raster regrid.
-hasanalyticlocation(::RasterGrid) = false
+# A raster locates a point through its inverse chart (`cellat`) and names its
+# neighbours by lattice arithmetic, so an `AnalyticLocator` can walk it.
+hasanalyticlocation(space::RasterGrid) = space.unit_sphere_to_native !== nothing
+
+"""
+    LatticeNeighbors
+
+The up-to-eight lattice neighbours of a raster cell, held in a tuple so
+[`cellneighbors`](@ref) allocates nothing.
+"""
+struct LatticeNeighbors
+    cells::NTuple{8,Int}
+    n::Int
+end
+
+Base.length(r::LatticeNeighbors) = r.n
+Base.eltype(::Type{LatticeNeighbors}) = Int
+@inline Base.iterate(r::LatticeNeighbors, k::Int = 1) =
+    k > r.n ? nothing : (@inbounds(r.cells[k]), k + 1)
+@inline Base.in(i::Int, r::LatticeNeighbors) = any(k -> @inbounds(r.cells[k]) == i, 1:r.n)
+
+# The X columns adjacent to `ix`: wrapped when the raster spans its period,
+# and never listing a column twice on rasters of one or two columns.
+@inline function _neighborcolumns(space::RasterGrid, ix::Int)
+    nx = _nx(space)
+    if _xwraps(space)
+        lo = mod1(ix - 1, nx)
+        hi = mod1(ix + 1, nx)
+        lo == ix && return (ix, ix, ix, 1)
+        lo == hi && return (lo, ix, ix, 2)
+        return (lo, ix, hi, 3)
+    end
+    lo, hi = ix - 1, ix + 1
+    lo < 1 && return (ix, hi, hi, hi <= nx ? 2 : 1)
+    hi > nx && return (lo, ix, ix, 2)
+    return (lo, ix, hi, 3)
+end
+
+# Whether the X edges close on themselves under `xperiod`.
+@inline function _xwraps(space::RasterGrid)
+    p = space.xperiod
+    p === nothing && return false
+    e = space.xedges
+    return isapprox(abs(e[end] - e[1]), p; rtol = 1e-9)
+end
+
+function cellneighbors(space::RasterGrid, i::Int)
+    ix, iy = cellsubscript(space, i)
+    c1, c2, c3, ncols = _neighborcolumns(space, ix)
+    cells = ntuple(_ -> 0, Val(8))
+    n = 0
+    for jy in max(iy - 1, 1):min(iy + 1, _ny(space))
+        for k in 1:ncols
+            jx = k == 1 ? c1 : k == 2 ? c2 : c3
+            jx == ix && jy == iy && continue
+            n += 1
+            cells = Base.setindex(cells, localindex(space, jx, jy), n)
+        end
+    end
+    return LatticeNeighbors(cells, n)
+end
+
+function cellcorners(space::RasterGrid, i::Int)
+    ix, iy = cellsubscript(space, i)
+    return _cellcorners(space, ix, iy)
+end
+
+# The clipper measures the densified ring `getcell` returns. A raster's ring is
+# its four corners with polar duplicates dropped, so the cap over the corners
+# bounds it; the relative margin absorbs rounding in the cap arithmetic.
+function cellcap(space::RasterGrid, i::Int)
+    c = cellcorners(space, i)
+    cap = SphericalCap(c[1], 0.0)
+    for k in 2:4
+        cap = Extents.union(cap, SphericalCap(c[k], 0.0))
+    end
+    cap.radius > Float64(pi) / 2 && return _WHOLE_SPHERE
+    return Extents.grow(cap, 5e-5)
+end
 
 """
     cellsubscript(space::RasterGrid, i::Int) -> (ix, iy)

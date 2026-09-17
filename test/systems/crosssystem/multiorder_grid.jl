@@ -23,20 +23,6 @@ function mixed(sys, top::Int)
     return DGG.MultiOrderVector(sys, cells; reference_level = top + 3)
 end
 
-# Typed wrappers keep global fixtures out of inference checks.
-grid_of(mov::DGG.MultiOrderVector) = DGG.MultiOrderGrid(mov)
-count_of(g::DGG.MultiOrderGrid) = DGG.ncells(g)
-id_at(g::DGG.MultiOrderGrid, i::Int) = DGG.cellindex(g, i)
-centroid_of(g::DGG.MultiOrderGrid, c) = DGG.cell_centroid(g, c)
-boundary_of(g::DGG.MultiOrderGrid, c) = DGG.cell_boundary(g, c)
-area_of(g::DGG.MultiOrderGrid, c) = DGG.cell_area(g, c)
-cap_of(g::DGG.MultiOrderGrid, c) = DGG.Fallbacks.cell_cap(g, c)
-tree_of(g::DGG.MultiOrderGrid) = DGG.treeify(g)
-index_of(g::DGG.MultiOrderGrid, c::DGG.AbstractCellIndex) = DGG.localindex(g, c)
-index_at(g::DGG.MultiOrderGrid, p::GO.UnitSphericalPoint) = DGG.localindex(g, p)
-space_for(mov::DGG.MultiOrderVector, m::GR.AbstractRegriddingMethod) =
-    GR.sourcespacefor(mov, m)
-
 # Congruence determines whether stored parent polygons tile like their descendants.
 const CASES = ((DGG.HEALPixSystem(), 0, true), (DGG.IGeo7System(), 0, false))
 
@@ -236,24 +222,24 @@ const CASES = ((DGG.HEALPixSystem(), 0, true), (DGG.IGeo7System(), 0, false))
     @testset "every new entry point infers" begin
         c = mov[1]
         p = DGG.cell_centroid(g, c)
-        @test (@inferred grid_of(mov)) isa DGG.MultiOrderGrid
-        @test (@inferred count_of(g)) isa Int
-        @test (@inferred id_at(g, 1)) isa DGG.AbstractCellIndex
-        @test (@inferred centroid_of(g, c)) isa GO.UnitSphericalPoint
-        @test (@inferred area_of(g, c)) isa Float64
-        @inferred boundary_of(g, c)
-        @inferred cap_of(g, c)
-        @test (@inferred tree_of(g)) isa EN.IndexTreeNode
-        @test (@inferred Union{Int,Nothing} index_of(g, c)) == 1
-        @test (@inferred Union{Int,Nothing} index_at(g, p)) == 1
+        @test (@inferred DGG.MultiOrderGrid(mov)) isa DGG.MultiOrderGrid
+        @test (@inferred DGG.ncells(g)) isa Int
+        @test (@inferred DGG.cellindex(g, 1)) isa DGG.AbstractCellIndex
+        @test (@inferred DGG.cell_centroid(g, c)) isa GO.UnitSphericalPoint
+        @test (@inferred DGG.cell_area(g, c)) isa Float64
+        @inferred DGG.cell_boundary(g, c)
+        @inferred DGG.Fallbacks.cell_cap(g, c)
+        @test (@inferred DGG.treeify(g)) isa EN.IndexTreeNode
+        @test (@inferred Union{Int,Nothing} DGG.localindex(g, c)) == 1
+        @test (@inferred Union{Int,Nothing} DGG.localindex(g, p)) == 1
 
         # Routing returns one of two space types, never `Any`.
         for M in (GR.NearestCell, GR.DirectNearest, GR.BarycentricPoint,
                   GR.Conservative)
-            rt = Base.infer_return_type(space_for, Tuple{typeof(mov),M})
+            rt = Base.infer_return_type(GR.sourcespacefor, Tuple{typeof(mov),M})
             @test rt <: DGG.DGGSpace
         end
-        @test isconcretetype(Base.infer_return_type(space_for,
+        @test isconcretetype(Base.infer_return_type(GR.sourcespacefor,
             Tuple{typeof(mov),GR.Conservative}))
     end
 end

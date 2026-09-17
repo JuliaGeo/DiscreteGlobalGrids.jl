@@ -346,7 +346,7 @@ _readsstored(::MultiOrderVector, method, ::DD.Lookups.Intervals) = false
     "read its $(length(mov)) stored sample sites, or `Intervals(Center())` to " *
     "read its reference-level polygon cover at level $(reference_level(mov))."))
 
-_leafcount(mov::MultiOrderVector) = isempty(mov) ? 0 : last(mov.offsets)
+_leafcount(mov::MultiOrderVector) = sum(mov.stops) - sum(mov.starts) + length(mov)
 
 _expandsleaves(mov::MultiOrderVector) = _leafcount(mov) != length(mov)
 

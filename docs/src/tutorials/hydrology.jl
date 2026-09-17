@@ -14,7 +14,7 @@ import ArchGDAL
 import Extents
 using Statistics
 using GLMakie, GeoMakie
-using DiscreteGlobalGridsVisualization: dggsurface, dggsurface!, dggpoly, dggpoly!
+using DiscreteGlobalGridsVisualization: dggsurface, dggsurface!, dggpoly, dggpoly!, cellset
 GLMakie.activate!(inline = true)
 
 # ## Regrid a Copernicus DEM tile onto IGEO7 hexagons
@@ -272,3 +272,50 @@ count(!ismissing, sampled), DGG.ncells(sys, 6)
 
 DGG.holdsdata(pyramid, DGG.cellat(DGG.levelgrid(sys, 3), 10.5, 46.5)),
 DGG.holdsdata(pyramid, DGG.cellat(DGG.levelgrid(sys, 3), -70.0, -30.0))
+
+# ## Stream a zoom out of the store
+#
+# That descent is what an interactive plot wants on every camera change: start
+# at the twelve root cells, keep the ones in view that the store says hold
+# something, refine, and stop when refining once more would cost more cells than
+# the screen can show. One `cellvalues` call per level is one read per chunk
+# touched — and never a probe for a chunk that does not exist, because the level
+# above already said.
+#
+# The prototype lives beside the package rather than in it:
+
+include(joinpath(pkgdir(DGG), "scripts", "pyramid_stream_poc.jl"))
+using .PyramidStream
+
+# Three views of the same store, an order of magnitude apart. Each panel reports
+# the level the descent chose and what it cost:
+
+fig = Figure(size = (1000, 380))
+for (i, span) in enumerate((1.0, 0.1, 0.02))
+    box = Extents.Extent(X = (10.5 - span / 2, 10.5 + span / 2),
+                         Y = (46.5 - span / 2, 46.5 + span / 2))
+    drawn, level, values, trace = PyramidStream.streamframe(pyramid, box;
+        maxcells = 30_000, verbose = false)
+    reads = sum(t.chunks for t in trace)
+    ax = Axis(fig[1, i]; aspect = shape, limits = (box.X, box.Y),
+        xlabel = "longitude", ylabel = i == 1 ? "latitude" : "",
+        yticklabelsvisible = i == 1,
+        title = "$(span)°: level $level, $(length(drawn)) cells, $reads chunk reads")
+    dggpoly!(ax, cellset(sys, drawn); color = Float32.(values),
+        colormap = :terrain, colorrange = crange, strokewidth = 0)
+end
+fig
+
+# Zooming in by fifty times moves the descent five levels deeper and still costs
+# a couple of dozen chunk reads, because the coarse levels prune the tree before
+# any deep chunk is fetched.
+#
+# For the interactive version — a window where scrolling reloads the level —
+# run `scripts/pyramid_stream_plot.jl` with a Makie backend:
+#
+# ```julia
+# julia --project=docs -i scripts/pyramid_stream_plot.jl
+# ```
+#
+# It traces every reload in the terminal, so a zoom that loads more than it
+# needs is visible as it happens.

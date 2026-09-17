@@ -207,21 +207,19 @@ function _writemixed(opengroup, identifier, src, celldim, mov,
     cellaxis(enc, sys, lv, ids; declared_length=length(mov))
     manifest = _movmanifest(mov, plan.chunklength)
     desc = _description(sys, nothing, enc, layers)
-    arrays = _arrayplan(enc, (lv, ids), layers, celldim, plan, manifest, desc)
-    return _commit(opengroup, identifier, src, desc, conventions, arrays;
-        reference_level=DGG.reference_level(mov))
+    arrays = _arrayplan(enc, (lv, ids), layers, celldim, plan, manifest, desc,
+        DGG.reference_level(mov))
+    return _commit(opengroup, identifier, src, desc, conventions, arrays)
 end
 
-function _commit(opengroup, identifier, src, desc, conventions, arrays;
-    reference_level::Union{Int,Nothing}=nothing)
-    reference_level === nothing || _markerreference!(arrays, reference_level)
+function _commit(opengroup, identifier, src, desc, conventions, arrays)
     snapshot = StoreSnapshot(identifier=identifier, attrs=_groupattrs(src),
         arrays=[a.entry for a in arrays])
     for c in conventions
         _stampable(c, desc) || continue
         DGG.encode!(c, snapshot, desc)
     end
-    reference_level === nothing || _declarelevels!(snapshot.attrs)
+    desc.encoding isa CompactedEncoding && _declarelevels!(snapshot.attrs)
 
     group = opengroup(snapshot.attrs, String[a.entry.name for a in arrays])
     for a in arrays
@@ -243,14 +241,6 @@ function _declarelevels!(attrs)
     dggs isa AbstractDict || return attrs
     dggs["refinement_levels"] = COMPACTED_LEVELS_ARRAY
     return attrs
-end
-
-function _markerreference!(arrays, reference_level::Int)
-    for a in arrays
-        marker = get(a.entry.attrs, MANIFEST_MARKER, nothing)
-        marker === nothing || (marker["reference_level"] = reference_level)
-    end
-    return arrays
 end
 
 # Divide the element target by the widest non-cell extent because every layer
@@ -605,7 +595,7 @@ end
 const RESERVED_ARRAYS = (CELL_IDS_ARRAY, CELL_RANGES_ARRAY, MANIFEST_ARRAY,
     COMPACTED_LEVELS_ARRAY)
 
-function _arrayplan(enc, coord, layers, celldim, plan, manifest, desc)
+function _arrayplan(enc, coord, layers, celldim, plan, manifest, desc, reference_level=nothing)
     _checklayernames(layers)
     out = ArrayWrite[]
     _coordinate!(out, enc, coord, plan)
@@ -626,7 +616,7 @@ function _arrayplan(enc, coord, layers, celldim, plan, manifest, desc)
     # the level and grid the axis was validated at, which is what a later
     # encoding, an aggregation reading chunk boundaries, or a reader of a
     # partially rewritten store would otherwise have to recompute or assume.
-    push!(out, _manifestwrite(manifest, plan, desc))
+    push!(out, _manifestwrite(manifest, plan, desc, reference_level))
     sort!(out; by=a -> a.entry.name)
     _checkunique(out)
     return out
@@ -728,7 +718,7 @@ end
 # The independent `(n_chunks, 2)` sidecar records chunk bounds, axis geometry,
 # validation provenance and optional ancestor alignment. Rebuilding the axis
 # through `cellaxis` before commit justifies its `validated = "strict"` marker.
-function _manifestwrite(manifest, plan, desc)
+function _manifestwrite(manifest, plan, desc, reference_level=nothing)
     rows = permutedims(hcat(manifest.firstids, manifest.lastids))
     n = size(rows, 2)
     marker = Dict{String,Any}(
@@ -744,6 +734,7 @@ function _manifestwrite(manifest, plan, desc)
         marker["ancestor_level"] = plan.ancestor_level
         marker["ancestor_aligned"] = plan.aligned
     end
+    reference_level === nothing || (marker["reference_level"] = reference_level)
     entry = ArrayEntry(name=MANIFEST_ARRAY,
         attrs=Dict{String,Any}(ARRAY_DIMENSIONS => copy(MANIFEST_DIMS),
             MANIFEST_MARKER => marker),

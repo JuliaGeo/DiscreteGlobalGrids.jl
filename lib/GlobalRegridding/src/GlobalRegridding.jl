@@ -140,6 +140,7 @@ public chartposition
 # Other qualified extension hooks used by package integrations.
 public resolvespatialdims
 public _prepare_raster_transform_pair, _task_prepared_raster_transform
+public _crs_native_to_unit_sphere, _projected_crs_native_to_unit_sphere
 
 # The chunk dependency graph. Public but not exported: these names are generic
 # enough that exporting them into a user's namespace would be presumptuous.

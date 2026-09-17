@@ -45,6 +45,13 @@ const GRRastersProjExt = Base.get_extension(GlobalRegridding, :GlobalRegriddingR
         @test RasterGrid(DD.dims(raster)).native_to_unit_sphere isa
               GRProjExt._NativeToUnitSphere
 
+        # A bare projected PROJ string is classified without the `+type=crs`
+        # tag and charted through Proj.
+        merc = RasterGrid(Rasters.Raster(values, mercator;
+            crs = ProjString("+proj=merc +datum=WGS84")))
+        @test merc.native_to_unit_sphere isa GRProjExt._NativeToUnitSphere
+        @test all(cellat(merc, cellcentroid(merc, i)) == i for i in 1:ncells(merc))
+
         # An explicit chart wins over CRS metadata.
         kept = RasterGrid(raster; native_to_unit_sphere = template)
         @test kept.native_to_unit_sphere.state.template === template
@@ -70,6 +77,14 @@ const GRRastersProjExt = Base.get_extension(GlobalRegridding, :GlobalRegriddingR
              Y(Rasters.Mapped(0.0:1.0:2.0; crs = EPSG(3857), mappedcrs = EPSG(4326)))))
         @test RasterGrid(mapped).native_to_unit_sphere isa
               GO.UnitSpherical.UnitSphereFromGeographic
+
+        # A `Mapped` lookup naming a projected `crs` but no `mappedcrs` leaves
+        # its value CRS unknown.
+        unmapped = Rasters.Raster(values,
+            (X(Rasters.Mapped(-1.0:1.0:1.0; crs = EPSG(3857), mappedcrs = nothing)),
+             Y(Rasters.Mapped(0.0:1.0:2.0; crs = EPSG(3857), mappedcrs = nothing))))
+        @test_throws ArgumentError RasterGrid(unmapped)
+        @test_throws "mappedcrs" RasterGrid(unmapped)
 
         mixed = Rasters.Raster(values,
             (X(Rasters.Projected(-1.0:1.0:1.0; crs = EPSG(3857))),

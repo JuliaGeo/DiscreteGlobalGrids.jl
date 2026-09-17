@@ -116,15 +116,25 @@ end
 _valuecrs(::Any) = nothing
 _valuecrs(d::DD.Dimension) = _valuecrs(DD.lookup(d))
 _valuecrs(l::Rasters.Projected) = Rasters.crs(l)
-_valuecrs(l::Rasters.Mapped) = Rasters.mappedcrs(l)
+function _valuecrs(l::Rasters.Mapped)
+    valuecrs = Rasters.mappedcrs(l)
+    valuecrs === nothing && Rasters.crs(l) !== nothing && throw(ArgumentError(
+        "RasterGrid: the Mapped lookup names the projected CRS " *
+        "$(repr(Rasters.crs(l))) but no `mappedcrs`, so the CRS of its values is " *
+        "unknown. Set it with `Rasters.setmappedcrs`, or pass " *
+        "`native_to_unit_sphere` explicitly."))
+    return valuecrs
+end
 
 """
     _geographic_without_proj(crs::GeoFormat) -> Bool
 
-Return whether `crs` is recognizably geographic longitude/latitude in degrees
-from its GeoFormatTypes value alone: `EPSG(4326)`, a PROJ string whose
-`+proj` is a longitude/latitude family, or WKT whose root node is a geographic
-or geodetic CRS. Anything else is left for Proj to classify.
+Return whether `crs` is recognizably geographic from its GeoFormatTypes value
+alone: `EPSG(4326)`, a PROJ string whose `+proj` is a longitude/latitude
+family, or WKT whose root node is a geographic or geodetic CRS. Geographic
+here means longitude/latitude in degrees from Greenwich. WKT2 `GEODCRS` also
+covers geocentric CRSs, which this heuristic accepts. Anything else is left
+for Proj to classify.
 """
 _geographic_without_proj(crs::GFT.EPSG) = crs.val == (4326,)
 _geographic_without_proj(crs::GFT.ProjString) =

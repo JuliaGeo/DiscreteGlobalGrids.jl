@@ -16,18 +16,17 @@ struct MultiOrderVector{ID,S<:AbstractHierarchicalGridSystem} <: AbstractVector{
     offsets::Vector{Int}
     reference_level::Int
 
-    # Internal builders may skip validation after establishing the invariants.
+    # Builders establish the invariants; untrusted input runs `_check_multiorder` first.
     function MultiOrderVector{ID,S}(system::S, cells::Vector{ID}, starts::Vector{Int},
-        stops::Vector{Int}, offsets::Vector{Int}, ref::Int,
-        checked::Bool) where {ID,S<:AbstractHierarchicalGridSystem}
-        checked && _check_multiorder(system, cells, starts, stops, ref)
+        stops::Vector{Int}, offsets::Vector{Int},
+        ref::Int) where {ID,S<:AbstractHierarchicalGridSystem}
         return new{ID,S}(system, cells, starts, stops, offsets, ref)
     end
 end
 
 # Deriving offsets here keeps them consistent with the intervals.
 function _multiorder_vector(sys::S, cells::Vector{ID}, starts::Vector{Int},
-    stops::Vector{Int}, ref::Int, checked::Bool) where {ID,S<:AbstractHierarchicalGridSystem}
+    stops::Vector{Int}, ref::Int) where {ID,S<:AbstractHierarchicalGridSystem}
     length(cells) == length(starts) == length(stops) || throw(ArgumentError(
         "a multi-order vector needs one interval per cell, got $(length(cells)) " *
         "cells against $(length(starts)) starts and $(length(stops)) stops"))
@@ -37,7 +36,7 @@ function _multiorder_vector(sys::S, cells::Vector{ID}, starts::Vector{Int},
         total += stops[i] - starts[i] + 1
         offsets[i] = total
     end
-    return MultiOrderVector{ID,S}(sys, cells, starts, stops, offsets, ref, checked)
+    return MultiOrderVector{ID,S}(sys, cells, starts, stops, offsets, ref)
 end
 
 # Runs before any `descendant_range` call, which needs a valid reference level.
@@ -53,6 +52,16 @@ function _check_reference(sys::AbstractHierarchicalGridSystem, cells, ref::Int)
             "which therefore has no interval at it"))
     end
     return nothing
+end
+
+function _intervals(sys::AbstractHierarchicalGridSystem, cells, ref::Int)
+    starts = Vector{Int}(undef, length(cells))
+    stops = similar(starts)
+    for i in eachindex(cells)
+        r = descendant_range(sys, @inbounds(cells[i]), ref)
+        @inbounds starts[i], stops[i] = first(r), last(r)
+    end
+    return starts, stops
 end
 
 # Every checked builder runs `_check_reference` first, to compute the intervals.
@@ -86,7 +95,9 @@ function MultiOrderVector(set::MultiOrderCellSet)
     _check_reference(sys, set.cells, ref)
     # The set already stores sorted reference-level interval starts.
     stops = [last(descendant_range(sys, c, ref)) for c in set.cells]
-    return _multiorder_vector(sys, copy(set.cells), copy(set.keys), stops, ref, true)
+    cells, starts = copy(set.cells), copy(set.keys)
+    _check_multiorder(sys, cells, starts, stops, ref)
+    return _multiorder_vector(sys, cells, starts, stops, ref)
 end
 
 # The keyword `reference_level` shadows the accessor, so the body lives in a helper.
@@ -103,25 +114,21 @@ function _multiorder_from_cells(sys::AbstractHierarchicalGridSystem, cells, ref:
     ID = isconcretetype(E) && E <: AbstractCellIndex ? E : cellindextype(sys)
     cs = collect(ID, cells)
     _check_reference(sys, cs, ref)
-    starts = Vector{Int}(undef, length(cs))
-    stops = Vector{Int}(undef, length(cs))
-    sorted = true
-    for i in eachindex(cs)
-        r = descendant_range(sys, @inbounds(cs[i]), ref)
-        @inbounds starts[i], stops[i] = first(r), last(r)
-        i == 1 || @inbounds(starts[i-1]) <= @inbounds(starts[i]) || (sorted = false)
+    starts, stops = _intervals(sys, cs, ref)
+    # Common builders already emit ascending cells and skip the sort.
+    if !issorted(starts)
+        perm = sortperm(starts)
+        cs, starts, stops = cs[perm], starts[perm], stops[perm]
     end
-    # Common builders already emit ascending cells and can skip sorting.
-    sorted && return _multiorder_vector(sys, cs, starts, stops, ref, true)
-    perm = sortperm(starts)
-    return _multiorder_vector(sys, cs[perm], starts[perm], stops[perm], ref, true)
+    _check_multiorder(sys, cs, starts, stops, ref)
+    return _multiorder_vector(sys, cs, starts, stops, ref)
 end
 
 MultiOrderVector(mov::MultiOrderVector) = mov
 
 # Subsets inherit system, reference level, and disjointness.
-_derive(mov::MultiOrderVector, cells::Vector, starts::Vector{Int}, stops::Vector{Int}) =
-    _multiorder_vector(mov.system, cells, starts, stops, mov.reference_level, false)
+_derive(mov::MultiOrderVector, ks::Vector{Int}) = _multiorder_vector(mov.system,
+    mov.cells[ks], mov.starts[ks], mov.stops[ks], mov.reference_level)
 
 # A deeper reference level rescales intervals while preserving their order.
 function _rekey(mov::MultiOrderVector, ref::Int)
@@ -130,14 +137,8 @@ function _rekey(mov::MultiOrderVector, ref::Int)
         "cannot re-key a multi-order vector from reference level " *
         "$(mov.reference_level) to the shallower level $ref: a stored cell may " *
         "be deeper than $ref"))
-    n = length(mov.cells)
-    starts = Vector{Int}(undef, n)
-    stops = Vector{Int}(undef, n)
-    for i in 1:n
-        r = descendant_range(mov.system, @inbounds(mov.cells[i]), ref)
-        @inbounds starts[i], stops[i] = first(r), last(r)
-    end
-    return _multiorder_vector(mov.system, mov.cells, starts, stops, ref, false)
+    starts, stops = _intervals(mov.system, mov.cells, ref)
+    return _multiorder_vector(mov.system, mov.cells, starts, stops, ref)
 end
 
 # --- collection interface ----------------------------------------------------
@@ -177,7 +178,7 @@ function _subset(mov::MultiOrderVector, idx::AbstractArray{<:Integer})
     end
     ascending || return [mov.cells[Int(k)] for k in idx]
     ks = Int[Int(k) for k in idx]
-    return _derive(mov, mov.cells[ks], mov.starts[ks], mov.stops[ks])
+    return _derive(mov, ks)
 end
 
 """
@@ -299,10 +300,7 @@ Return whole stored cells whose subtrees meet a [`MultiOrderCoverage`](@ref) of
 `target`. `target` accepts the same geometries and extents as [`query`](@ref).
 [`covering_indices`](@ref) returns their indices.
 """
-function covering(mov::MultiOrderVector, target)
-    ks = covering_indices(mov, target)
-    return _derive(mov, mov.cells[ks], mov.starts[ks], mov.stops[ks])
-end
+covering(mov::MultiOrderVector, target) = _derive(mov, covering_indices(mov, target))
 
 """
     covering_indices(mov::MultiOrderVector, target) -> Vector{Int}
@@ -330,13 +328,6 @@ end
 
 # --- set arithmetic ----------------------------------------------------------
 
-function _same_space(a::MultiOrderVector, b::MultiOrderVector, verb::AbstractString)
-    system(a) == system(b) || throw(ArgumentError(
-        "cannot $verb multi-order vectors from $(typeof(system(a))) and " *
-        "$(typeof(system(b)))"))
-    return nothing
-end
-
 # Both operands' intervals at their deeper reference level, and that level.
 function _common_intervals(a::MultiOrderVector, b::MultiOrderVector)
     ref = max(a.reference_level, b.reference_level)
@@ -344,7 +335,9 @@ function _common_intervals(a::MultiOrderVector, b::MultiOrderVector)
 end
 
 function _setop(merge, a::MultiOrderVector, b::MultiOrderVector, verb::AbstractString)
-    _same_space(a, b, verb)
+    system(a) == system(b) || throw(ArgumentError(
+        "cannot $verb multi-order vectors from $(typeof(system(a))) and " *
+        "$(typeof(system(b)))"))
     A, B, ref = _common_intervals(a, b)
     return _cells_from_intervals(a.system, merge(A, B), ref)
 end
@@ -492,7 +485,7 @@ function _cells_from_intervals(sys::AbstractHierarchicalGridSystem,
             pos = last_pos + 1
         end
     end
-    return _multiorder_vector(sys, cells, starts, stops, ref, false)
+    return _multiorder_vector(sys, cells, starts, stops, ref)
 end
 
 # --- equality and geometry ---------------------------------------------------

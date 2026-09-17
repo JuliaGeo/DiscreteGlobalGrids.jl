@@ -21,11 +21,15 @@ values needed to compute a stencil at the border. Holes also have boundaries:
 cells just inside a hole can belong to the halo. A complete global grid has an
 empty border and halo, and all of its cells belong to the interior.
 
-These operations return cells or their indices. To obtain polygon coordinates,
-use [`cell_boundary`](@ref) for a single cell. [`cell_polygons`](@ref) currently
-accepts a `MultiOrderCellSet` only; it is not a general operation on grids,
-`CellVector`, `PartialGrid`, or `CellLookup`. For neighbours around individual cells and adjacency tables, see
-[Neighbours and stencils](neighbors.md).
+These operations return cells or their indices; cell geometry comes from the
+functions below, and [Neighbours and stencils](neighbors.md) covers neighbours
+around individual cells and adjacency tables.
+
+- [`cell_polygon`](@ref) gives one cell as a closed unit-sphere `GI.Polygon`,
+  [`cell_boundary`](@ref) its vertices.
+- [`cell_polygons`](@ref) collects the polygons of a `MultiOrderCellSet`; a
+  `CellVector`, `PartialGrid`, or `CellLookup` maps `cell_polygon` over its own
+  cells.
 
 ## Find the inside and outside of an edge
 

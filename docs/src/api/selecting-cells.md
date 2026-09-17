@@ -66,12 +66,12 @@ cellset
 
 ## The predicates
 
-The types are DE9IM.jl's; the semantics are this package's, evaluated on the
-sphere. Every one of them takes the target geometry as its argument, and
-`Base.parent` gives it back.
+The DE9IM types are DE9IM.jl's and `CentroidCovered` is this package's; the
+semantics throughout are this package's, evaluated on the sphere. Every one of
+them takes the target geometry as its argument, and `Base.parent` gives it back.
 
-Read `Predicate(target)` as **cell RELATION target**. Predicates test the
-cell footprint, not just its centroid.
+Read `Predicate(target)` as **cell RELATION target**. The DE9IM predicates
+test the cell footprint; `CentroidCovered` tests the cell's centroid.
 
 | Predicate | Keep a cell when… | Geometry or lon/lat extent | Spherical cap |
 | --- | --- | --- | --- |
@@ -85,6 +85,7 @@ cell footprint, not just its centroid.
 | `Overlaps` | Same-dimensional interiors partly overlap | Yes | No |
 | `Equals` | Cell and target are topologically equal | Yes | No |
 | `Crosses` | Not implemented by this query engine | No | No |
+| `CentroidCovered` | The cell's centroid lies on or inside the target | Yes | Yes |
 
 For polygon targets, `Within` and `Contains` require the relevant interiors to
 intersect. `CoveredBy` and `Covers` include boundary-only containment.
@@ -92,9 +93,10 @@ Thus `Within(zone)` asks for cells inside a zone; `Contains(zone)` asks for
 cells large enough to contain the zone. `CoveredBy(zone)` and `Covers(zone)`
 reverse direction in the same way.
 
-Neither `Intersects` nor `Within` selects cells by centroid containment.
-For raster operations, use `boundary = :center`; see
-[Rasterize, extract, and zonal](raster-work.md).
+`CentroidCovered(zone)` selects cells by centroid containment, the raster zonal
+rule `boundary = :center` of [Rasterize, extract, and zonal](raster-work.md);
+`Within(zone)` selects a subset of it and `Intersects(zone)` a superset.
+
 Unsupported query predicates raise `ArgumentError`.
 
 ```@docs
@@ -109,6 +111,7 @@ Touches
 Crosses
 Overlaps
 Equals
+CentroidCovered
 ```
 
 ## Multi-order answers

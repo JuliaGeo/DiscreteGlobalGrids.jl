@@ -336,11 +336,11 @@ function boundingcap(geom)
     return US.SphericalCap(centre, radius)
 end
 
-# `cell_boundary` returns a cell's corners on the unit sphere for a cell id at
-# any level, so the walk builds its polygons straight from the system, with no
-# per-level grid in sight:
+# `cell_polygon` returns a cell as a closed unit-sphere polygon for a cell id
+# at any level, given that level's grid; `levelgrid` is a lightweight view of
+# the system, so the walk asks for one at each cell it visits:
 
-cellpolygon(sys, c) = (ring = DGG.cell_boundary(sys, c); GI.Polygon([GI.LinearRing([ring; ring[1:1]])]))
+cellpolygon(sys, c) = DGG.cell_polygon(DGG.levelgrid(sys, DGG.level(c)), c)
 
 #
 

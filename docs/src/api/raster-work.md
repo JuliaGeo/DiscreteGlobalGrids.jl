@@ -24,7 +24,7 @@ including its approximation of curved edges.
 
 | `boundary` | Polygon membership |
 |:--|:--|
-| `:center` (default) | The polygon covers the cell's canonical interior representative, [`cell_centroid`](@ref). |
+| `:center` (default) | The [`CentroidCovered`](@ref) rule: the polygon covers the cell's canonical interior representative, [`cell_centroid`](@ref). |
 | `:intersects` | Any intersection, including shared edges or vertices. |
 | `:touches` | Alias for `:intersects`; different from the DE9IM [`Touches`](@ref) predicate. |
 | `:inside` | The entire cell lies within the polygon. Coincident polygon boundaries are permitted. |

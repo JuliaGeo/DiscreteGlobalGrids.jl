@@ -212,7 +212,7 @@ end
     # A query predicate is a selector: the query's answer, intersected with the
     # lookup, in index order — exact where `Covering` over-covers.
     @testset "a DE9IM predicate selects the query's cells, intersected" begin
-        for pred in (DGG.Intersects(ZURICH), DGG.Within(ZURICH))
+        for pred in (DGG.Intersects(ZURICH), DGG.Within(ZURICH), DGG.CentroidCovered(ZURICH))
             byhand = sort!(Int[k for k in (DGG.localindex(lk, c) for c in DGG.query(grid, pred))
                 if k !== nothing])
             sub = A[DGG.Cells(pred)]
@@ -223,11 +223,13 @@ end
             # The index-space verb the selector resolves to.
             @test DGG.predicate_indices(parent(lk), pred) == byhand
         end
-        # `Within` is a subset of `Intersects`, and `Intersects` of `Covering`.
+        # `Within` is a subset of `CentroidCovered`, that of `Intersects`, and
+        # `Intersects` of `Covering`.
         within = Set(collect(DD.lookup(A[DGG.Cells(DGG.Within(ZURICH))], DGG.Cells)))
+        centred = Set(collect(DD.lookup(A[DGG.Cells(DGG.CentroidCovered(ZURICH))], DGG.Cells)))
         meets = Set(collect(DD.lookup(A[DGG.Cells(DGG.Intersects(ZURICH))], DGG.Cells)))
         covers = Set(collect(DD.lookup(A[DGG.Cells(DGG.Covering(ZURICH))], DGG.Cells)))
-        @test within ⊆ meets ⊆ covers
+        @test within ⊆ centred ⊆ meets ⊆ covers
     end
 end
 
@@ -249,7 +251,7 @@ end
     # Level-4 cells are a few degrees wide, so the polygon is sized to hold some.
     alps = GI.Polygon([GI.LinearRing([(0.0, 35.0), (25.0, 35.0), (25.0, 55.0),
         (0.0, 55.0), (0.0, 35.0)])])
-    for target in (cap, alps), P in (DGG.Intersects, DGG.Within)
+    for target in (cap, alps), P in (DGG.Intersects, DGG.Within, DGG.CentroidCovered)
         pred = P(target)
         byhand = sort!([DGG.localindex(grid, c) for c in DGG.query(grid, pred)])
         @test !isempty(byhand)
@@ -260,8 +262,11 @@ end
         # The selection composes: selecting again on the subset is the identity.
         @test parent(sub[DGG.Cells(pred)]) == parent(sub)
     end
-    # The two predicates nest, and a cap's `Within` is strictly inside its `Intersects`.
-    @test length(A[DGG.Cells(DGG.Within(cap))]) < length(A[DGG.Cells(DGG.Intersects(cap))])
+    # The predicates nest, and a cap's `Within` is strictly inside its
+    # `CentroidCovered`, which is strictly inside its `Intersects`.
+    @test length(A[DGG.Cells(DGG.Within(cap))]) <
+        length(A[DGG.Cells(DGG.CentroidCovered(cap))]) <
+        length(A[DGG.Cells(DGG.Intersects(cap))])
     # A predicate `query` refuses for the target stays refused as a selector.
     @test_throws ArgumentError A[DGG.Cells(DGG.Touches(cap))]
     # A target the level does not reach selects nothing, not an error.

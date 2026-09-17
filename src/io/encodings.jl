@@ -393,8 +393,6 @@ rules:
 """
 write_eligible(::CellEncoding, ::AbstractGrid, ::AbstractVector) = true
 
-write_eligible(::DenseEncoding, ::AbstractGrid, ::AbstractVector) = true
-
 write_eligible(::RangesEncoding, grid::AbstractGrid, ids::AbstractVector) =
     _sorted_unique_cells(grid, ids)
 
@@ -573,7 +571,6 @@ function cellaxis(::CompactedEncoding, sys::AbstractHierarchicalGridSystem,
         check=:count_mismatch, declared=Int(declared_length), observed=n,
         detail="the cell axis holds $n cells but the store declares " *
                "$declared_length; the axis and the data disagree."))
-    grids = Dict{Int,Any}()
     cells = map(1:n) do k
         # Check membership before narrowing so an out-of-range UInt gets a format error.
         raw = cell_levels[k]
@@ -582,7 +579,7 @@ function cellaxis(::CompactedEncoding, sys::AbstractHierarchicalGridSystem,
             detail="cell-axis index $k declares level $raw outside the " *
                    "$(nameof(typeof(sys))) level range."))
         l = Int(raw)
-        grid = get!(() -> levelgrid(sys, l), grids, l)
+        grid = levelgrid(sys, l)
         id = storedid(idtype(grid), cell_ids[k])
         idvalid(grid, id) || throw(DGGSFormatError(check=:id_names_no_cell,
             declared=l, observed=id,

@@ -57,10 +57,12 @@ plan = plan_regrid(data; to = target, method = Conservative())
 result = regrid(data, plan)
 ```
 
-`RasterGrid` reads a `Rasters.Raster`'s CRS: a geographic CRS is treated as
+`RasterGrid` reads the CRS of the X/Y lookups, so a `Rasters.Raster` and a
+`DimArray` with `Projected` lookups both work: a geographic CRS is treated as
 longitude and latitude in degrees, and a projected CRS is charted through Proj
-when both Rasters and Proj are loaded. Dimensional arrays with no CRS are
-assumed geographic; pass `native_to_unit_sphere` to chart them otherwise. For
+when both Rasters and Proj are loaded. With Rasters loaded but not Proj, a
+projected CRS throws an `ArgumentError`. Lookups with no CRS are assumed
+geographic; pass `native_to_unit_sphere` to chart them otherwise. For
 plain arrays, supply a source space with `from`. Put spatial dimensions first,
 in the source space's cell order.
 Dimensional results use the destination's axes and retain non-spatial dimensions,

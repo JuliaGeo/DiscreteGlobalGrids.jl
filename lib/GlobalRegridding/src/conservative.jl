@@ -445,8 +445,8 @@ function pairblock(::Conservative, dst_space::RegridSpace, dst_inds,
     # A degenerate side keeps the generic route's exact semantics, including
     # which of the two sides reports a denominator.
     (ndst == 0 || isempty(src_inds)) && return invoke(pairblock,
-        Tuple{AbstractRegriddingMethod,RegridSpace,Any,RegridSpace,Any,CandidateLocator},
-        Conservative(), dst_space, dst_inds, src_space, src_inds, locator)
+        Tuple{AbstractRegriddingMethod,RegridSpace,Any,RegridSpace,Any},
+        Conservative(), dst_space, dst_inds, src_space, src_inds)
 
     m = _sharedmanifold(dst_space, src_space)
     op = BlockAreaOperator(_intersectionoperator(m),
@@ -462,8 +462,8 @@ function pairblock(::Conservative, dst_space::RegridSpace,
     locator::CandidateLocator = TreeLocator())
     ndst = length(dst_cache.inds)
     (ndst == 0 || isempty(src_inds)) && return invoke(pairblock,
-        Tuple{AbstractRegriddingMethod,RegridSpace,Any,RegridSpace,Any,CandidateLocator},
-        Conservative(), dst_space, dst_cache.inds, src_space, src_inds, locator)
+        Tuple{AbstractRegriddingMethod,RegridSpace,Any,RegridSpace,Any},
+        Conservative(), dst_space, dst_cache.inds, src_space, src_inds)
 
     m = _sharedmanifold(dst_space, src_space)
     op = BlockAreaOperator(_intersectionoperator(m),
@@ -482,8 +482,8 @@ function pairblock(::Conservative, dst_space::RegridSpace,
     locator::CandidateLocator = TreeLocator())
     ndst = length(prepared.inds)
     (ndst == 0 || isempty(src_inds)) && return invoke(pairblock,
-        Tuple{AbstractRegriddingMethod,RegridSpace,Any,RegridSpace,Any,CandidateLocator},
-        Conservative(), dst_space, prepared.inds, src_space, src_inds, locator)
+        Tuple{AbstractRegriddingMethod,RegridSpace,Any,RegridSpace,Any},
+        Conservative(), dst_space, prepared.inds, src_space, src_inds)
 
     m = _sharedmanifold(dst_space, src_space)
     op = BlockAreaOperator(_intersectionoperator(m),

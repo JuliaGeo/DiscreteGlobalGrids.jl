@@ -78,6 +78,26 @@ _countedtree(cs::CellCountSpace, inds) =
     ToyCapTree(cs, collect(Int, inds),
         [toy_cap(cellcorners(cs.space, Int(i))) for i in inds])
 
+"""
+    T5PairOnly()
+    T5SeamOnly()
+
+Methods that know nothing of locators: one supplies only the five-argument
+`pairblock`, the other only the six-argument sampling seam of `weightblock`.
+"""
+struct T5PairOnly <: AbstractRegriddingMethod end
+
+GR.pairblock(::T5PairOnly, ::RegridSpace, dst_inds, ::RegridSpace, src_inds) =
+    WeightBlock(fill(2.0, length(dst_inds), length(src_inds)), nothing)
+
+struct T5SeamOnly <: AbstractRegriddingMethod end
+
+GR.outputsampling(::T5SeamOnly) = DD.Lookups.Points()
+
+GR.weightblock(::DD.Lookups.Points, ::T5SeamOnly, ::RegridSpace, dst_inds,
+    ::RegridSpace, src_inds) =
+    WeightBlock(fill(3.0, length(dst_inds), length(src_inds)), nothing)
+
 # Helpers
 
 conservative_block(dst, dst_inds, src, src_inds) =
@@ -1010,6 +1030,23 @@ end
                 @test GR.locatecell(AnalyticLocator(), space, 1:n, cellcentroid(space, 5)) == 5
                 @test GR.locatecell(TreeLocator(), space, 1:n, cellcentroid(space, 5)) == 5
                 @test GR.locatecell(TreeLocator(), space, 6:n, cellcentroid(space, 5)) == 0
+            end
+        end
+
+        @testset "a method that knows no locator keeps its own build" begin
+            n = ncells(healpix)
+            for (method, value) in ((T5PairOnly(), 2.0), (T5SeamOnly(), 3.0))
+                for locator in (TreeLocator(), AnalyticLocator())
+                    block = GR.weightblock(method, healpix, 1:4, igeo7, 1:3, locator)
+                    @test Matrix(block.weights) == fill(value, 4, 3)
+                    @test Matrix(GR.wholeblock(method, healpix, igeo7, locator).weights) ==
+                          fill(value, n, ncells(igeo7))
+                end
+                @test Matrix(GR.buildblock(
+                    GR.ChunkedPlan(method, Weighted(0.5), healpix, igeo7;
+                        locator = AnalyticLocator()), 1, 1).weights) ==
+                      fill(value, length(ownedindices(healpix, 1)),
+                          length(ownedindices(igeo7, 1)))
             end
         end
 

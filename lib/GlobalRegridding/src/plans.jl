@@ -903,10 +903,14 @@ Build the weights destination cells `dst_inds` take from source cells
   - The whole-tile route a point method with a [`sampler`](@ref) takes is not
     chosen here: a chunked plan selects it once, by [`tilesampler`](@ref), in
     [`blockfor`](@ref).
-  - The default [`TreeLocator`](@ref) reaches the six-argument sampling seam
-    and the five-argument [`pairblock`](@ref), so a method or sampling that
-    specializes only those keeps its build; any other locator reaches the forms
-    that carry it.
+  - `locator` rides along only where something takes it. A
+    [`TreeLocator`](@ref) always goes to the six-argument sampling seam and
+    from there to the five-argument [`pairblock`](@ref), the route every build
+    took before locators existed. Any other locator goes to the six-argument
+    `pairblock` when the sampling seam is the generic one, and to the seam,
+    without the locator, when a sampling has specialized it; a method with no
+    six-argument `pairblock` of its own then builds through its five-argument
+    one. [`Conservative`](@ref) is the method that takes the locator.
 """
 weightblock(method::AbstractRegriddingMethod, dst_space::RegridSpace, dst_inds,
     src_space::RegridSpace, src_inds, locator::CandidateLocator = TreeLocator()) =
@@ -922,10 +926,22 @@ weightblock(::DD.Lookups.Sampling, method::AbstractRegriddingMethod,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds) =
     pairblock(method, dst_space, dst_inds, src_space, src_inds)
 
-weightblock(::DD.Lookups.Sampling, method::AbstractRegriddingMethod,
+function weightblock(sampling::DD.Lookups.Sampling, method::AbstractRegriddingMethod,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds,
-    locator::CandidateLocator) =
-    pairblock(method, dst_space, dst_inds, src_space, src_inds, locator)
+    locator::CandidateLocator)
+    _hasownseam(sampling, method, dst_space, dst_inds, src_space, src_inds) &&
+        return weightblock(sampling, method, dst_space, dst_inds, src_space, src_inds)
+    return pairblock(method, dst_space, dst_inds, src_space, src_inds, locator)
+end
+
+# Whether a sampling has specialized the six-argument seam for these arguments,
+# in which case that build must be taken and there is nowhere to hand a locator.
+_hasownseam(sampling, method, dst_space, dst_inds, src_space, src_inds) =
+    which(weightblock, (typeof(sampling), typeof(method), typeof(dst_space),
+        typeof(dst_inds), typeof(src_space), typeof(src_inds))) !== _GENERIC_SEAM
+
+const _GENERIC_SEAM = which(weightblock, Tuple{DD.Lookups.Sampling,
+    AbstractRegriddingMethod, RegridSpace, Any, RegridSpace, Any})
 
 """
     pairblock(method, dst_space, dst_inds, src_space, src_inds[, locator]) -> WeightBlock
@@ -942,18 +958,16 @@ within `dst_inds`, columns chunk-local within `src_inds`.
     [`buildweights!`](@ref) alone reaches the generic route whatever the inner
     method assembles for itself.
   - `locator` is the plan's [`CandidateLocator`](@ref). The five-argument form
-    is the [`TreeLocator`](@ref) build; a method that discovers candidates
-    specializes the six-argument form as well, and a wrapper forwards both.
+    is the [`TreeLocator`](@ref) build. A method that discovers candidates
+    specializes the six-argument form, as [`Conservative`](@ref) does; for
+    every other method the six-argument generic drops the locator and takes the
+    method's five-argument build, so a method that knows nothing of locators is
+    built the same way under every locator. A wrapper forwards both forms.
 """
-function pairblock(method::AbstractRegriddingMethod, dst_space::RegridSpace, dst_inds,
-    src_space::RegridSpace, src_inds, locator::CandidateLocator)
-    coo = WeightCOO(length(dst_inds))
-    buildweights!(coo, method, dst_space, dst_inds, src_space, src_inds, locator)
-    return WeightBlock(coo, length(dst_inds), length(src_inds))
-end
+pairblock(method::AbstractRegriddingMethod, dst_space::RegridSpace, dst_inds,
+    src_space::RegridSpace, src_inds, ::CandidateLocator) =
+    pairblock(method, dst_space, dst_inds, src_space, src_inds)
 
-# The same generic route, spelled out so an `invoke` of the five-argument
-# generic reaches the coordinate list and not a method's own six-argument build.
 function pairblock(method::AbstractRegriddingMethod, dst_space::RegridSpace, dst_inds,
     src_space::RegridSpace, src_inds)
     coo = WeightCOO(length(dst_inds))

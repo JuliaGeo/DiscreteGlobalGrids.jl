@@ -981,6 +981,14 @@ end
                 end
             end
 
+            # Restricted source sets, contiguous and scattered.
+            srange = (nsrc ÷ 5):(nsrc ÷ 2)
+            sscattered = sort!(Random.randperm(rng, nsrc)[1:nsrc ÷ 3])
+            for sinds in (srange, sscattered), dinds in (whole, scattered)
+                identical(GR.pairblock(Conservative(), dst, dinds, src, sinds, AnalyticLocator()),
+                    GR.pairblock(Conservative(), dst, dinds, src, sinds))
+            end
+
             # A prepared destination takes the locator too.
             cache = GR.DestinationCache(dst, chunk)
             identical(GR.pairblock(Conservative(), dst, cache, src, 1:nsrc, AnalyticLocator()),
@@ -998,8 +1006,11 @@ end
             lazyplan = plan_regrid(data; from = src, to = dst, lazy = true,
                 locator = AnalyticLocator())
             @test lazyplan.locator === AnalyticLocator()
-            identical(GR.buildblock(lazyplan, 1, 1),
-                GR.buildblock(plan_regrid(data; from = src, to = dst, lazy = true), 1, 1))
+            treeplan = plan_regrid(data; from = src, to = dst, lazy = true)
+            @test nchunks(dst) > 2 && nchunks(src) > 2
+            for key in ((1, 1), (nchunks(dst), 2), (2, nchunks(src)))
+                identical(GR.buildblock(lazyplan, key...), GR.buildblock(treeplan, key...))
+            end
         end
 
         @testset "locatecell agrees between locators" begin

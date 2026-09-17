@@ -35,9 +35,9 @@ though we'll add more in the future:
 - `NearestCell()` samples the source cell containing the destination cell's centroid.  This is a nearest neighbor interpolation.
 - `BarycentricPoint()` interpolates the value at the destination cell's centroid by a weighted average of the source cell values, following [Barycentric interpolation](https://en.wikipedia.org/wiki/Barycentric_coordinate_system).
 
-`Auto()` chooses from the sampling of both sides' lookups: `Points` on either
-side selects `BarycentricPoint()`, and `Intervals` onto `Intervals` selects
-`Conservative()`.
+- `Auto()` is the default and chooses between them from the sampling of both
+  sides' lookups: `Points` on either side selects `BarycentricPoint()`, and
+  everything else selects `Conservative()`.
 
 Point methods do not preserve integrals. This example uses `Conservative()` to
 coarsen a global raster from 10° to 20° cells:

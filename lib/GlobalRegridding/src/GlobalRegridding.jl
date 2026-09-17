@@ -9,7 +9,7 @@ Regridding methods build geometry-only sparse [`WeightBlock`](@ref)s through
 Plans contain the method, spaces, missing-data policy, storage, and memory
 budget, so applying a plan takes no keywords:
 
-    regrid(data; to, method = Conservative())   # build a plan, apply it, drop it
+    regrid(data; to, method = Auto())           # build a plan, apply it, drop it
     plan = plan_regrid(data; to, method)        # keep it
     regrid(data, plan)                          # reuse across slices and reads
 

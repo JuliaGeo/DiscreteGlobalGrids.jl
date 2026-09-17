@@ -8,19 +8,40 @@ import Rasters
 t6_centres(lo, hi, n) =
     collect(range(lo + (hi - lo) / (2n); step = (hi - lo) / n, length = n))
 
-t6_space(xs, ys) = RasterGrid(DD.DimArray(zeros(length(xs), length(ys)),
-    (DD.X(collect(xs)), DD.Y(collect(ys)))))
+"""
+    t6_lookup(vs) -> Sampled
+
+The centres `vs` as an `Intervals` lookup. These fixtures are cell averages, so
+they say so: unannotated lookups are `Points` in DimensionalData, which
+[`Auto`](@ref) — the default method — reads as samples to interpolate between.
+The cells are the same either way: a regular lattice centres each cell on its
+own coordinate.
+"""
+t6_lookup(vs) = DD.Lookups.Sampled(collect(vs);
+    order = first(vs) <= last(vs) ? DD.Lookups.ForwardOrdered() :
+            DD.Lookups.ReverseOrdered(),
+    span = DD.Lookups.Regular(length(vs) > 1 ? vs[2] - vs[1] : oftype(vs[1], 1)),
+    sampling = DD.Lookups.Intervals(DD.Lookups.Center()))
+
+t6_space(xs, ys; points = false) = RasterGrid(DD.DimArray(
+    zeros(length(xs), length(ys)), t6_dims(xs, ys, points)))
+
+# `Points` lookups are what DimensionalData makes of bare coordinates, so they
+# are spelled that way and formatted by the array they label.
+t6_dims(xs, ys, points::Bool) = points ?
+    (DD.X(collect(xs)), DD.Y(collect(ys))) : (DD.X(t6_lookup(xs)), DD.Y(t6_lookup(ys)))
 
 """
-    t6_raster(f, xs, ys; yfirst = false) -> DimArray
+    t6_raster(f, xs, ys; yfirst = false, sampling = Intervals) -> DimArray
 
-`f(lon, lat)` sampled on the cell centres `xs × ys`. The lookups are whatever
-`xs` and `ys` are — pass a descending vector for a reverse-ordered lookup — and
-`yfirst` stores the array as `(Y, X)` instead of `(X, Y)`.
+`f(lon, lat)` sampled on the cell centres `xs × ys`. The lookups carry
+`Intervals` sampling — pass a descending vector for a reverse-ordered lookup —
+and `yfirst` stores the array as `(Y, X)` instead of `(X, Y)`. Pass
+`points = true` for the same values read as samples at those coordinates.
 """
-function t6_raster(f, xs, ys; yfirst = false)
+function t6_raster(f, xs, ys; yfirst = false, points = false)
     data = [Float64(f(x, y)) for x in xs, y in ys]
-    xd, yd = DD.X(collect(xs)), DD.Y(collect(ys))
+    xd, yd = t6_dims(xs, ys, points)
     yfirst && return DD.DimArray(permutedims(data), (yd, xd))
     return DD.DimArray(data, (xd, yd))
 end
@@ -197,17 +218,15 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         f(lon, lat) = 2.0 + sind(2 * lat) + 0.25 * cosd(lon)
         xs, ys = t6_centres(-180, 180, 36), t6_centres(-90, 90, 18)
         dxs, dys = t6_centres(-180, 180, 9), t6_centres(-90, 90, 6)
-        intervals(v) = DD.Lookups.Sampled(v; order = DD.Lookups.ForwardOrdered(),
-            span = DD.Lookups.Regular(v[2] - v[1]),
-            sampling = DD.Lookups.Intervals(DD.Lookups.Center()))
-        cells = RasterGrid((DD.X(intervals(dxs)), DD.Y(intervals(dys))))
-        sites = t6_space(dxs, dys)
+        cells = t6_space(dxs, dys)
+        sites = t6_space(dxs, dys; points = true)
         auto(data, dst) = GR.resolvemethod(Auto(), data, RasterGrid(data), dst)
 
         # DimensionalData gives unannotated lookups `Points`.
-        posts = t6_raster(f, xs, ys)
-        means = DD.DimArray(parent(posts), (DD.X(intervals(xs)), DD.Y(intervals(ys))))
+        posts = t6_raster(f, xs, ys; points = true)
+        means = t6_raster(f, xs, ys)
         @test DD.sampling(DD.lookup(posts, DD.X)) isa DD.Lookups.Points
+        @test DD.sampling(DD.lookup(means, DD.X)) isa DD.Lookups.Intervals
         @test GR.spacesampling(sites) isa DD.Lookups.Points
         @test GR.spacesampling(cells) isa DD.Lookups.Intervals
 
@@ -217,14 +236,13 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         @test auto(means, sites) == BarycentricPoint()
         @test auto(means, cells) == Conservative()
 
-        # The plan holds the resolved method on both routes, and the result is
-        # the explicit method's.
-        @test plan_regrid(means; to = cells, method = Auto()).method == Conservative()
-        @test plan_regrid(means; to = cells, method = Auto(), lazy = true).method ==
-              Conservative()
-        @test isequal(parent(regrid(means; to = cells, method = Auto())),
+        # `Auto()` is the default, the plan holds what it resolved to on both
+        # routes, and the result is the explicit method's.
+        @test plan_regrid(means; to = cells).method == Conservative()
+        @test plan_regrid(means; to = cells, lazy = true).method == Conservative()
+        @test isequal(parent(regrid(means; to = cells)),
             parent(regrid(means; to = cells, method = Conservative())))
-        pointwise = regrid(posts; to = cells, method = Auto())
+        pointwise = regrid(posts; to = cells)
         @test isequal(parent(pointwise),
             parent(regrid(posts; to = cells, method = BarycentricPoint())))
         @test DD.sampling(DD.lookup(pointwise, DD.X)) isa DD.Lookups.Points
@@ -232,19 +250,20 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         # A bare array reads the sampling off its source space.
         @test GR.resolvemethod(Auto(), parent(means), RasterGrid(means), cells) ==
               Conservative()
+        @test plan_regrid(vec(parent(means)); from = RasterGrid(means),
+            to = cells).method == Conservative()
 
         # An explicit method is never second-guessed.
         @test GR.resolvemethod(NearestCell(), means, RasterGrid(means), sites) ==
               NearestCell()
 
-        # Lookups that disagree, or a source that says nothing onto a
-        # destination that is not `Points`, are refused.
-        mixed = DD.DimArray(parent(posts), (DD.X(intervals(xs)), DD.Y(ys)))
-        @test_throws ArgumentError regrid(mixed; to = cells, method = Auto())
+        # Lookups that disagree are refused; a pair that says nothing at all
+        # falls back to the area method.
+        mixed = DD.DimArray(parent(posts), (DD.X(DD.lookup(means, DD.X)), DD.Y(ys)))
+        @test_throws ArgumentError regrid(mixed; to = cells)
         toy = ToyLonLatSpace(4, 2)
         @test GR.spacesampling(toy) === nothing
-        @test_throws ArgumentError regrid(zeros(ncells(toy)); from = toy, to = toy,
-            method = Auto())
+        @test GR.resolvemethod(Auto(), zeros(ncells(toy)), toy, toy) == Conservative()
         @test GR.resolvemethod(Auto(), zeros(ncells(toy)), toy, sites) ==
               BarycentricPoint()
     end
@@ -256,9 +275,9 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         f(lon, lat) = 1.0 + 0.02 * lon - 0.05 * lat
         xs = [0.0, 1.0, 10.0, 11.0, 30.0]
         ys = [0.0, 2.0, 3.0, 20.0]
-        src = t6_raster(f, xs, ys)
+        src = t6_raster(f, xs, ys; points = true)
         dxs, dys = [0.5, 4.0, 10.5, 25.0], [1.0, 2.5, 15.0]
-        dst = t6_space(dxs, dys)
+        dst = t6_space(dxs, dys; points = true)
         out = regrid(src; to = dst, method = BarycentricPoint())
         @test all(isapprox(out[GR.localindex(dst, i, j)], f(dxs[i], dys[j]);
             atol = 1e-12) for i in eachindex(dxs), j in eachindex(dys))

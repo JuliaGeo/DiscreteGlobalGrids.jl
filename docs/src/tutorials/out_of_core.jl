@@ -22,7 +22,8 @@ GLMakie.activate!(inline = true)
 
 soil = Raster(RasterDataSources.getraster(CPCSoil; period = "1981-2010"); name = :soilw)
 grid = DGG.levelgrid(DGG.IGeo7System(), 5)
-july = DGG.regrid(view(soil, Ti = 7); to = grid, missingval = NaN32)
+july = DGG.regrid(view(soil, Ti = 7); to = grid, method = DGG.Conservative(),
+    missingval = NaN32)
 path = DGG.dggwrite(joinpath(mktempdir(), "soil.zarr"), july; chunks = 4096)
 A = DGG.dggread(path)[:soilw]
 A = DD.rebuild(A; metadata = DD.NoMetadata())

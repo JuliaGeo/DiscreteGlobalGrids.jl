@@ -26,7 +26,7 @@ soil = Rasters.set(Raster(RasterDataSources.getraster(CPCSoil; period = "1981-20
 soil = DD.rebuild(soil; metadata = DD.NoMetadata())
 #
 healpix = DGG.levelgrid(DGG.HEALPixSystem(), 7)
-soilonhealpix = DGG.regrid(soil; to = healpix)
+soilonhealpix = DGG.regrid(soil; to = healpix, method = DGG.Conservative())
 
 # ## Move the cube from HEALPix onto IGeo7
 #
@@ -67,16 +67,19 @@ mean(skipmissing(soilonhealpix)), mean(skipmissing(crossed))
 # to what a source value represents: an average over a cell, or a measurement
 # at a point.
 #
+# `Auto()`, the default, reads that choice off the source's sampling; here we
+# name the method to compare the two.
+#
 # | method | what a destination cell gets |
 # |---|---|
-# | `Conservative()` (default) | the area-weighted mean of the source cells under it |
+# | `Conservative()` | the area-weighted mean of the source cells under it |
 # | `BarycentricPoint()` | a sample at its centre, interpolated from surrounding source centres |
 #
 # HEALPix level 4 cells are 407 km across, against 55 km on IGeo7 level 5, so
 # roughly fifty destination cells sit under each source cell:
 
 coarse = DGG.levelgrid(DGG.HEALPixSystem(), 4)
-oncoarse = DGG.regrid(soil[Ti = 1]; to = coarse)
+oncoarse = DGG.regrid(soil[Ti = 1]; to = coarse, method = DGG.Conservative())
 
 # Both methods run across that pair:
 

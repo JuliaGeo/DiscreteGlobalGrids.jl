@@ -122,7 +122,7 @@ fig
 
 # `regrid` takes the coverage as its destination:
 
-A = DGG.regrid(elevation; to = moc)
+A = DGG.regrid(elevation; to = moc, method = DGG.Conservative())
 
 # The result is a `Raster` over one `Cells` dimension, with one value per
 # represented level-9 leaf. Offshore cells remain `missing` because the source
@@ -245,7 +245,7 @@ fig
 #
 # The raster regrids onto it by the same call:
 
-A7 = replace_missing(DGG.regrid(elevation; to = moc7), NaN)
+A7 = replace_missing(DGG.regrid(elevation; to = moc7, method = DGG.Conservative()), NaN)
 
 #
 

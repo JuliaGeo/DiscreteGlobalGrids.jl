@@ -36,7 +36,7 @@ fig
 # selector below indexes.
 
 grid = DGG.levelgrid(DGG.HEALPixSystem(), 6)
-field = DGG.regrid(tavg; to = grid)
+field = DGG.regrid(tavg; to = grid, method = DGG.Conservative())
 
 # ## Average the field over every country
 #
@@ -163,7 +163,7 @@ level = DGG.levelfor(igeo7, 100_000)
 
 #
 
-field7 = DGG.regrid(tavg; to = DGG.levelgrid(igeo7, level))
+field7 = DGG.regrid(tavg; to = DGG.levelgrid(igeo7, level), method = DGG.Conservative())
 
 #
 

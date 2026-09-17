@@ -29,7 +29,7 @@ function sourcemissingval(data::DD.AbstractDimArray)
 end
 
 """
-    regrid(data; to, from = nothing, method = Conservative(),
+    regrid(data; to, from = nothing, method = Auto(),
            missingpolicy = Weighted(0.5), missingval = sourcemissingval(data),
            lazy = declareschunks(data), chunks = nothing, budget = nothing,
            storage = nothing, sampling = nothing)
@@ -57,8 +57,9 @@ it and `NaN` otherwise.
     dimensions naming a `RasterGrid`, or a package-specific target.
   - `from`: source space, spelled any of those ways; `nothing` derives a
     `RasterGrid` from `data`.
-  - `method`: weight-building method; defaults to [`Conservative`](@ref).
-    [`Auto`](@ref) chooses it from the source's and destination's sampling.
+  - `method`: weight-building method. The default, [`Auto`](@ref), chooses
+    from the source's and destination's sampling, and falls back to
+    [`Conservative`](@ref) where neither says.
   - `missingpolicy`: [`Weighted`](@ref) means or [`Extensive`](@ref) sums.
   - `missingval`: the nodata sentinel of the regrid — invalid in the source, and
     written into blanked destination cells. Left out, the source's comes from
@@ -125,7 +126,7 @@ destinationdims(plan::ChunkedPlan) =
     destinationdims(plan.dst_space, outputsampling(plan.method))
 
 """
-    regrid!(dest, data; to, from = nothing, method = Conservative(),
+    regrid!(dest, data; to, from = nothing, method = Auto(),
             missingpolicy = Weighted(0.5), missingval = destinationmissingval(dest),
             lazy = declareschunks(data), chunks = nothing, budget = nothing,
             storage = nothing, sampling = nothing)
@@ -175,7 +176,7 @@ regrid!(dest, data, plan::AbstractRegriddingPlan;
     error("$(typeof(plan).name.name) defines no `regrid!` application")
 
 """
-    plan_regrid(data; to, from = nothing, method = Conservative(),
+    plan_regrid(data; to, from = nothing, method = Auto(),
                 missingpolicy = Weighted(0.5), missingval = sourcemissingval(data),
                 lazy = declareschunks(data), chunks = nothing, budget = nothing,
                 storage = nothing, sampling = nothing, dependencies = nothing,
@@ -212,7 +213,7 @@ here but refuse `dependencies`, `refine` and `narrow`, and
 different relation makes a different plan.
 """
 function plan_regrid(data; to, from = nothing,
-    method::AbstractRegriddingMethod = Conservative(),
+    method::AbstractRegriddingMethod = Auto(),
     missingpolicy::AbstractMissingPolicy = Weighted(0.5),
     missingval = sourcemissingval(data),
     lazy::Bool = declareschunks(data), chunks = nothing,
@@ -258,11 +259,10 @@ function resolvemethod(::Auto, data, src_space::RegridSpace, dst_space::RegridSp
     # spacing, but much coarser cells would be better served by averaging the
     # samples inside them.
     (src isa DD.Lookups.Points || dst isa DD.Lookups.Points) && return BarycentricPoint()
-    src isa DD.Lookups.Intervals && return Conservative()
-    throw(ArgumentError(
-        "`method = Auto()` chooses from the sampling of the source's spatial " *
-        "lookups, but neither the data nor $(typeof(src_space).name.name) says " *
-        "whether its values are `Points` or `Intervals`; pass `method` explicitly"))
+    # `Intervals` onto `Intervals` averages, and so does a pair that says
+    # nothing at all: a value read as the mean over its cell is what regridding
+    # has always given by default.
+    return Conservative()
 end
 
 function _rejectlazykeywords(chunks, budget, storage, dependencies, refine, narrow)

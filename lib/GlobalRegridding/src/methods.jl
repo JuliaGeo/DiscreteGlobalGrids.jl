@@ -77,15 +77,17 @@ spatial lookups' sampling says: `Points` on either side selects
 [`BarycentricPoint`](@ref), and `Intervals` onto `Intervals` selects
 [`Conservative`](@ref).
 
-[`plan_regrid`](@ref) resolves it once, before any weight is built, so a plan
-holds the chosen method. The source's sampling is read from a dimensional
-source's spatial lookups, and otherwise from the source space; the
-destination's from its space ([`spacesampling`](@ref)). Spatial lookups that
-mix `Points` and `Intervals`, or a source that says neither and a destination
-that is not `Points`, are refused: pass the method explicitly.
+This is the default method. [`plan_regrid`](@ref) resolves it once, before any
+weight is built, so a plan holds the chosen method. The source's sampling is
+read from a dimensional source's spatial lookups, and otherwise from the source
+space; the destination's from its space ([`spacesampling`](@ref)). Where
+neither side says, the method is [`Conservative`](@ref). Spatial lookups that
+mix `Points` and `Intervals` are refused: pass the method explicitly.
 
 DimensionalData gives a lookup constructed without an explicit sampling
-`Points`, so check that a source built in memory says what its values mean.
+`Points`, so a raster built in memory is interpolated unless its lookups say
+`Intervals`. Files say it for themselves: GDAL reads `AREA_OR_POINT`, whose
+default is `Area`, and a NetCDF coordinate carrying CF `bounds` is `Intervals`.
 """
 struct Auto <: AbstractRegriddingMethod end
 

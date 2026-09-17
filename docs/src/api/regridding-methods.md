@@ -12,13 +12,16 @@ containing cell. Pass the method with `regrid(...; method = ...)`.
 
 | method | what a destination cell gets | conserves the integral |
 |---|---|---|
+| `Auto()` (default) | whichever of the two below the sampling asks for | when it chooses `Conservative()` |
 | `Conservative()` | the mean of the source values over the ground the cell covers | yes |
 | `BarycentricPoint()` | a sample at the cell's centre, interpolated between the source sample sites around it | no |
 | `NearestCell()` | the value of the source cell the centre falls in | no |
 | `DirectNearest()` | the same value, without building an operator for it | no |
 
-`Conservative()` is the default. Its weights describe area overlaps;
-`missingpolicy` controls how those weights apply when coverage is incomplete.
+`Auto()` is the default: it reads the sampling of both sides and picks
+`BarycentricPoint()` or `Conservative()`. Where neither side says, it picks
+`Conservative()`, whose weights describe area overlaps; `missingpolicy`
+controls how those weights apply when coverage is incomplete.
 
 For distributing a chunked regridding run across workers, see
 [assigning chunks to workers](partitioning.md#partition-a-regridding-run).
@@ -56,21 +59,24 @@ Check the source dataset's definition of a pixel. Elevations published at
 coordinates, often called **posts**, suit `BarycentricPoint()`. Elevations
 published as averages over pixel footprints suit `Conservative()`.
 
-`Auto()` makes that check from the dimensions on both sides: `Points` on
-either side selects `BarycentricPoint()`, and `Intervals` onto `Intervals`
-selects `Conservative()`. A `Raster` read through GDAL takes its sampling from the
-file's `AREA_OR_POINT` tag, and a DGGS cell axis is `Intervals`. A lookup
-built in memory without an explicit sampling is `Points` in DimensionalData,
-and a NetCDF coordinate without bounds is read as `Points` too, so check these
-before relying on `Auto()`. Axes that disagree, or a source that says neither
-onto a destination that is not `Points`, are refused.
+`Auto()`, the default, makes that check from the dimensions on both sides:
+`Points` on either side selects `BarycentricPoint()`, and everything else
+selects `Conservative()`. Files carry the answer: GDAL reads `AREA_OR_POINT`,
+whose default is `Area`, a NetCDF coordinate with CF `bounds` is `Intervals`,
+and a DGGS cell axis is `Intervals`.
+
+Two cases are worth checking before trusting the default. DimensionalData
+labels a lookup built in memory `Points` unless you say otherwise, and a NetCDF
+coordinate without `bounds` is read as `Points` as well. Say what such a source
+means by giving its lookups `Intervals` sampling, or by passing `method`.
+Lookups that disagree with each other are refused.
 
 ```julia
 DGG.regrid(dem; to = grid, method = DGG.Auto())
 ```
 
-The [hydrology tutorial](../tutorials/hydrology.md) uses the default area
-method to demonstrate the workflow. Choose the point method when your analysis
+The [hydrology tutorial](../tutorials/hydrology.md) leaves the method to
+`Auto()`, so the DEM's own sampling decides. Choose the point method when your analysis
 needs to retain the interpretation of DEM values as samples. When aligning
 Earth data, also check the [latitude convention](../tutorials/choosing_a_grid.md#match-the-ellipsoid-of-the-source).
 

@@ -5,10 +5,13 @@
 # selectors, neighbourhood operations and plotting tools.
 #
 # Here we move twelve months of soil moisture onto HEALPix, choose how to
-# handle missing ocean values, and map the result back to a raster. We use the
-# default `Conservative()` method, which weights source values by their overlap
-# with each destination cell. [Moving between DGGS](between_grids.md) compares
-# area averaging with point interpolation.
+# handle missing ocean values, and map the result back to a raster. These
+# values are averages over their cells, so we ask for `Conservative()`, which
+# weights source values by their overlap with each destination cell. Left out,
+# the method follows the source's own sampling — a coordinate without CF
+# `bounds` reads as point samples — see [choosing a method](../api/regridding-methods.md).
+# [Moving between DGGS](between_grids.md) compares area averaging with point
+# interpolation.
 
 ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH", joinpath(tempdir(), "rasterdatasources")))
 
@@ -60,7 +63,7 @@ DGG.cellsize(soil), DGG.cellsize(grid)
 
 # One call regrids all twelve months:
 
-onhealpix = DGG.regrid(soil; to = grid)
+onhealpix = DGG.regrid(soil; to = grid, method = DGG.Conservative())
 
 # The result is a `Raster` with dimensions `Cells` and `Ti`: one value per
 # cell per month. You can still select January with `[Ti = 1]`.
@@ -95,7 +98,7 @@ fig
 # Lowering the threshold keeps more coastal cells. Raising it asks for more
 # complete coverage. Compare the number of valid January cells:
 
-covered(t) = count(!ismissing, DGG.regrid(soil; to = grid,
+covered(t) = count(!ismissing, DGG.regrid(soil; to = grid, method = DGG.Conservative(),
     missingpolicy = DGG.Weighted(t))[:, 1])
 [t => covered(t) for t in (0.01, 0.5, 1.0)]
 
@@ -109,7 +112,7 @@ covered(t) = count(!ismissing, DGG.regrid(soil; to = grid,
 # Reuse a regridding plan when several variables share the same source and
 # destination grids. The plan computes the spatial weights once:
 
-plan = DGG.plan_regrid(soil; to = grid)
+plan = DGG.plan_regrid(soil; to = grid, method = DGG.Conservative())
 
 # Apply it to the full monthly cube:
 
@@ -180,7 +183,8 @@ fig
 # Choose another system and match its cell size to the same source:
 
 igeo7 = DGG.IGeo7System()
-DGG.regrid(soil; to = DGG.levelgrid(igeo7, DGG.levelfor(igeo7, soil)))
+DGG.regrid(soil; to = DGG.levelgrid(igeo7, DGG.levelfor(igeo7, soil)),
+    method = DGG.Conservative())
 
 # The result supports the same operations whichever system you choose. Try
 # [Zonal statistics](zonal.md) to summarize it by region, or

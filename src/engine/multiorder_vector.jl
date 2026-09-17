@@ -286,27 +286,9 @@ The container itself. A stored mixed-level collection is its own backing, and
 """
 cellset(mov::MultiOrderVector) = mov
 
-function _cellvector(mov::MultiOrderVector, l::Int)
-    for c in mov.cells
-        level(c) <= l || throw(ArgumentError(
-            "cannot expand to level $l: the container holds a level-$(level(c)) cell"))
-    end
-    return CellVector(_range_windows(_expanded_ranges(mov, l)), levelgrid(mov.system, l), mov, l)
-end
-
-# Adjacent subtrees merge into one window, matching `level_ranges`.
-function _expanded_ranges(mov::MultiOrderVector, l::Int)
-    out = UnitRange{Int}[]
-    for c in mov.cells
-        r = descendant_range(mov.system, c, l)
-        if !isempty(out) && first(r) == last(out[end]) + 1
-            out[end] = first(out[end]):last(r)
-        else
-            push!(out, r)
-        end
-    end
-    return out
-end
+_cellvector(mov::MultiOrderVector, l::Int) =
+    CellVector(_range_windows(_merged_ranges(mov.system, mov.cells, l, "container holds")),
+        levelgrid(mov.system, l), mov, l)
 
 # --- region selection --------------------------------------------------------
 

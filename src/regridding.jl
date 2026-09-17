@@ -315,9 +315,10 @@ GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString,
 # Mixed-level source presentation
 
 """
-    GlobalRegridding.sourcespacefor(mov::MultiOrderVector, method)
+    GlobalRegridding.sourcespacefor(mov::MultiOrderVector, method, data)
 
-Return the source space through which `method` reads a mixed-level container.
+Return the source space through which `method` reads a mixed-level container,
+and refuse an array `data` whose values the container does not describe.
 
   - `Points()` sampling uses one [`MultiOrderGrid`](@ref) cell per stored cell.
     Covering-ancestor lookup preserves nearest-cell values with fewer plan
@@ -327,11 +328,21 @@ Return the source space through which `method` reads a mixed-level container.
     and IGeo7, whose child polygons may leave gaps relative to the parent.
   - A container with one stored cell per reference-level leaf uses the
     [`PartialGrid`](@ref) path for either sampling.
-"""
-GR.sourcespacefor(mov::MultiOrderVector, method) = _readsstored(mov, method) ?
-    DGGSpace(MultiOrderGrid(mov)) : GR._asspace(mov, "from")
 
-GR.sourcespacefor(lk::MultiOrderLookup, method) = GR.sourcespacefor(parent(lk), method)
+An explicit `from` must match the value layout: one value per stored cell for
+point methods, one per reference-level leaf for area methods. A cube carrying a
+[`MultiOrderLookup`](@ref) fixes the value ordering, so its explicit `from` must
+name the same cells and reference level.
+"""
+function GR.sourcespacefor(mov::MultiOrderVector, method, data)
+    space = _readsstored(mov, method) ? DGGSpace(MultiOrderGrid(mov)) :
+            GR._asspace(mov, "from")
+    data isa AbstractArray && _checkfrom(mov, data, space)
+    return space
+end
+
+GR.sourcespacefor(lk::MultiOrderLookup, method, data) =
+    GR.sourcespacefor(parent(lk), method, data)
 
 _readsstored(mov::MultiOrderVector, method) =
     _readsstored(mov, method, GR.sourcesampling(method))
@@ -404,18 +415,8 @@ end
     "source has pass-through dimensions. Regrid one slice at a time, or use " *
     "a sample-site method such as `NearestCell` or `DirectNearest`."))
 
-"""
-    GlobalRegridding.checksource(mov::MultiOrderVector, data, space)
-
-Validate an explicit mixed-level `from` against the source value layout.
-[`GlobalRegridding.sourcespacefor`](@ref) reads one value per stored cell for
-point methods and one per reference-level leaf for area methods.
-
-A cube carrying [`MultiOrderLookup`](@ref) fixes the value ordering, so its
-explicit `from` must name the same cells and reference level.
-"""
-function GR.checksource(mov::MultiOrderVector, data, space::GR.RegridSpace)
-    data isa AbstractArray || return nothing
+# Refuse an explicit mixed-level `from` that the layout of `data` contradicts.
+function _checkfrom(mov::MultiOrderVector, data::AbstractArray, space::GR.RegridSpace)
     own = _mixedaxis(data)
     if own !== nothing
         _samecontainer(mov, own) || _fromcontradicts(mov, own)
@@ -437,9 +438,6 @@ function GR.checksource(mov::MultiOrderVector, data, space::GR.RegridSpace)
         "the expanded cube's `Cells` axis name it."))
     return nothing
 end
-
-GR.checksource(lk::MultiOrderLookup, data, space::GR.RegridSpace) =
-    GR.checksource(parent(lk), data, space)
 
 function _mixedaxis(data)
     data isa DD.AbstractDimArray || return nothing

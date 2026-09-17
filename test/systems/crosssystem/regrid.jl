@@ -937,7 +937,7 @@ end
     # A lookup names itself whatever backs it: a whole level, or a container its
     # cells were expanded from.
     @test GR.dimsource(DD.lookup(plain, DGG.Cells)) === DD.lookup(plain, DGG.Cells)
-    exp_lk =DD.lookup(DGG.expand(MOCCUBE, MOCREF), DGG.Cells)
+    exp_lk = DD.lookup(DGG.expand(MOCCUBE, MOCREF), DGG.Cells)
     @test DGG.cellset(exp_lk) === MOV
     @test GR.dimsource(exp_lk) === exp_lk
     @test DGG.ncells(GR._asspace(GR.dimsource(exp_lk), "from")) ==
@@ -983,7 +983,7 @@ end
         @test_throws "regrid with no `from` at all" GR.plan_regrid(MOCVALS;
             to = MOCDST, from = spelling)
     end
-    @test GR.checksource(MOV, MOCCUBE, GR._asspace(MOV, "from")) === nothing
+    @test GR.sourcespacefor(MOV, GR.Conservative(), MOCCUBE) isa DGG.DGGSpace
     @test parent(DGG.regrid(MOCCUBE; to = MOCDST, from = MOV)) ==
           parent(DGG.regrid(MOCCUBE; to = MOCDST))
     # Cell and reference-level equality define equivalent containers.

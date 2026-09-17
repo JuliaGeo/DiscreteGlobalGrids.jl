@@ -221,12 +221,8 @@ function plan_regrid(data; to, from = nothing,
     dependencies = nothing, refine = nothing,
     narrow::Union{Nothing,Symbol} = nothing,
     locator::CandidateLocator = TreeLocator())
-    if from === nothing
-        src_space = _sourcespace(data, method)
-    else
-        src_space = sourcespacefor(from, method)
-        checksource(from, data, src_space)
-    end
+    src_space = from === nothing ? _sourcespace(data, method) :
+                sourcespacefor(from, method, data)
     dst_space = _asspace(to, "to", src_space)
     manifold(dst_space) == manifold(src_space) || throw(ArgumentError(
         "the two sides of a regrid must live on one manifold, but the source " *

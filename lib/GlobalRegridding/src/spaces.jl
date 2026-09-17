@@ -337,8 +337,8 @@ Return the source array presented to `method`.
 Compressed axes use this hook to map stored values onto the cells named by
 [`dimsource`](@ref). The returned view must name its space through its own
 `dimsource` and order values like that space. Implementations may reject methods
-that fail [`refinementinvariant`](@ref). [`checksource`](@ref) handles conflicts
-with an explicit `from`.
+that fail [`refinementinvariant`](@ref). [`sourcespacefor`](@ref) handles
+conflicts with an explicit `from`.
 """
 sourceview(::Any, ::Any, ::Any) = nothing
 
@@ -351,17 +351,6 @@ function sourceview(data::DD.AbstractDimArray, method)
     end
     return data
 end
-
-"""
-    checksource(from, data, space) -> nothing
-
-Validate that an explicit `from` describes the layout of `data`.
-
-Plans call this once after resolving `space`. Sources with compressed or
-method-specific layouts should throw an `ArgumentError` here when the target
-conflicts with the stored values.
-"""
-checksource(::Any, ::Any, ::RegridSpace) = nothing
 
 """
     _asspace(space, name) -> RegridSpace
@@ -379,12 +368,26 @@ function _asspace end
 
 """
     sourcespacefor(target, method) -> RegridSpace
+    sourcespacefor(target, method, data) -> RegridSpace
 
-Resolve a source target into the [`RegridSpace`](@ref) that `method` reads.
+Resolve a source target into the [`RegridSpace`](@ref) that `method` reads. The
+three-argument form also validates that the target describes the layout of
+`data`.
 
-The default delegates to [`_asspace`](@ref)`(target, "from")`. Targets with
-multiple presentations specialize this method and choose through
-[`sourcesampling`](@ref). The returned space must match the cells and ordering
-of [`sourceview`](@ref) for the same method.
+A plan resolves an explicit `from` through the three-argument form, once, with
+the source it was given. An inferred source ([`dimsource`](@ref)) already
+describes its own array, so it resolves through the two-argument form, which
+validates nothing.
+
+Packages extend the three-argument form only; the two-argument form forwards to
+it with `data = nothing`. The default delegates to
+[`_asspace`](@ref)`(target, "from")` and accepts any `data`. Targets with
+multiple presentations choose through [`sourcesampling`](@ref). Targets with
+compressed or method-specific layouts throw an `ArgumentError` when `data` is
+an array whose values conflict with the target, and ignore a `data` that is
+`nothing`. The returned space must match the cells and ordering of
+[`sourceview`](@ref) for the same method.
 """
-sourcespacefor(target, method) = _asspace(target, "from")
+sourcespacefor(target, method) = sourcespacefor(target, method, nothing)
+
+sourcespacefor(target, method, data) = _asspace(target, "from")

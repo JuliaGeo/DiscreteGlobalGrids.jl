@@ -113,7 +113,7 @@ public residency, LazyStats, ShapedRegridArray
 public spilledfiles, usesreference
 public outputsampling, destinationdims, dimsource
 # Source-presentation hooks and the method traits that select a presentation.
-public sourceview, sourcespacefor, checksource
+public sourceview, sourcespacefor
 public sourcesampling, refinementinvariant
 
 # Qualified access keeps generic extension-hook names out of user namespaces.

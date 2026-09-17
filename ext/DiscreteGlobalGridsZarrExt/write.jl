@@ -166,8 +166,7 @@ function _write(identifier, opengroup, src; encoding=:auto,
         mixed === nothing || return _writemixed(opengroup, identifier, src,
             mixed..., encoding, conventions, chunks, Int(chunk_target))
         celldim, grid, cells = _cellaxis(src)
-        isempty(cells) && throw(ArgumentError(
-            "dggwrite has nothing to write: the cell axis is empty."))
+        isempty(cells) && _emptyaxis()
         enc = _encoding(encoding, grid, cells)
         layers = _layers(src, celldim)
         celltarget = _celltarget(Int(chunk_target), layers, celldim)
@@ -194,8 +193,7 @@ end
 
 function _writemixed(opengroup, identifier, src, celldim, mov,
     encoding, conventions, chunks, chunk_target::Int)
-    isempty(mov) && throw(ArgumentError(
-        "dggwrite has nothing to write: the cell axis is empty."))
+    isempty(mov) && _emptyaxis()
     enc = _mixedencoding(encoding)
     sys = system(mov)
     layers = _layers(src, celldim)
@@ -309,15 +307,19 @@ end
                         " carries a cell lookup."))
 end
 
+@noinline _unknownencoding(spec) = throw(ArgumentError(
+    "unknown encoding $(repr(spec)); it is :auto, or one of " *
+    join(sort!([repr(k) for k in keys(ENCODING_KEYWORDS)]), ", ") *
+    ", or a CellEncoding instance."))
+@noinline _emptyaxis() = throw(ArgumentError(
+    "dggwrite has nothing to write: the cell axis is empty."))
+
 # Resolve a single-level encoding: `:auto` is ranges when eligible, dense otherwise.
 function _encoding(spec::Symbol, grid, cells)
     spec === :auto && return write_eligible(RangesEncoding(), grid, cells) ?
                              RangesEncoding() : DenseEncoding()
     vocab = get(ENCODING_KEYWORDS, spec, nothing)
-    vocab === nothing && throw(ArgumentError(
-        "unknown encoding $(repr(spec)); it is :auto, or one of " *
-        join(sort!([repr(k) for k in keys(ENCODING_KEYWORDS)]), ", ") *
-        ", or a CellEncoding instance."))
+    vocab === nothing && _unknownencoding(spec)
     return _encoding(ENCODING_REGISTRY[vocab], grid, cells)
 end
 
@@ -345,10 +347,7 @@ function _mixedencoding(spec)
         return CompactedEncoding()
     known = spec isa CellEncoding ||
             (spec isa Symbol && haskey(ENCODING_KEYWORDS, spec))
-    known || throw(ArgumentError(
-        "unknown encoding $(repr(spec)); it is :auto, or one of " *
-        join(sort!([repr(k) for k in keys(ENCODING_KEYWORDS)]), ", ") *
-        ", or a CellEncoding instance."))
+    known || _unknownencoding(spec)
     label = spec isa Symbol ? ENCODING_KEYWORDS[spec] : _encodinglabel(spec)
     throw(DGGSFormatError(check=:mixed_level_axis, declared=label,
         observed=:MultiOrderLookup,

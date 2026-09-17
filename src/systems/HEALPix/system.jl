@@ -199,6 +199,7 @@ function DGG.Fallbacks.cell_cap(g::LevelGrid, c::DGG.LevelIndex)
     ix, iy, face = nested_to_xyf(DGG.checked_id(g, c), nside)
     return _subtree_cap(ix, iy, face, nside)
 end
+DGG.Fallbacks.cell_cap_is_cheap(::LevelGrid) = Val(true)
 
 # ===========================================================================
 # Location

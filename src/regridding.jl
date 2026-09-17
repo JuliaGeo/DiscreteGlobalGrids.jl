@@ -171,8 +171,9 @@ GR.cellcap(space::DGGSpace, i::Int) =
     _cellcap(Fallbacks.cell_cap_is_cheap(space.grid), space.grid, cellindex(space.grid, i))
 
 _cellcap(::Val{true}, grid, c) = Fallbacks.cell_cap(grid, c)
-# The cap over the corners holds every great-circle chord between them, which is
-# all the clipper measures; the margin covers rounding in the cap arithmetic.
+# The clipper measures the densified ring `getcell` returns. On every shipped
+# system that ring stays inside the cap over the corners, so the corners bound
+# it; the relative margin absorbs rounding in the cap arithmetic.
 _cellcap(::Val{false}, grid, c) =
     Extents.grow(Fallbacks.points_cap(cell_corners(grid, c)), 5e-5)
 GR.cellcorners(space::DGGSpace, i::Int) =

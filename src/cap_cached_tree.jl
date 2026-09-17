@@ -121,9 +121,9 @@ per column, single-threaded:
 | 115426 (polar) |  20.36 |  13.30 |   **12.34** |    18.89 |
 
 !!! warning "This is not the analytical leaf size"
-    A bigger leaf revisits each cell cap more often. The analytical IGeo7 path
-    still decodes a centre per visit and has its own measured optimum,
-    [`_ANALYTICAL_BUCKET_SIZE`](@ref). A generic `cell_boundary` cap remains at
+    A bigger leaf revisits each cell cap more often. Systems with a cheap
+    analytical cap still evaluate it per visit and share one measured optimum,
+    [`_ANALYTICAL_BUCKET_SIZE`](@ref), calibrated on IGeo7. A generic `cell_boundary` cap remains at
     the cursor's own leaf size.
 """
 const _CACHED_BUCKET_SIZE = 49

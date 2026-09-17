@@ -564,20 +564,9 @@ end
 function _movmanifest(mov::MultiOrderVector, chunklength::Int)
     n = length(mov)
     cl = max(chunklength, 1)
-    nc = cld(n, cl)
-    firstids = Vector{Int}(undef, nc)
-    lastids = Vector{Int}(undef, nc)
-    lengths = Vector{Int}(undef, nc)
-    offsets = Vector{Int}(undef, nc)
-    for c in 1:nc
-        lo = (c - 1) * cl + 1
-        hi = min(c * cl, n)
-        firstids[c] = mov.starts[lo]
-        lastids[c] = mov.stops[hi]
-        lengths[c] = hi - lo + 1
-        offsets[c] = lo - 1
-    end
-    return ChunkManifest(firstids, lastids, lengths, offsets, cl)
+    los = collect(1:cl:n)
+    his = min.(los .+ (cl - 1), n)
+    return ChunkManifest(mov.starts[los], mov.stops[his], his .- los .+ 1, los .- 1, cl)
 end
 
 struct ArrayWrite{S}

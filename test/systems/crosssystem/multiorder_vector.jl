@@ -105,9 +105,7 @@ end
         @test length(unique(DGG.level.(cells))) > 1
         @test maximum(DGG.level, cells) == leaf
         @test disjoint_and_sorted(mov)
-        # `offsets` is the cumulative leaf count at the reference level.
-        @test mov.offsets[end] == length(DGG.CellVector(mov))
-        @test mov.offsets == cumsum(mov.stops .- mov.starts .+ 1)
+        @test DGG._leafcount(mov) == length(DGG.CellVector(mov))
         @test occursin("MultiOrderVector", sprint(show, mov))
         @test occursin("ref $leaf", sprint(show, mov))
     end

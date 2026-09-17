@@ -13,30 +13,21 @@ struct MultiOrderVector{ID,S<:AbstractHierarchicalGridSystem} <: AbstractVector{
     cells::Vector{ID}
     starts::Vector{Int}
     stops::Vector{Int}
-    offsets::Vector{Int}
     reference_level::Int
 
     # Builders establish the invariants; untrusted input runs `_check_multiorder` first.
     function MultiOrderVector{ID,S}(system::S, cells::Vector{ID}, starts::Vector{Int},
-        stops::Vector{Int}, offsets::Vector{Int},
-        ref::Int) where {ID,S<:AbstractHierarchicalGridSystem}
-        return new{ID,S}(system, cells, starts, stops, offsets, ref)
+        stops::Vector{Int}, ref::Int) where {ID,S<:AbstractHierarchicalGridSystem}
+        return new{ID,S}(system, cells, starts, stops, ref)
     end
 end
 
-# Deriving offsets here keeps them consistent with the intervals.
 function _multiorder_vector(sys::S, cells::Vector{ID}, starts::Vector{Int},
     stops::Vector{Int}, ref::Int) where {ID,S<:AbstractHierarchicalGridSystem}
     length(cells) == length(starts) == length(stops) || throw(ArgumentError(
         "a multi-order vector needs one interval per cell, got $(length(cells)) " *
         "cells against $(length(starts)) starts and $(length(stops)) stops"))
-    offsets = Vector{Int}(undef, length(cells))
-    total = 0
-    for i in eachindex(offsets)
-        total += stops[i] - starts[i] + 1
-        offsets[i] = total
-    end
-    return MultiOrderVector{ID,S}(sys, cells, starts, stops, offsets, ref)
+    return MultiOrderVector{ID,S}(sys, cells, starts, stops, ref)
 end
 
 # Runs before any `descendant_range` call, which needs a valid reference level.

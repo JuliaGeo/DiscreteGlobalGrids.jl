@@ -40,8 +40,8 @@ end
 # ===========================================================================
 
 """
-    cellat(grid::LevelGrid, p::UnitSphericalPoint) -> H3Cell
-    cellat(grid::LevelGrid, lon::Real, lat::Real) -> H3Cell
+    cellat(grid::H3LevelGrid, p::UnitSphericalPoint) -> H3Cell
+    cellat(grid::H3LevelGrid, lon::Real, lat::Real) -> H3Cell
 
 The cell containing a point, computed by libh3's O(1) `latLngToCell` inverse.
 
@@ -51,11 +51,11 @@ Shared-edge ties follow libh3's deterministic rule.
 
 The `(lon, lat)` overload takes degrees.
 """
-function cellat(grid::LevelGrid, p::GO.UnitSphericalPoint)
+function cellat(grid::H3LevelGrid, p::GO.UnitSphericalPoint)
     lon = atand(p[2], p[1])
     lat = asind(clamp(p[3], -1.0, 1.0))
     return H3Cell(H3Native.lonlat_to_cell(lon, lat, grid.level))
 end
 
-cellat(grid::LevelGrid, lon::Real, lat::Real) =
+cellat(grid::H3LevelGrid, lon::Real, lat::Real) =
     H3Cell(H3Native.lonlat_to_cell(lon, lat, grid.level))

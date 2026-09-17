@@ -17,7 +17,7 @@ unordered, wound about `c`'s centroid.
 
 Throws `ArgumentError` unless `c` is valid at the grid resolution.
 """
-function one_ring(grid::LevelGrid, c::A5Cell, connectivity::Connectivity)
+function one_ring(grid::A5LevelGrid, c::A5Cell, connectivity::Connectivity)
     level(c) == grid.level || throw(ArgumentError(
         "A5 cell $c is at resolution $(level(c)), not this grid's $(grid.level)"))
     isvalid(c) || throw(ArgumentError("A5 cell $c is not a valid cell"))
@@ -38,7 +38,7 @@ function one_ring(grid::LevelGrid, c::A5Cell, connectivity::Connectivity)
 end
 
 """
-    neighbors(grid::LevelGrid, c::A5Cell, k = 1; connectivity = Vertex())
+    neighbors(grid::A5LevelGrid, c::A5Cell, k = 1; connectivity = Vertex())
 
 Cells within `k` grid steps, excluding `c`, as counter-clockwise shells
 concatenated outward. Ring 1 starts at the smallest [`A5Cell`](@ref) id and all
@@ -52,7 +52,7 @@ under both connectivities. `k >= 2` returns a `Vector{A5Cell}`.
 
 Throws `ArgumentError` unless `c` is valid at the grid resolution.
 """
-Base.@constprop :aggressive function neighbors(grid::LevelGrid, c::A5Cell, k::Integer=1;
+Base.@constprop :aggressive function neighbors(grid::A5LevelGrid, c::A5Cell, k::Integer=1;
         connectivity::Connectivity=Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return SmallVector{MAX_NEIGHBORS,A5Cell}()
@@ -61,14 +61,14 @@ Base.@constprop :aggressive function neighbors(grid::LevelGrid, c::A5Cell, k::In
 end
 
 """
-    ring(grid::LevelGrid, c::A5Cell, k; connectivity = Vertex())
+    ring(grid::A5LevelGrid, c::A5Cell, k; connectivity = Vertex())
 
 The cells at grid distance **exactly** `k` from `c`, counter-clockwise seen from
 outside. `ring(grid, c, 0)` is `[c]`.
 
 The result is the final shell returned by [`neighbors`](@ref)`(grid, c, k)`.
 """
-Base.@constprop :aggressive function ring(grid::LevelGrid, c::A5Cell, k::Integer;
+Base.@constprop :aggressive function ring(grid::A5LevelGrid, c::A5Cell, k::Integer;
         connectivity::Connectivity=Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return A5Cell[c]
@@ -81,7 +81,7 @@ end
 # type parameter so the declared ring bound folds to a fixed buffer capacity and
 # the shell is built and returned on the stack. See the interface `Val` methods
 # for why this is opt-in rather than generic.
-function neighbors(grid::LevelGrid, c::A5Cell, ::Val{K};
+function neighbors(grid::A5LevelGrid, c::A5Cell, ::Val{K};
         connectivity::Connectivity=Vertex()) where {K}
     DGG.checked_steps(K)
     K == 0 && return SmallVector{MAX_NEIGHBORS,A5Cell}()
@@ -89,7 +89,7 @@ function neighbors(grid::LevelGrid, c::A5Cell, ::Val{K};
     return DGG.shell_disc(grid, c, Val(K), connectivity)
 end
 
-function ring(grid::LevelGrid, c::A5Cell, ::Val{K};
+function ring(grid::A5LevelGrid, c::A5Cell, ::Val{K};
         connectivity::Connectivity=Vertex()) where {K}
     DGG.checked_steps(K)
     K == 0 && return A5Cell[c]

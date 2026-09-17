@@ -22,7 +22,7 @@ struct A5System <: AbstractHierarchicalGridSystem end
 #
 # Because A5 lacks sorted subtrees, treeifying a complete grid materializes all
 # root indices. Use a `PartialGrid` for deep queries.
-const LevelGrid = HierarchicalLevelGrid{A5System}
+const A5LevelGrid = HierarchicalLevelGrid{A5System}
 
 Base.show(io::IO, ::A5System) = print(io, "A5System()")
 

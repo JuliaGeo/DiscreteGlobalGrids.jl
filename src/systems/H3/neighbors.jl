@@ -7,7 +7,7 @@
 const MAX_NEIGHBORS = 6
 
 """
-    neighbors(grid::LevelGrid, c::H3Cell, k = 1; connectivity = Vertex())
+    neighbors(grid::H3LevelGrid, c::H3Cell, k = 1; connectivity = Vertex())
 
 Cells within `k` grid steps, excluding `c`, as counter-clockwise shells
 concatenated outward. [`ring`](@ref) is the final shell. Hexagons have six
@@ -23,7 +23,7 @@ including at pentagons.
 the `Val(k)` form answers the same cells in the same order from a stack buffer
 while `3k(k+1)` fits [`static_capacity`](@ref).
 """
-Base.@constprop :aggressive function neighbors(grid::LevelGrid, c::H3Cell, k::Integer=1;
+Base.@constprop :aggressive function neighbors(grid::H3LevelGrid, c::H3Cell, k::Integer=1;
         connectivity::Connectivity=Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return SmallVector{MAX_NEIGHBORS,H3Cell}()
@@ -37,16 +37,16 @@ Base.@constprop :aggressive function neighbors(grid::LevelGrid, c::H3Cell, k::In
 end
 
 """
-    neighborcount(grid::LevelGrid, c::H3Cell; connectivity = Vertex()) -> Int
+    neighborcount(grid::H3LevelGrid, c::H3Cell; connectivity = Vertex()) -> Int
 
 Return 5 for pentagons and 6 for other cells, for either connectivity. The
 count uses one libh3 pentagon test and does not construct the ring.
 """
-DGG.neighborcount(grid::LevelGrid, c::H3Cell;
+DGG.neighborcount(grid::H3LevelGrid, c::H3Cell;
     connectivity::Connectivity=Vertex()) = ispentagon(c) ? 5 : 6
 
 """
-    ring(grid::LevelGrid, c::H3Cell, k; connectivity = Vertex())
+    ring(grid::H3LevelGrid, c::H3Cell, k; connectivity = Vertex())
 
 The cells at grid distance **exactly** `k` from `c`, counter-clockwise seen
 from outside. `ring(grid, c, 0)` is `[c]`.
@@ -56,7 +56,7 @@ The result is the final shell returned by [`neighbors`](@ref)`(grid, c, k)`.
 Uses libh3's O(k) shell walk, or an O(k²) pentagon-safe disk fallback ordered by
 azimuth.
 """
-Base.@constprop :aggressive function ring(grid::LevelGrid, c::H3Cell, k::Integer;
+Base.@constprop :aggressive function ring(grid::H3LevelGrid, c::H3Cell, k::Integer;
         connectivity::Connectivity=Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return H3Cell[c]
@@ -79,7 +79,7 @@ at libh3's deterministic per-cell direction. Allocation-free on both paths:
 `gridRingUnsafe` where it applies, and an azimuth-sorted disk at a pentagon
 seam.
 """
-function one_ring(::LevelGrid, c::H3Cell, ::Connectivity)
+function one_ring(::H3LevelGrid, c::H3Cell, ::Connectivity)
     shell = H3Native.grid_ring_unsafe_1(c.id)
     out = SmallVector{MAX_NEIGHBORS,H3Cell}()
     if shell !== nothing
@@ -106,7 +106,7 @@ end
 # disc bound `3K(K + 1)` are constants and libh3 writes each shell straight
 # into a stack buffer. The order is the native one the `Integer` forms above
 # answer, cell for cell; only the container changes.
-function neighbors(grid::LevelGrid, c::H3Cell, ::Val{K};
+function neighbors(grid::H3LevelGrid, c::H3Cell, ::Val{K};
         connectivity::Connectivity=Vertex()) where {K}
     DGG.checked_steps(K)
     K == 0 && return SmallVector{MAX_NEIGHBORS,H3Cell}()
@@ -124,7 +124,7 @@ function neighbors(grid::LevelGrid, c::H3Cell, ::Val{K};
     return SmallVector(out)
 end
 
-function ring(grid::LevelGrid, c::H3Cell, ::Val{K};
+function ring(grid::H3LevelGrid, c::H3Cell, ::Val{K};
         connectivity::Connectivity=Vertex()) where {K}
     DGG.checked_steps(K)
     K == 0 && return H3Cell[c]

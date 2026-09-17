@@ -49,7 +49,7 @@ overflow `Int64`.
 struct S2System <: DGG.AbstractQuadFaceGridSystem end
 
 # Grid descriptor for all `6 * 4^l` cells in face-major Hilbert order.
-const LevelGrid = DGG.HierarchicalLevelGrid{S2System}
+const S2LevelGrid = DGG.HierarchicalLevelGrid{S2System}
 
 """
     MAX_LEVEL
@@ -182,7 +182,7 @@ self-consistent — the returned cell's own centroid maps back to it:
   - the **lattice cell** is chosen by `floor`, which puts a point on a cut line
     on the higher side of it.
 """
-function DGG.cellat(g::LevelGrid, p::GO.UnitSphericalPoint)
+function DGG.cellat(g::S2LevelGrid, p::GO.UnitSphericalPoint)
     nside = DGG.nside(g.level)
     ix, iy, face = point_to_xyf(p, nside)
     return DGG.LevelIndex(g.level, xyf_to_hilbert(ix, iy, face, nside))
@@ -199,7 +199,7 @@ The immediate neighbours of `c` in **counter-clockwise rotational order seen
 from outside the sphere, starting at the `+s` lattice direction**
 ([`NEIGHBOR_OFFSETS`](@ref)), with cube-corner steps and repeats dropped.
 """
-function DGG.one_ring(g::LevelGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
+function DGG.one_ring(g::S2LevelGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
     DGG.checked_id(g, c)
     return _lattice_neighbors(DGG.LevelIndex, c.index, g.level, connectivity)
 end
@@ -237,7 +237,7 @@ spoke through the first ring-1 neighbour; see [`ring`](@ref).
 `k == 0` returns an empty container; `k == 1` returns a
 `SmallCollections.SmallVector` sized by `maxneighbors`.
 """
-Base.@constprop :aggressive function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
+Base.@constprop :aggressive function DGG.neighbors(g::S2LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return SmallVector{8,DGG.LevelIndex}()
@@ -255,7 +255,7 @@ outside the sphere. `ring(grid, c, 0)` is `[c]`.
 the centre, counter-clockwise from the first ring-1 neighbour. Azimuth ties use
 canonical id.
 """
-Base.@constprop :aggressive function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
+Base.@constprop :aggressive function DGG.ring(g::S2LevelGrid, c::DGG.LevelIndex, k::Integer;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return DGG.LevelIndex[c]
@@ -267,7 +267,7 @@ end
 # type parameter so the declared ring bound folds to a fixed buffer capacity and
 # the shell is built and returned on the stack. See the interface `Val` methods
 # for why this is opt-in rather than generic.
-function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, ::Val{K};
+function DGG.neighbors(g::S2LevelGrid, c::DGG.LevelIndex, ::Val{K};
         connectivity::DGG.Connectivity = DGG.Vertex()) where {K}
     DGG.checked_steps(K)
     K == 0 && return SmallVector{8,DGG.LevelIndex}()
@@ -275,7 +275,7 @@ function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, ::Val{K};
     return DGG.shell_disc(g, c, Val(K), connectivity)
 end
 
-function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, ::Val{K};
+function DGG.ring(g::S2LevelGrid, c::DGG.LevelIndex, ::Val{K};
         connectivity::DGG.Connectivity = DGG.Vertex()) where {K}
     DGG.checked_steps(K)
     K == 0 && return DGG.LevelIndex[c]

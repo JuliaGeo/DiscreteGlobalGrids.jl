@@ -74,12 +74,21 @@ const Cube = Union{DD.AbstractDimArray,DD.AbstractDimStack}
 """
     dggwrite(dest, stack_or_array; encoding = :auto,
              conventions = DEFAULT_WRITE_CONVENTIONS, chunks = :auto,
-             merge = :step, chunk_target = DEFAULT_CHUNK_TARGET) -> dest
+             merge = :step, chunk_target = DEFAULT_CHUNK_TARGET,
+             target = nothing) -> dest
 
 Zarr v2 implementation of `dggwrite`, including consolidated metadata.
 The generic function describes encodings, chunks, and metadata handling.
 The cell dimension must retain an `AbstractCellLookup`; a categorical axis
 created by operations such as `reverse` is rejected.
+
+`target = :xdggs` writes the store xdggs opens: the dense coordinate, with the
+description checked through
+[`require_xdggs_readable`](@ref DiscreteGlobalGrids.require_xdggs_readable)
+before a byte is written. An `encoding` other than `:auto` or `:dense`
+contradicts the target and is an `ArgumentError`, like every other keyword
+conflict; a description xdggs cannot read is a `DGGSFormatError` with
+`check = :not_xdggs_readable`.
 
 The writer persists a chunk-manifest sidecar so readers can open the axis
 without scanning every ID. It never overwrites an existing layer: conflicting
@@ -155,7 +164,7 @@ end
 
 function _write(identifier, opengroup, src; encoding=:auto,
     conventions=DEFAULT_WRITE_CONVENTIONS, chunks=:auto, merge::Symbol=:step,
-    chunk_target::Integer=DEFAULT_CHUNK_TARGET)
+    chunk_target::Integer=DEFAULT_CHUNK_TARGET, target::Union{Nothing,Symbol}=nothing)
 
     # Both keywords are checked whatever the encoding: `merge` only reaches the
     # ranges coordinate and `chunk_target` only the automatic plan, but a
@@ -166,6 +175,15 @@ function _write(identifier, opengroup, src; encoding=:auto,
     chunk_target >= 1 || throw(ArgumentError(
         "chunk_target counts the elements of a chunk and is at least one, " *
         "not $chunk_target"))
+    target in (nothing, :xdggs) || throw(ArgumentError(
+        "`target` names the reader the store is checked against, and the one " *
+        "reader known is `:xdggs`; $(repr(target)) is not."))
+    if target === :xdggs
+        encoding = _xdggs_encoding(encoding)
+        any(c -> c isa DGG.XdggsConvention, conventions) || throw(ArgumentError(
+            "`target = :xdggs` needs `XdggsConvention` among the `conventions`: " *
+            "it writes the coordinate attributes xdggs reads the grid from."))
+    end
 
     names = String[DGG.conventionname(c) for c in conventions]
     return DGG.with_store_context(identifier; conventions=names) do
@@ -174,8 +192,8 @@ function _write(identifier, opengroup, src; encoding=:auto,
             "dggwrite has nothing to write: the cell axis is empty."))
         enc = _encoding(encoding, grid, cells)
         layers = _layers(src, celldim)
-        target = _celltarget(Int(chunk_target), layers, celldim)
-        plan = _chunkplan(chunks, grid, cells, target)
+        celltarget = _celltarget(Int(chunk_target), layers, celldim)
+        plan = _chunkplan(chunks, grid, cells, celltarget)
 
         # The coordinate is computed once and used twice: it is the array that
         # goes on disk, and it is what the axis is rebuilt from. `cellaxis` is
@@ -190,6 +208,7 @@ function _write(identifier, opengroup, src; encoding=:auto,
         # grid name the axis was validated at, and those are the description's
         # to say, not the plan's.
         desc = _description(system(grid), level(grid), enc, layers)
+        target === :xdggs && DGG.require_xdggs_readable(desc)
         arrays = _arrayplan(enc, coord, layers, celldim, plan, manifest, desc)
         snapshot = StoreSnapshot(identifier=identifier, attrs=_groupattrs(src),
             arrays=[a.entry for a in arrays])
@@ -321,6 +340,21 @@ function _encoding(spec::Symbol, grid, cells)
 end
 
 _encoding(enc::CellEncoding, grid, cells) = enc
+
+# xdggs reads a dense coordinate and nothing else, so under `target = :xdggs`
+# the `:auto` choice is dense and any other known encoding contradicts the
+# target. An unknown spelling passes through to `_encoding`, which names it.
+function _xdggs_encoding(spec::Symbol)
+    spec in (:auto, :dense) && return :dense
+    haskey(ENCODING_KEYWORDS, spec) || return spec
+    return _xdggs_conflict(spec)
+end
+_xdggs_encoding(enc::DenseEncoding) = enc
+_xdggs_encoding(enc) = _xdggs_conflict(enc)
+
+@noinline _xdggs_conflict(spec) = throw(ArgumentError(
+    "`target = :xdggs` writes one id per cell, which is `encoding = :dense`; " *
+    "$(repr(spec)) asks for a coordinate xdggs cannot read."))
 
 """
     _coordinate(enc, grid, cells, merge)

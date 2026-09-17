@@ -168,5 +168,11 @@ size(Zarr.zopen(ranks)["cell_id_ranges"], 2)
 # `dggwrite` writes to a local path or an open `Zarr.ZGroup`; publishing a
 # remote store means uploading the directory it produced.
 #
+# A mixed-level cube takes a fifth encoding: `:compacted` writes `cell_ids` and
+# `cell_levels` as aligned columns under `refinement_level: null`, and `dggread`
+# restores that axis as a [`MultiOrderLookup`](@ref), which the single-level
+# encodings reach only through [`expand`](@ref). [Multi-order
+# storage](moc_storage.md) is the tutorial for it.
+#
 # [Out of core](out_of_core.md) sweeps a kernel over a store chunk by chunk,
 # starting from a store like the one written here.

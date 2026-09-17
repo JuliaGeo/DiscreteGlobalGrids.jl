@@ -28,6 +28,16 @@ and `Covering` through the [`ChunkManifest`](@ref), which describes the chunk
 grid in cells. Arithmetic and range encodings can open without coordinate
 reads; a foreign dense store reads its ids once at open to validate them.
 
+A mixed-level axis — the one [`coarsen`](@ref) builds — is stored in the `compacted`
+layout instead: `cell_ids` and `cell_levels` as aligned columns under
+`refinement_level: null`, with the `refinement_levels` attribute naming the
+level column. [`dggread`](@ref) restores that axis as a
+[`MultiOrderLookup`](@ref). The layout extends v1 of `zarr-conventions/dggs`,
+which specifies `compression: "none"` when `refinement_level` is null, so this
+package supplies its reader; [`expand`](@ref) presents the same data at the one
+level every other encoding needs. The [multi-order storage
+tutorial](../tutorials/moc_storage.md) writes and reads such a store.
+
 A stored axis is also a **region** and answers `halo`,
 `border`, `interior` and `adjacency` with the same code as an in-memory axis. It
 does so through [`region`](@ref), which is the axis's compressed
@@ -116,6 +126,22 @@ chunkof
 chunkbounds
 ```
 
+A compacted store restores a mixed-level axis instead. `coarsen` chooses the
+levels and `aggregate` reduces values onto them; the remaining verbs query the
+mixed-level container the store holds. [Multi-order
+coverage](../tutorials/multiorder.md) is the tutorial for them.
+
+```@docs
+MultiOrderLookup
+MultiOrderVector
+MultiOrderGrid
+coarsen
+aggregate
+covering_index
+complement
+reference_level
+```
+
 ## Describing a store
 
 ```@docs
@@ -173,6 +199,7 @@ CellEncoding
 DenseEncoding
 RangesEncoding
 ImplicitEncoding
+CompactedEncoding
 ENCODING_REGISTRY
 register_encoding!
 GridReference

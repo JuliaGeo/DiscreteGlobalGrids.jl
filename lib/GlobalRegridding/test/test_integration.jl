@@ -14,9 +14,9 @@ t6_space(xs, ys) = RasterGrid(DD.DimArray(zeros(length(xs), length(ys)),
 """
     t6_raster(f, xs, ys; yfirst = false) -> DimArray
 
-`f(lon, lat)` sampled on the cell centres `xs × ys`. The lookups are whatever
-`xs` and `ys` are — pass a descending vector for a reverse-ordered lookup — and
-`yfirst` stores the array as `(Y, X)` instead of `(X, Y)`.
+Return `f(lon, lat)` sampled at the cell centres `xs × ys`. Input order defines
+lookup order. `yfirst = true` stores dimensions as `(Y, X)`; the default uses
+`(X, Y)`.
 """
 function t6_raster(f, xs, ys; yfirst = false)
     data = [Float64(f(x, y)) for x in xs, y in ys]
@@ -25,7 +25,7 @@ function t6_raster(f, xs, ys; yfirst = false)
     return DD.DimArray(data, (xd, yd))
 end
 
-# Select destination cells by location, not assumed index arithmetic.
+# Location-based selection remains valid across index layouts.
 t6_lat(space, i) = GO.UnitSpherical.GeographicFromUnitSphere()(cellcentroid(space, i))[2]
 
 t6_mass(space, values) =
@@ -45,7 +45,6 @@ function buildweights!(coo::WeightCOO, method::T6CountingMethod,
     return buildweights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
 end
 
-# A lookup that names cells of its own, as a DGGS cell axis does.
 struct T6Grid end
 Base.show(io::IO, ::T6Grid) = print(io, "T6Grid()")
 
@@ -54,6 +53,19 @@ struct T6Cell
 end
 
 GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
+
+GR._asspace(::T6Grid, name::AbstractString) =
+    t6_space(t6_centres(-180, 180, 8), t6_centres(-90, 90, 4))
+
+# Deliberately omits `_asspace` to exercise unresolved source targets.
+struct T6Unresolved end
+Base.show(io::IO, ::T6Unresolved) = print(io, "T6Unresolved()")
+
+struct T6LooseCell
+    id::Int
+end
+
+GR.dimsource(::DD.Lookups.Lookup{T6LooseCell}) = T6Unresolved()
 
 @testset "Integration" begin
 
@@ -218,14 +230,34 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         @test_throws "must be a RegridSpace" regrid(src; to = 1)
     end
 
-    @testset "a cell axis names its own source" begin
-        data = DD.DimArray(zeros(32), (DD.Dim{:Cells}(DD.Lookups.Categorical(
+    @testset "a cell axis resolves its own source" begin
+        values = collect(1.0:32.0)
+        data = DD.DimArray(values, (DD.Dim{:Cells}(DD.Lookups.Categorical(
             [T6Cell(i) for i in 1:32]; order = DD.Lookups.Unordered())),))
-        dst = t6_space(t6_centres(-180, 180, 8), t6_centres(-90, 90, 4))
+        dst = t6_space(t6_centres(-180, 180, 4), t6_centres(-90, 90, 2))
+        src = t6_space(t6_centres(-180, 180, 8), t6_centres(-90, 90, 4))
 
-        # Without `from` the source space is derived from the data, and a cell
-        # axis is not a raster lattice: name the grid it holds, not `xdim`.
-        @test_throws "from = T6Grid()" regrid(data; to = dst)
+        # The inferred source must match the same target spelled explicitly.
+        for method in (Conservative(), NearestCell(), BarycentricPoint())
+            @test regrid(data; to = dst, method) ==
+                  regrid(data; to = dst, from = T6Grid(), method)
+            @test vec(parent(regrid(data; to = dst, method))) ==
+                  regrid(values; to = dst, from = src, method)
+        end
+        @test GR.plan_regrid(data; to = dst, lazy = false).src_space isa RasterGrid
+        @test_throws "must be a dimensional array" GR._presentedspace(values, data, Conservative())
+
+        # Explicit source geometry takes precedence over lookup inference.
+        coarse = t6_space(t6_centres(-180, 180, 4), t6_centres(-90, 90, 8))
+        @test regrid(data; to = dst, from = coarse) !=
+              regrid(data; to = dst)
+
+        # An unresolved target identifies the missing package integration.
+        loose = DD.DimArray(zeros(32), (DD.Dim{:Cells}(DD.Lookups.Categorical(
+            [T6LooseCell(i) for i in 1:32]; order = DD.Lookups.Unordered())),))
+        @test_throws ArgumentError regrid(loose; to = dst)
+        @test_throws "must be a RegridSpace" regrid(loose; to = dst)
+        @test_throws "got T6Unresolved" regrid(loose; to = dst)
 
         # A cube handed straight to a keyword is refused by the same guard, and
         # names the keyword that was given rather than always `from`.

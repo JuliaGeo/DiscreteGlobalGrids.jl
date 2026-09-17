@@ -1,17 +1,16 @@
 """
     GlobalRegridding
 
-Regrid spherical cell collections eagerly or in chunks.
+Regrid spherical cell data eagerly or in chunks.
 
-The source and destination spaces both implement [`RegridSpace`](@ref).
-Regridding methods build geometry-only sparse [`WeightBlock`](@ref)s through
-[`buildweights!`](@ref).
-Plans contain the method, spaces, missing-data policy, storage, and memory
-budget, so applying a plan takes no keywords:
+[`RegridSpace`](@ref) supplies source and destination geometry. Regridding
+methods build geometry-only [`WeightBlock`](@ref)s through
+[`buildweights!`](@ref). Plans collect the method, spaces, missing-data policy,
+storage, and memory budget for reuse:
 
-    regrid(data; to, method = Conservative())   # build a plan, apply it, drop it
-    plan = plan_regrid(data; to, method)        # keep it
-    regrid(data, plan)                          # reuse across slices and reads
+    regrid(data; to, method = Conservative())
+    plan = plan_regrid(data; to, method)
+    regrid(data, plan)
 
 [`Weighted`](@ref) returns coverage-normalized means; [`Extensive`](@ref)
 returns raw sums.
@@ -55,15 +54,13 @@ include("intersection_area.jl")
 include("interpolation.jl")
 include("barycentric.jl")
 include("discovery.jl")
-# `chunkgraph.jl` precedes `plans.jl`: a `ChunkedPlan` owns the one
-# `ChunkDependencyGraph` it exposes, so the plan's field type names the graph's.
+# `ChunkedPlan` needs `ChunkDependencyGraph` defined first.
 include("chunkgraph.jl")
 include("plans.jl")
 include("executor.jl")
 include("lazy.jl")
 include("api.jl")
-# The weightless nearest-cell spike: it specializes `eagerplan` from `api.jl`
-# and `_readdestination!` from `lazy.jl`, so it comes after both.
+# Its specializations require `api.jl` and `lazy.jl` bindings.
 include("directnearest.jl")
 
 # Space interface
@@ -101,8 +98,7 @@ export AbstractRegriddingPlan, WeightBlock
 export DirectPlan, ChunkedPlan, PerChunk, Spilled
 export NearestDirectPlan
 
-# The one chunk dependency relation a plan owns. Not exported: `dependencies`
-# is too generic a name to put in a user's namespace unqualified.
+# Qualified access keeps the generic name out of user namespaces.
 public dependencies
 
 # User API
@@ -116,18 +112,15 @@ public outputmissingval, destinationmissingval, rebuildoutput
 public residency, LazyStats, ShapedRegridArray
 public spilledfiles, usesreference
 public outputsampling, destinationdims, dimsource
+# Source-presentation hooks and the method traits that select a presentation.
+public sourceview, sourcespacefor
+public sourcesampling, refinementinvariant
 
-# Qualified `RegridSpace` extension hooks. Their declarations and contracts are
-# grouped by responsibility in spaces.jl; they stay unexported to avoid generic
-# names in user namespaces.
+# Qualified access keeps generic extension-hook names out of user namespaces.
 public subtree, expensivecellgeometry
 public hasanalyticlocation, cellneighbors, cellcap, cellcorners
 public chunkextents, chunkextent, chunkindex, candidatechunks!
-# Making a source space point-samplable. `hasdualcells` declares it,
-# `samplerstate` prepares whatever the lookup reads, and `dualcellat` answers
-# one point with the `DualCell` its nodes and `BasisKind` describe. `Sampler` is
-# what those two dispatch on, and `chartat` is where a space without a cell
-# chart says which plane its nodes are written in.
+# Point sampling separates topology preparation from per-point lookup.
 public hasdualcells, dualcellat, samplerstate
 public Sampler, DualCell, BasisKind, Bilinear, MeanValue, chartat
 public chunkranges
@@ -137,32 +130,22 @@ public _asspace
 # `chartposition` stays public for the deprecation shim in `spaces.jl`.
 public chartposition
 
-# Other qualified extension hooks used by package integrations.
 public resolvespatialdims
 public _prepare_raster_transform_pair, _task_prepared_raster_transform
 
-# The chunk dependency graph. Public but not exported: these names are generic
-# enough that exporting them into a user's namespace would be presumptuous.
+# Qualified access keeps generic graph names out of user namespaces.
 public ChunkDependencyGraph, chunk_dependency_graph
 public sourcesof, consumersof, sourcedegree, consumerdegree
 public srcvertex, dstvertex, srcchunk, dstchunk
 public issrcvertex, isdstvertex, srcvertices, dstvertices
 public nsourcechunks, ndestinationchunks, dependency_radius
-# Graph identity and row views: what makes one relation reusable by a plan that
-# did not build it, and what a per-column plan restricts it to.
+# Identity validates relation reuse; row views support per-column plans.
 public SpaceStamp, spacestamp, DependencyIdentity, dependency_identity
 public narrowphase, UNNAMED_NARROW, validate_dependencies
 public restrict, isrestricted, subspace_dependencies
 public destinationchunks, destinationchunk, destinationrow
-# The relation's own inputs, kept: where per-chunk cap metadata lives.
+# Relation-owned caps preserve the geometry used at construction.
 public hasextents, destinationextents, sourceextents
 public destinationextent, sourceextent
-
-# DiscreteGlobalGrids extends the qualified space contract in every
-# responsibility it customizes: `subtree`; `chunkextents`, `chunkindex`, and
-# `candidatechunks!`; `chunkranges`; and `dimsource`/`_asspace`. In particular,
-# its native DGG and CopernicusDEM chunk paths do not use private discovery
-# hooks. The Proj extension separately specializes the two public preparation
-# hooks above for task-owned native transforms.
 
 end # module GlobalRegridding

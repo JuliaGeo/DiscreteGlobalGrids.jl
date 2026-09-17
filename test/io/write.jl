@@ -1,11 +1,3 @@
-# The write path: encoding choice, the coarse-ancestor chunk plan, the persisted
-# manifest, and the dual-stamped attributes the store is read back through.
-#
-# Nothing here calls `dggread`. Every assertion reopens the store with Zarr
-# directly and rebuilds the metadata snapshot out of plain dictionaries, so what
-# is under test is the bytes on disk rather than a second helping of this
-# package's own read code.
-
 module DGGSIOWriteTests
 
 using Test
@@ -213,6 +205,63 @@ else
             encoding=:ranges)
         @test_throws DGGSFormatError DGG.dggwrite(dest("rev3.zarr"), reversed;
             encoding=:dense)
+    end
+
+    @testset "a mixed-level axis writes as compacted and reads back as itself" begin
+        mov = DGG.MultiOrderVector(SYS, [ROOTS[1]; collect(DGG.children(SYS, ROOTS[2]))])
+        vals = Float32.(1:length(mov))
+        M = DD.DimArray(vals, Cells(DGG.MultiOrderLookup(mov)); name=:elevation)
+        path = dest("moc.zarr")
+        @test DGG.dggwrite(path, M) === path
+
+        g = Zarr.zopen(path)
+        @test sort!(collect(keys(g.arrays))) ==
+              [MANIFEST, "cell_ids", "cell_levels", "elevation"]
+        @test g.attrs["dggs"]["compression"] == "compacted"
+        @test g.attrs["dggs"]["refinement_level"] === nothing
+        @test g.attrs["dggs"]["coordinate"] == "cell_ids"
+        # The convention lacks a standard key for the level column.
+        @test g.attrs["dggs"]["refinement_levels"] == "cell_levels"
+        @test !haskey(g["cell_ids"].attrs, "grid_name")
+        @test g["cell_ids"][:] == [DGG.rawid(c) for c in mov]
+        @test Int.(g["cell_levels"][:]) == [DGG.level(c) for c in mov]
+        # A separate dimension keeps the level column out of variable discovery.
+        @test g["cell_levels"].attrs["_ARRAY_DIMENSIONS"] == ["cell_levels"]
+        # The manifest needs a reference level while the description has no single level.
+        marker = g[MANIFEST].attrs[MARKER]
+        @test marker["level"] === nothing && marker["reference_level"] == 2
+
+        S = dggread(path)
+        lk = DD.lookup(S[:elevation], Cells)
+        @test lk isa DGG.MultiOrderLookup
+        @test collect(parent(lk)) == collect(mov)
+        @test collect(S[:elevation]) == vals
+    end
+
+    @testset "a single-level encoding on a mixed-level axis keeps the refusal" begin
+        mov = DGG.MultiOrderVector(SYS, [ROOTS[1]; collect(DGG.children(SYS, ROOTS[2]))])
+        M = DD.DimArray(Float32.(1:length(mov)), Cells(DGG.MultiOrderLookup(mov));
+            name=:elevation)
+        for enc in (:dense, :ranges, :implicit)
+            err = try
+                DGG.dggwrite(dest("moc-$enc.zarr"), M; encoding=enc)
+                nothing
+            catch e
+                e
+            end
+            @test err isa DGGSFormatError && err.check === :mixed_level_axis
+            @test occursin("expand", err.detail)
+        end
+        for (i, spec) in enumerate((:compacted, DGG.CompactedEncoding()))
+            err = try
+                DGG.dggwrite(dest("single-compacted-$i.zarr"), demostack();
+                    encoding=spec)
+                nothing
+            catch e
+                e
+            end
+            @test err isa DGGSFormatError && err.check === :not_write_eligible
+        end
     end
 
     @testset "the auto chunk plan breaks on coarse-ancestor boundaries" begin

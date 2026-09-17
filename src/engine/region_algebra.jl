@@ -164,6 +164,73 @@ end
 
 compact(region::AbstractGrid) = compact(CellVector(region))
 
+"""
+    simplify(region, values; predicate, reduce) -> MultiOrderCellSet
+
+Collapse a single-level region from the leaves upward according to its values.
+A parent replaces its complete set of immediate children when `predicate`
+returns `true` for their values in canonical child order. `reduce` produces the
+temporary parent value used if that parent is considered for another collapse.
+
+The returned set stores cell identities only; reduced values are discarded.
+Its reference level is the input region's level, and [`iscontained`](@ref) is
+`false` for every member because simplification has no coverage target.
+
+```julia
+set = simplify(region, values;
+    predicate = xs -> let lo, hi = extrema(xs); hi - lo <= 1 end,
+    reduce = mean)
+```
+
+Incomplete sibling groups and groups rejected by `predicate` remain at their
+current level. The iterator passed to `predicate` contains the parent's actual
+children—seven for an ordinary IGEO7 cell and six below an IGEO7 pentagon.
+"""
+function simplify(cv::CellVector, values; predicate, reduce)
+    current_values = collect(values)
+    length(current_values) == length(cv) || throw(DimensionMismatch(
+        "region has $(length(cv)) cells but values has $(length(current_values)) elements"))
+
+    sys = system(cv)
+    ID = cellindextype(sys)
+    rootlevel = first(levels(sys))
+    kept = ID[]
+    current = collect(cv)
+    l = level(cv)
+    while l > rootlevel && !isempty(current)
+        positions = Dict(c => i for (i, c) in enumerate(current))
+        parents = unique!(sort!(ID[ancestor(sys, c, l - 1) for c in current]))
+        promoted = ID[]
+        groups = Vector{Vector{Int}}()
+        for p in parents
+            kids = children(sys, p)
+            indices = Int[positions[c] for c in kids if haskey(positions, c)]
+            if length(indices) == length(kids)
+                decision = predicate((current_values[i] for i in indices))
+                decision isa Bool || throw(ArgumentError(
+                    "simplification predicate must return Bool, got $(typeof(decision))"))
+                if decision
+                    push!(promoted, p)
+                    push!(groups, indices)
+                    continue
+                end
+            end
+            append!(kept, (current[i] for i in indices))
+        end
+        current = promoted
+        current_values = [
+            reduce((current_values[i] for i in indices))
+            for indices in groups
+        ]
+        l -= 1
+    end
+    append!(kept, current)
+    return _sorted_cell_set(sys, kept, falses(length(kept)), level(cv))
+end
+
+simplify(region::AbstractGrid, values; kw...) =
+    simplify(CellVector(region), values; kw...)
+
 # --- Base set and concatenation verbs --------------------------------------
 #
 # `intersect` and `issubset` live in `cell_vector.jl` beside the windows they

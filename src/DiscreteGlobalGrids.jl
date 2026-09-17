@@ -140,7 +140,7 @@ using .Engine: PartialGrid,
     MultiOrderCoverage, MultiOrderCellSet, level_ranges,
     iscontained, coarsest_contained, cell_polygons,
     CellVector, cellset, covering, covering_indices, predicate_indices,
-    grow, expand, compact, member_neighbors,
+    grow, expand, compact, simplify, member_neighbors,
     SubtreeHaloIterator, SubsetHaloIterator, HaloIndexIterator, RegionSide,
     halo_indices, sizehint,
     AdjacencyTable, halocells, haloindices,
@@ -391,7 +391,7 @@ export CellVector, covering, covering_indices, cellset
 # --- Region algebra --------------------------------------------------------
 # Growth, bulk level movement, and compaction over the region types; `union`,
 # `vcat`, `intersect` and `issubset` are Base's and carry no name of their own.
-export grow, expand, compact
+export grow, expand, compact, simplify
 
 # --- The DimensionalData layer ---------------------------------------------
 # Do not re-export DimensionalData's `Contains`; it conflicts with the DE9IM

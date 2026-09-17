@@ -98,6 +98,54 @@ count(isnan, elevation)
 
 # The explicit limits keep the plot focused on the source tile.
 
+# ## Simplify locally similar terrain
+#
+# `simplify` compresses a single-level region from the leaves upward. Complete
+# sibling groups collapse when their values satisfy a predicate; `reduce`
+# supplies the temporary value used if the resulting parent is tested at the
+# next level.
+#
+# A predicate is any callable. This one holds when the values span at most a
+# threshold, ignoring missing and non-finite values:
+
+struct WithinThreshold{T<:Real}
+    threshold::T
+end
+
+function (w::WithinThreshold)(xs)
+    lo, hi = extrema((x for x in skipmissing(xs) if isfinite(x));
+        init = (Inf, -Inf))
+    return hi - lo <= w.threshold
+end
+
+# Here cells collapse when their topographic-position-index values span at most
+# one metre:
+
+tpi = GM.topographic_position_index(elevation)
+simplified_tpi = DGG.simplify(tpi; predicate = WithinThreshold(1), reduce = mean)
+
+(dense_cells = length(tpi),
+ compressed_cells = length(simplified_tpi),
+ levels = extrema(DGG.level, simplified_tpi))
+
+# The proof-of-concept result stores only cell identities; the reduced TPI
+# values are discarded. Colouring by level shows where similar terrain was
+# represented by coarser cells:
+
+simplified_levels = DGG.level.(collect(simplified_tpi))
+
+fig = Figure(size = (620, 540))
+ax = Axis(fig[1, 1]; aspect = shape, limits = lims,
+    xlabel = "longitude", ylabel = "latitude",
+    title = "TPI similarity compression")
+p = dggpoly!(ax, simplified_tpi; color = simplified_levels,
+    colormap = cgrad(:managua, length(unique(simplified_levels)); categorical = true),
+    colorrange = (minimum(simplified_levels) - 0.5, maximum(simplified_levels) + 0.5),
+    strokewidth = 0.15, strokecolor = (:black, 0.35))
+Colorbar(fig[1, 2], p; label = "cell level",
+    ticks = minimum(simplified_levels):maximum(simplified_levels))
+fig
+
 # ## Accumulate flow with D8
 #
 # Geomorphometry's verbs take this raster as it is: they read neighbours and

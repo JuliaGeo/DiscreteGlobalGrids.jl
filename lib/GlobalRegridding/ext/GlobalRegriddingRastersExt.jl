@@ -6,11 +6,18 @@ sides: [`GlobalRegridding.sourcemissingval`](@ref) reads a raster's sentinel,
 [`GlobalRegridding.outputmissingval`](@ref) and
 [`GlobalRegridding.destinationmissingval`](@ref) carry it to the destination,
 and [`GlobalRegridding.rebuildoutput`](@ref) returns a raster declaring it.
+
+It also reads CRS metadata off `Projected` and `Mapped` X/Y lookups so
+[`GlobalRegridding.RasterGrid`](@ref) charts a projected raster through its
+CRS. Proj classifies and transforms any CRS this extension cannot recognize as
+geographic on its own; see `GlobalRegriddingRastersProjExt`.
 """
 module GlobalRegriddingRastersExt
 
 import GlobalRegridding
+import DimensionalData as DD
 import Rasters
+import Rasters.GeoFormatTypes as GFT
 
 """
     GlobalRegridding.sourcemissingval(A::Rasters.AbstractRaster)
@@ -63,5 +70,67 @@ keeping `data`'s name, metadata and reference dimensions.
 GlobalRegridding.rebuildoutput(data::Rasters.AbstractRaster, out::AbstractArray,
     dims::Tuple, missingval) =
     Rasters.rebuild(data; data = out, dims, missingval)
+
+# CRS-derived charts
+
+"""
+    GlobalRegridding._crs_native_to_unit_sphere(A)
+
+Return the forward chart implied by the CRS of `A`'s X/Y lookups, for a raster,
+dimensional array or dimension tuple. Lookups without CRS metadata and CRS
+values recognized as geographic return `_UNSET_RASTER_KEYWORD`; any other CRS
+goes to [`GlobalRegridding._projected_crs_native_to_unit_sphere`](@ref).
+"""
+GlobalRegridding._crs_native_to_unit_sphere(A::DD.AbstractDimArray) =
+    _lookup_crs_native_to_unit_sphere(DD.dims(A))
+GlobalRegridding._crs_native_to_unit_sphere(ds::Tuple{Vararg{DD.Dimension}}) =
+    _lookup_crs_native_to_unit_sphere(ds)
+
+function _lookup_crs_native_to_unit_sphere(ds)
+    crs = _valuecrs(ds)
+    crs === nothing && return GlobalRegridding._UNSET_RASTER_KEYWORD
+    _geographic_without_proj(crs) && return GlobalRegridding._UNSET_RASTER_KEYWORD
+    return GlobalRegridding._projected_crs_native_to_unit_sphere(crs)
+end
+
+"""
+    _valuecrs(dims) -> GeoFormat or nothing
+
+Return the CRS the X and Y lookup values are expressed in. `Projected` values
+live in `crs`; `Mapped` values live in `mappedcrs`, with `crs` describing the
+projection the mapped values came from. Both lookups must agree when both
+carry one.
+"""
+function _valuecrs(ds::Tuple)
+    xcrs = _valuecrs(DD.dims(ds, DD.XDim))
+    ycrs = _valuecrs(DD.dims(ds, DD.YDim))
+    xcrs === nothing && return ycrs
+    ycrs === nothing && return xcrs
+    xcrs == ycrs || throw(ArgumentError(
+        "RasterGrid: the X lookup is in $(repr(xcrs)) and the Y lookup in " *
+        "$(repr(ycrs)); both spatial lookups must share one CRS"))
+    return xcrs
+end
+
+# An unformatted dimension holds a bare vector, which carries no CRS.
+_valuecrs(::Any) = nothing
+_valuecrs(d::DD.Dimension) = _valuecrs(DD.lookup(d))
+_valuecrs(l::Rasters.Projected) = Rasters.crs(l)
+_valuecrs(l::Rasters.Mapped) = Rasters.mappedcrs(l)
+
+"""
+    _geographic_without_proj(crs::GeoFormat) -> Bool
+
+Return whether `crs` is recognizably geographic longitude/latitude in degrees
+from its GeoFormatTypes value alone: `EPSG(4326)`, a PROJ string whose
+`+proj` is a longitude/latitude family, or WKT whose root node is a geographic
+or geodetic CRS. Anything else is left for Proj to classify.
+"""
+_geographic_without_proj(crs::GFT.EPSG) = crs.val == (4326,)
+_geographic_without_proj(crs::GFT.ProjString) =
+    occursin(r"\+proj=(longlat|latlong|latlon|lonlat)\b", GFT.val(crs))
+_geographic_without_proj(crs::GFT.AbstractWellKnownText) =
+    startswith(lstrip(GFT.val(crs)), r"(GEOGCS|GEOGCRS|GEODCRS|GEODETICCRS|GEOGRAPHICCRS)\[")
+_geographic_without_proj(::GFT.GeoFormat) = false
 
 end # module GlobalRegriddingRastersExt

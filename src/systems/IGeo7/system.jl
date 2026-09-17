@@ -287,6 +287,34 @@ function DGG.globalindex(::IGeo7System, c::Z7Cell)
 end
 
 """
+    slotcount(::IGeo7System, l::Integer) -> Int
+
+`12·7^l`: every base cell's `7^l` digit strings, the twelve pentagon chains'
+deleted branches included. The difference from [`ncells`](@ref) is
+`2·(7^l − 1)`, all of it in aligned blocks of `7^(l-1) … 7^0` per base.
+"""
+DGG.slotcount(::IGeo7System, l::Integer) = Int(z7_num_slots(Int(l)))
+
+"""
+    slotindex(::IGeo7System, c::Z7Cell) -> Int
+
+`c`'s one-based slot: its base cell followed by its digits, read as a base-7
+number. O(level) and allocation-free.
+"""
+DGG.slotindex(::IGeo7System, c::Z7Cell) = Int(z7_slot(c.id)) + 1
+
+"""
+    slotcell(::IGeo7System, l::Integer, i::Integer) -> Union{Z7Cell,Nothing}
+
+The level-`l` cell at slot `i`, or `nothing` on one of the twelve pentagons'
+deleted branches.
+"""
+function DGG.slotcell(::IGeo7System, l::Integer, i::Integer)
+    z = z7_from_slot(Int(i) - 1, Int(l))
+    return is_valid_cell(z) ? Z7Cell(z) : nothing
+end
+
+"""
     cell_boundary(::IGeo7System, c::Z7Cell) -> Helpers.SmallList{6,UnitSphericalPoint}
 
 The exact boundary ring of `c` on the unit sphere: six corners for a hexagon,

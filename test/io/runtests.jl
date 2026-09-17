@@ -25,6 +25,8 @@ using .ChunkedLookups
     # The two-dimensional layout's arithmetic and vocabulary, which need a store
     # no more than the conventions do.
     include("subzones.jl")
+    # The multi-level pyramid layout's arithmetic, likewise storeless.
+    include("pyramid.jl")
     # The Zarr-extension suites need `using Zarr` and self-skip when absent.
     include("read.jl")
     include("write.jl")

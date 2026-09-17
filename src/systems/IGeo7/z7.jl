@@ -270,6 +270,72 @@ function is_valid_z7(z7::UInt64)
 end
 is_valid_z7(z7::Unsigned) = is_valid_z7(UInt64(z7))
 
+# --- the slot space --------------------------------------------------------
+#
+# A Z7 id is a base and `res` base-7 digits, so a resolution addresses
+# `12·7^res` ids of which `10·7^res + 2` name cells; the rest are the pentagon
+# chains' deleted branches. Numbering those ids consecutively — the SLOT — is
+# what gives a subtree a contiguous, power-of-seven-aligned address range, which
+# the packed id itself does not: its digit slots are three bits wide and hold
+# eight values, so the id is monotone in the slot but not linear in it.
+
+"""
+    z7_num_slots(res) -> Int64
+
+Size of resolution `res`'s slot space, `12·7^res`. Fits `Int64` through the
+format's own `res = 20`.
+
+Throws [`InvalidZ7Error`](@ref) (`:resolution_range`) for `res ∉ 0:20`.
+"""
+@inline function z7_num_slots(res::Integer)
+    0 <= res <= Z7_MAX_RESOLUTION || throw(InvalidZ7Error(
+        :resolution_range, zero(UInt64), _z7_int(res), Z7_MAX_RESOLUTION))
+    return Int64(Z7_NUM_BASES) * Int64(7)^Int(res)
+end
+
+"""
+    z7_slot(z7) -> Int64
+
+Zero-based slot of `z7` in its own resolution's space: `base·7^res` plus the
+digits read as a base-7 number, which is `0:(z7_num_slots(res) - 1)`.
+
+Defined on every well-formed id, including the ones naming no cell, and
+ascending in the same order as the ids themselves.
+"""
+@inline function z7_slot(z7::UInt64)
+    res = z7_resolution(z7)
+    s = Int64(z7_base_cell(z7))
+    for k in 1:res
+        s = s * 7 + _z7_digit(z7, k)
+    end
+    return s
+end
+@inline z7_slot(z7::Unsigned) = z7_slot(UInt64(z7))
+
+"""
+    z7_from_slot(slot, res) -> UInt64
+
+The well-formed resolution-`res` id at zero-based `slot` — the inverse of
+[`z7_slot`](@ref).
+
+The id may name no cell: a slot on a pentagon's deleted branch decodes to the
+digit string that branch would have had, which [`is_valid_z7`](@ref) rejects.
+
+Throws [`InvalidZ7Error`](@ref) for `res ∉ 0:20` (`:resolution_range`) or
+`slot` outside the space (`:invalid_index`).
+"""
+function z7_from_slot(slot::Integer, res::Integer)
+    n = Int64(slot)
+    0 <= n < z7_num_slots(res) || throw(InvalidZ7Error(
+        :invalid_index, zero(UInt64), _z7_int(slot), _z7_int(z7_num_slots(res) - 1)))
+    z = Z7_PAD_MASK
+    for k in Int(res):-1:1
+        z = _z7_set_digit(z, k, n % 7)
+        n ÷= 7
+    end
+    return (UInt64(n) << Z7_BASE_SHIFT) | z
+end
+
 # --- prefix operations -----------------------------------------------------
 
 """

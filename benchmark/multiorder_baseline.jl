@@ -178,7 +178,6 @@ function inference_arm(cv, vals)
         println("FAILURES:")
         foreach(b -> println("  ", b), bad)
     end
-    return nothing
 end
 
 function lookup_batch(f, mov, qs)
@@ -303,7 +302,7 @@ function expand_arm(cv, vals)
     leaf = DGG.level(cv)
     rule("5. EXPAND — the lazy presentation at level $leaf")
     mov, mvals = DGG.coarsen(cv, vals; atol = 0.05)
-    ecv, edata = DGG.expand(mov, mvals, leaf)
+    _, edata = DGG.expand(mov, mvals, leaf)
     stored, leaves = length(mov), length(edata)
     println("$stored stored values presented as $leaves cells " *
             "($(round(leaves / stored; digits = 1))x); summarysize ",
@@ -325,15 +324,13 @@ function expand_arm(cv, vals)
             per == 0 ? "-" : @sprintf("%.2f ns", e.ns / per)), widths)
     end
     GC.gc()
-    return mov, mvals, ecv, edata
 end
 
 function region_arm()
     rule("R. REGION — `covering_indices` is bounded by the coverage query")
-    println("`covering_indices(mov, target)` is one binary search per coverage " *
-            "interval over\nthe container, but it first builds the coverage at " *
-            "the container's reference level.\nThat second cost is " *
-            "`MultiOrderCoverage`'s, not the container's, and it dominates:")
+    println("`covering_indices(mov, target)` builds the coverage at the " *
+            "container's reference level,\nthen runs one binary search per " *
+            "coverage interval. The coverage query dominates:")
     widths = (16, 14, 14, 14)
     row(("query level", "set cells", "time", "bytes"), widths)
     println("-"^62)
@@ -351,8 +348,7 @@ function region_arm()
     e = estimate(g; seconds = 2.0, samples = 3)
     println("\ncovering_indices(20 000 cells, ref 6) -> $(length(ks)) cells, ",
         fmt_ns(e.ns), ", ", fmt_bytes(e.bytes),
-        "\n  — the same order as the level-6 query row above, so the container " *
-        "adds\n    essentially nothing to it.")
+        "\n  — the same order as the level-6 query row above.")
     mov = nothing
     GC.gc(true)
 end
@@ -381,8 +377,7 @@ function io_arm(leaf::Int)
     println("-"^68)
     results = Tuple{String,Float64,Float64,Int}[]
     for (label, A) in (("compacted", M), ("expanded", E))
-        # `dggwrite` refuses a non-empty store, so every sample gets its own
-        # directory. Both arms pay that same fixed cost.
+        # `dggwrite` refuses a non-empty store, so every sample gets its own directory.
         k = Ref(0)
         gw = () -> DGG.dggwrite(joinpath(root, "$label-$(k[] += 1).zarr"), A)
         gw()
@@ -408,8 +403,6 @@ function io_arm(leaf::Int)
     GC.gc()
 end
 
-# The comparison changes only the source presentation: stored cells or expansion.
-# Typed wrappers keep script globals out of inference and allocation results.
 w_plan(A, dst, m) = GR.plan_regrid(A; to = dst, method = m, lazy = false)
 w_apply(A, plan) = GR.regrid(A, plan)
 w_cube(mov, values) = DD.DimArray(values, (DGG.Cells(DGG.MultiOrderLookup(mov)),))
@@ -441,15 +434,16 @@ function regrid_arm(leaf::Int, dstlevel::Int; atol = 0.25)
     row(("route", "source", "columns", "build", "build bytes", "apply"), widths)
     println("-"^76)
     results = Dict{String,NTuple{3,Float64}}()
-    for (label, data, apply) in (("stored", A, true), ("expanded", E, true))
+    # One table row per source presentation: plan build, and optionally apply.
+    function route(label, data; apply::Bool, samples::Int)
         gb = () -> w_plan(data, dst, m)
         plan = gb()
-        eb = estimate(gb; seconds = 3.0, samples = 5)
+        eb = estimate(gb; seconds = 3.0, samples)
         ns = 0.0
         if apply
             ga = () -> w_apply(data, plan)
             ga()
-            ns = estimate(ga; seconds = 3.0, samples = 5).ns
+            ns = estimate(ga; seconds = 3.0, samples).ns
         end
         row((label, Int(GR.ncells(plan.src_space)),
                 size(plan.block.weights, 2), fmt_ns(eb.ns), fmt_bytes(eb.bytes),
@@ -458,6 +452,8 @@ function regrid_arm(leaf::Int, dstlevel::Int; atol = 0.25)
         plan = nothing
         GC.gc(true)
     end
+    route("stored", A; apply = true, samples = 5)
+    route("expanded", E; apply = true, samples = 5)
 
     # Re-keying two levels deeper keeps native size fixed and grows expansion 16×.
     deep = EN.MultiOrderVector(SYS, collect(mov); reference_level = leaf + 2)
@@ -465,17 +461,8 @@ function regrid_arm(leaf::Int, dstlevel::Int; atol = 0.25)
     deepleaves = DGG.ncells(DGG.levelgrid(SYS, leaf + 2))
     println("\nthe same $stored stored cells re-keyed to reference level " *
             "$(leaf + 2) — $deepleaves leaves, $(round(Int, deepleaves / leaves))x:")
-    for (label, data) in (("stored/deep", D), ("expanded/deep", DGG.expand(D, leaf + 2)))
-        gd = () -> w_plan(data, dst, m)
-        plan = gd()
-        e = estimate(gd; seconds = 3.0, samples = 3)
-        row((label, Int(GR.ncells(plan.src_space)),
-                size(plan.block.weights, 2), fmt_ns(e.ns), fmt_bytes(e.bytes),
-                "-"), widths)
-        results[label] = (e.ns, Float64(e.bytes), 0.0)
-        plan = nothing
-        GC.gc(true)
-    end
+    route("stored/deep", D; apply = false, samples = 3)
+    route("expanded/deep", DGG.expand(D, leaf + 2); apply = false, samples = 3)
     D = deep = nothing
     GC.gc(true)
 

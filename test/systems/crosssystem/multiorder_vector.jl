@@ -105,8 +105,7 @@ end
         @test length(unique(DGG.level.(cells))) > 1
         @test maximum(DGG.level, cells) == leaf
         @test disjoint_and_sorted(mov)
-        # `offsets` is the cumulative leaf count at the reference level and
-        # must agree with the expansion.
+        # `offsets` is the cumulative leaf count at the reference level.
         @test mov.offsets[end] == length(DGG.CellVector(mov))
         @test mov.offsets == cumsum(mov.stops .- mov.starts .+ 1)
         @test occursin("MultiOrderVector", sprint(show, mov))
@@ -118,14 +117,12 @@ end
             bridged = DGG.CellVector(mov; level=l)
             direct = DGG.CellVector(set; level=l)
             @test bridged == direct
-            # Same windows, not just same cells: unmerged adjacent subtrees
-            # would still compare equal.
+            # Unmerged adjacent subtrees compare equal as cells, so compare windows.
             @test EN.windows(bridged).starts == EN.windows(direct).starts
             @test EN.windows(bridged).stops == EN.windows(direct).stops
         end
         @test DGG.cellset(DGG.CellVector(mov)) === mov
-        # Expanding above the deepest stored cell would need ancestors, which
-        # cover more.
+        # Above the deepest stored cell only ancestors exist, and they cover more.
         @test_throws ArgumentError DGG.CellVector(mov; level=leaf - 1)
     end
 
@@ -154,16 +151,14 @@ end
     end
 
     @testset "the covering ancestor" begin
-        # Every leaf under a stored cell resolves to it; sampled at each
-        # probe's range ends and middle.
+        # Every leaf under a stored cell resolves to it: range ends and middle.
         for i in ks
             r = DGG.descendant_range(sys, mov[i], leaf)
             for p in (first(r), (first(r) + last(r)) ÷ 2, last(r))
                 @test EN.covering_index(mov, DGG.cellindex(grid, p)) == i
             end
         end
-        # A cell deeper than the reference level resolves through its
-        # reference-level ancestor.
+        # A deeper cell resolves through its reference-level ancestor.
         deep = first(DGG.children(sys, DGG.cellindex(grid, mov.stops[end])))
         @test DGG.level(deep) == leaf + 1
         @test EN.covering_index(mov, deep) == length(mov)
@@ -171,8 +166,7 @@ end
     end
 
     @testset "a point lands in the cell holding it" begin
-        # `cell_centroid` is strictly interior by contract, so a stored cell's
-        # centroid must come back as that cell.
+        # `cell_centroid` is strictly interior by contract.
         for i in ks
             c = mov[i]
             lon, lat = LONLAT(DGG.cell_centroid(DGG.levelgrid(sys, DGG.level(c)), c))
@@ -194,8 +188,7 @@ end
             sub = DGG.covering(mov, target)
             @test sub isa DGG.MultiOrderVector
             @test EN.reference_level(sub) == leaf
-            # The selection is a sub-vector of stored cells, never a re-cut of
-            # the region.
+            # The selection is a sub-vector of stored cells.
             @test collect(sub) == [mov[i] for i in byhand]
             @test all(DGG.localindex(sub, sub[j]) == j for j in eachindex(sub))
         end
@@ -212,10 +205,9 @@ end
         mask = falses(length(mov))
         mask[2] = mask[4] = true
         @test collect(mov[mask]) == cells[[2, 4]]
-        # A wrong-length mask is a `BoundsError`, not a shorter answer.
         @test_throws BoundsError mov[falses(length(mov) - 1)]
         @test_throws BoundsError mov[[1, length(mov) + 1]]
-        # A subset is a container in its own right, not a view with stale keys.
+        # A subset re-keys itself.
         sub = mov[2:4]
         @test sub isa DGG.MultiOrderVector
         @test all(DGG.localindex(sub, sub[j]) == j for j in eachindex(sub))
@@ -234,7 +226,7 @@ end
     @testset "construction from a loose vector" begin
         @test DGG.MultiOrderVector(sys, cells) == mov
         @test DGG.MultiOrderVector(mov) === mov
-        # Unsorted input is sorted, not refused.
+        # Unsorted input is sorted.
         @test collect(DGG.MultiOrderVector(sys, reverse(cells))) == cells
         @test collect(DGG.MultiOrderVector(sys, vcat(cells[2:2:end], cells[1:2:end]))) == cells
 
@@ -394,8 +386,6 @@ end
     sys = DGG.A5System()
     @test !DGG.has_sorted_subtrees(sys)
 
-    # Both constructors throw `ArgumentError`, not `descendant_range`'s
-    # `MethodError`.
     @test_throws ArgumentError DGG.MultiOrderVector(sys, collect(DGG.rootcells(sys)))
     set = DGG.query(sys, DGG.MultiOrderCoverage(REGION); level=5)
     @test !isempty(set)

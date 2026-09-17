@@ -1,17 +1,19 @@
 # # Multi-order storage
 #
-# Astronomers store sky regions as **Multi-Order Coverage** maps: HEALPix
-# cells at mixed orders, coarse inside, fine along the edge. The multi-order
-# [coverage tutorial](multiorder.md) builds that as a *region*; this page
-# attaches *data* — one value per cell, at mixed levels, as in adaptive mesh
-# refinement.
+# This page stores *data* on cells of mixed levels: one value per cell, coarse
+# where the field is flat and fine where it varies, as in adaptive mesh
+# refinement. A smooth field then fits a stated tolerance in a fraction of the
+# leaf count and still answers every leaf query.
 #
-# A smooth field needs leaf cells only where it varies, so a mixed-level
-# container can hold it to a stated tolerance in a fraction of the leaf count
-# and still answer every leaf query.
+# Astronomers store sky regions the same way, as **Multi-Order Coverage** maps:
+# HEALPix cells at mixed orders, coarse inside, fine along the edge. The
+# multi-order [coverage tutorial](multiorder.md) builds that *region*.
 #
-# The plan: sample a real field onto a full HEALPix level, coarsen it
-# adaptively, then read the result back at full resolution.
+# The plan:
+#
+#   1. sample a real field onto a full HEALPix level;
+#   2. coarsen it adaptively;
+#   3. read the result back at full resolution.
 
 ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH",
     joinpath(tempdir(), "rasterdatasources")))
@@ -89,8 +91,8 @@ tavg = [raster[X(Near(lon)), Y(Near(lat))] for (lon, lat) in centers]
 A = DD.DimArray(Vector{Union{Float64, Missing}}(tavg), DGG.Cells(DGG.CellLookup(grid)))
 
 # It indexes by integer like any vector, and by point through the axis.
-# (`DD.Contains` is DimensionalData's point selector, reached through `DD`
-# because this package exports DE9IM's `Contains`, a different thing.)
+# `DD.Contains` is DimensionalData's point selector; this package's own
+# `Contains` export is the DE9IM predicate.
 
 A[DGG.Cells(DD.Contains((2.35, 48.86)))]  # July mean over Paris
 
@@ -111,9 +113,9 @@ onmap = findall(p -> lonspan(p) < 180, polys)
 length(cells) - length(onmap)
 
 # Clipping the colour scale at ±40 °C keeps the rest of the range legible;
-# ocean cells are `missing`, drawn in gray. The colour
-# vector is built over `parent(A)`: a comprehension over the `DimArray`
-# returns a `DimArray`, which Makie would read as a per-vertex colouring.
+# ocean cells are `missing`, drawn in gray. The colour vector is built over
+# `parent(A)`: a comprehension over the `DimArray` returns a `DimArray`, which
+# Makie reads as a per-vertex colouring.
 
 colors = [ismissing(v) ? NaN : v for v in parent(A)]
 
@@ -132,10 +134,11 @@ fig
 # cells, `f` seeing the leaf values beneath it; one call per level builds a
 # pyramid.
 #
-# The reducer must define the all-ocean case: `mean` over a group holding any
-# `missing` answers `missing`, and `mean(skipmissing(v))` over an all-`missing`
-# group answers `NaN`. Neither means "no land here", so the reducer says it
-# explicitly.
+# The reducer defines the all-ocean case itself, because neither stock form
+# means "no land here":
+#
+#   - `mean` over a group holding any `missing` answers `missing`;
+#   - `mean(skipmissing(v))` over an all-`missing` group answers `NaN`.
 
 landmean(v) = count(!ismissing, v) == 0 ? missing : mean(skipmissing(v))
 
@@ -187,9 +190,12 @@ end
 
 # ## Adaptive desampling
 #
-# `coarsen` merges a sibling group when the group is complete in the array and
-# its leaf values span at most `atol`, or when every value is `missing`. A
-# group mixing `missing` with data never merges, so coastline cells are never
+# `coarsen` merges a sibling group that is complete in the array when either
+#
+#   - its leaf values span at most `atol`, or
+#   - every value is `missing`.
+#
+# A group mixing `missing` with data never merges, so coastline cells are never
 # averaged into the sea. The criterion is monotone, so each leaf ends up under
 # the coarsest cell that satisfies it.
 #
@@ -209,10 +215,10 @@ M = DGG.coarsen(A; atol = 1.0)
 mov = parent(DD.lookup(M, DGG.Cells))
 
 # The result is a `DimArray` over a `MultiOrderLookup`: one value per stored
-# cell, each at whatever level merging stopped. The lookup wraps a
-# `MultiOrderVector` — `mov` above — a plain vector of cells usable with no
-# datacube library; the lookup only makes it an axis. The rest of the page
-# passes `mov` directly to `cell_polygons`, `cellat` and `summarysize`.
+# cell, each at the level where merging stopped. The lookup wraps a
+# `MultiOrderVector` — `mov` above — a plain vector of cells that works without
+# a datacube library; the lookup makes it an axis. The rest of the page passes
+# `mov` directly to `cell_polygons`, `cellat` and `summarysize`.
 
 levs = DGG.level.(mov)
 for l in sort(unique(levs))
@@ -339,44 +345,43 @@ fig
 
 # ## Regridding off the mesh
 #
-# A mixed-level cube is a regridding source as it stands — no `from`, no manual
-# `expand`:
+# A mixed-level cube is a regridding source as it stands; the axis supplies the
+# source cells:
 #
 # ```julia
 # out = DGG.regrid(M; to = DGG.levelgrid(DGG.HEALPixSystem(), 6))
 # ```
 #
-# Which cells the regrid reads depends on what the method reads.
+# The method decides which cells the regrid reads.
 #
 #   - A **nearest-cell** method (`NearestCell`, `DirectNearest`) reads sample
-#     sites, so it takes the stored cells as they are: one source cell per
-#     stored cell, and cost follows the stored count however deep the reference
-#     level is. A destination point resolves to the stored cell covering it,
-#     which is the same cell the reference-level expansion would have reached
-#     through the leaf under the point — so the answer is identical, to the bit,
-#     and only the price changes.
-#   - A **conservative** method reads cell *area*, and needs a gap-free polygon
-#     cover. On a hexagonal hierarchy — H3, IGeo7 — a parent's polygon is not the
-#     union of its children's, so the descendant leaves are the only such cover
-#     and the regrid reads `M` presented at its `reference_level`. Cost follows
-#     the leaf count there, and it is the leaf count that buys the coverage.
-#   - `BarycentricPoint` reads sample sites too, and interpolates between the
-#     stored ones. The stencil is the triangle of stored sites around the
-#     destination point, found through the covering cell's own level, so the
-#     blend runs across a coarse cell at the resolution the value was stored at
-#     and the interpolant kinks — visibly — at every level boundary. Cost
-#     follows the stored count.
-#   - Interpolating on the leaves instead is a **different** function, not a
-#     coarser one: every leaf under a stored cell repeats that cell's value, so
-#     the blend is flat through the cell and steps at leaf spacing at its edge —
-#     the coarsening staircase, rebuilt. Ask for it by name if you want it:
+#     sites, so it takes the stored cells: one source cell per stored cell, and
+#     cost follows the stored count at any reference level. A destination point
+#     resolves to the stored cell covering it, the same cell the
+#     reference-level expansion reaches through the leaf under the point, so
+#     the answer is bit-identical to regridding the expansion.
+#   - A **conservative** method reads cell *area* and needs a gap-free polygon
+#     cover. On a hexagonal hierarchy — H3, IGeo7 — a parent's polygon differs
+#     from the union of its children's, so the descendant leaves are the only
+#     such cover and the regrid reads `M` presented at its `reference_level`.
+#     Cost follows the leaf count.
+#   - `BarycentricPoint` reads sample sites and interpolates between the stored
+#     ones. The stencil is the triangle of stored sites around the destination
+#     point, found through the covering cell's own level. The blend runs across
+#     a coarse cell at the resolution its value was stored at, and the
+#     interpolant kinks visibly at every level boundary. Cost follows the
+#     stored count.
+#   - Interpolating on the leaves is a **different** function: every leaf under
+#     a stored cell repeats that cell's value, so the blend is flat through the
+#     cell and steps at leaf spacing at its edge. Request it explicitly with
 #     `regrid(expand(M, ref); to = ...)`.
 #
-# `from` names a source space; the cube axis names its storage layout. A method
-# that reads stored cells rejects values paired with leaves, and a method that
-# reads leaves rejects values paired with stored cells. A `from` container must
-# also match the cube's own axis. Put the values on the axis and omit the
-# keyword.
+# Put the values on the cube axis and omit `from`. The axis names the storage
+# layout, and an explicit `from` must agree with it:
+#
+#   - a method that reads stored cells rejects values paired with leaves;
+#   - a method that reads leaves rejects values paired with stored cells;
+#   - a `from` container must match the cube's own axis.
 
 # ## Summary
 #
@@ -386,13 +391,15 @@ fig
 # cells and resolution with leaves: the same two megabytes present 786,432
 # cells or two hundred million.
 #
-# The [multi-order coverage tutorial](multiorder.md) builds the same structure
-# as a *region* — the query side. The [regridding tutorial](regridding.md)
-# replaces this page's
-# nearest-neighbour sampling with conservative, area-exact regridding. The
-# [store round-trip tutorial](store_io.md) writes
-# cell axes to Zarr with `dggwrite`; a mixed-level array like `M` goes to disk
-# as the `compacted` layout and reads back as the same axis.
+# Related pages:
 #
-# The writer currently lacks fill-value support for `missing`, so this page's
-# ocean-bearing `M` is not yet writable in any encoding.
+#   - the [multi-order coverage tutorial](multiorder.md) builds the same
+#     structure as a *region*, the query side;
+#   - the [regridding tutorial](regridding.md) replaces this page's
+#     nearest-neighbour sampling with conservative, area-exact regridding;
+#   - the [store round-trip tutorial](store_io.md) writes cell axes to Zarr
+#     with `dggwrite`. A mixed-level array goes to disk as the `compacted`
+#     layout and reads back as the same axis.
+#
+# The writer has no fill value for `missing`, so this page's ocean-bearing `M`
+# cannot be written in any encoding.

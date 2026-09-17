@@ -10,7 +10,6 @@ import SmallCollections
 
 const FB = DGG.Fallbacks
 const EN = DGG.Engine
-const CL = DGG.CellLookups
 const LONLAT = GO.UnitSpherical.GeographicFromUnitSphere()
 
 const SWEEP = [
@@ -76,21 +75,16 @@ end
         @test DGG.system(lk) == sys
         @test EN.reference_level(lk) == L
         @test length(unique(DGG.level, ids)) > 1
-        # `Unordered`: ids compare level-first under `isless`, so a mixed-level
-        # axis is unsorted in the sense DimensionalData reads — an ordered
-        # claim makes cat silently drop the axis. The container's own
-        # interval-start order is asserted beside it.
+        # Ids compare level-first under `isless`, so the axis is `Unordered` to
+        # DimensionalData; an ordered claim makes `cat` silently drop the axis.
         @test DD.Lookups.order(lk) === DD.Lookups.Unordered()
         starts = [first(DGG.descendant_range(sys, c, L)) for c in ids]
         @test issorted(starts) && allunique(starts)
         @test DD.Lookups.val(lk) === parent(lk)
         @test DD.Lookups.metadata(lk) === DD.Lookups.NoMetadata()
-        # The generic unordered answer; a `(first, last)` pair here would not
-        # be an interval.
         @test DD.Lookups.bounds(lk) === (nothing, nothing)
         @test DD.name(M) === :lat
         @test length(M) == length(mov)
-        # Really a compression: fewer stored cells than leaves.
         @test length(M) < length(A)
     end
 
@@ -125,8 +119,7 @@ end
         coarse = ids[j]
         leaf = first(DGG.descendants(sys, coarse, L))
         deeper = first(DGG.descendants(sys, coarse, L + 1))
-        # `At` refuses an unstored cell; `Contains` resolves it to its
-        # covering cell.
+        # `At` refuses an unstored cell; `Contains` resolves it to its covering cell.
         @test_throws DD.Lookups.SelectorError M[DGG.Cells(DD.At(leaf))]
         @test M[DGG.Cells(DD.Contains(leaf))] == vals[j]
         @test M[DGG.Cells(DD.Contains(deeper))] == vals[j]
@@ -171,9 +164,8 @@ end
         @test isempty(M[DGG.Cells(DGG.Covering(away))])
     end
 
-    # Swept over every split: DimensionalData's cat pre-check reads the axis
-    # values, and an ordered-lookup claim would silently drop the axis exactly
-    # at splits where a coarse id follows a deep one.
+    # Every split: an ordered-lookup claim drops the axis exactly where a
+    # coarse id follows a deep one.
     @testset "vcat of two disjoint ascending halves, at every split" begin
         n = length(M)
         for s in 1:(n-1)
@@ -224,8 +216,6 @@ end
         @test pcv == cv
         @test collect(pdata) == collect(data)
         @test_throws ArgumentError DGG.expand(mov, vals[1:(end-1)], L)
-        # And the container's own leaf-level expansion, as `expand` reads it
-        # on the other region types.
         @test DGG.expand(mov, L) == cv
     end
 
@@ -251,8 +241,7 @@ end
     end
 
     @testset "where the data was flat, the round trip is exact" begin
-        # Constant per level-`L-1` sibling group, so `atol = 0` merges exactly
-        # those groups.
+        # Constant per level-`L-1` sibling group, so `atol = 0` merges exactly those.
         coarse = DGG.levelgrid(sys, L - 1)
         piece = [Float64(DGG.localindex(coarse, DGG.ancestor(sys, c, L - 1)))
                  for c in cv]
@@ -290,8 +279,7 @@ end
         mov, want = DGG.coarsen(cv, lat; atol)
         @test parent(DD.lookup(M, DGG.Cells)) == mov
         @test parent(M) == want
-        # Keywords reach the core: `minlevel = L` is the identity, and `by`
-        # changes the values.
+        # `minlevel = L` is the identity, and `by` changes the values.
         flat = DGG.coarsen(A; atol, minlevel=L)
         @test length(flat) == length(A)
         @test parent(flat) == lat
@@ -372,8 +360,7 @@ end
         mask[2] = mask[4] = true
         @test collect(lk[mask]) == ids[[2, 4]]
         @test_throws BoundsError lk[falses(length(lk) + 1)]
-        # Indexing by a `SmallVector` (a neighbour list) needs the
-        # SmallCollections ambiguity tie-break, as for `CellLookup`.
+        # A `SmallVector` index (a neighbour list) needs the ambiguity tie-break.
         @test collect(lk[SmallCollections.SmallVector{8,Int}([3, 4, 5])]) == ids[3:5]
         @test collect(reverse(lk)) == reverse(ids)
         @test reverse(lk) isa DD.Lookups.Lookup
@@ -418,8 +405,7 @@ end
         @test collect(glk) == ids[[1:(n÷2); (n÷2+2):n]]
         @test glk != lk
 
-        # A disordered join is decided at `rebuild` and falls back to
-        # `Categorical`.
+        # A disordered join falls back to `Categorical` at `rebuild`.
         @test DD.Lookups.rebuild(lk; data=vcat(ids[(n÷2+1):n], ids[1:(n÷2)])) isa
               DD.Lookups.Categorical
 
@@ -460,7 +446,6 @@ end
         @test_throws DimensionMismatch DD.DimArray(zeros(3), DGG.Cells(lk))
     end
 
-    # A coverage becomes an axis directly, with no data verb in between.
     @testset "a coverage is an axis in its own right" begin
         set = DGG.query(sys, DGG.MultiOrderCoverage(
                 GO.UnitSpherical.SphericalCap(FB.unit_point(8.0, 46.5), 0.05));

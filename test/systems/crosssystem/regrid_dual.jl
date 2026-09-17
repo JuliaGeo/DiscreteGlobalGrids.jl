@@ -463,6 +463,18 @@ function sweepstatus(row, smp, pts)
     return n
 end
 
+# Distance of the weighted node sum from the chart origin. The chart is
+# query-centered, so an affine-exact stencil lands on the origin.
+function chartresidual(row, cell)
+    x = y = 0.0
+    for k in 1:length(row)
+        j = findfirst(==(row.indices[k]), cell.indices)
+        x += row.weights[k] * cell.nodes[j][1]
+        y += row.weights[k] * cell.nodes[j][2]
+    end
+    return max(abs(x), abs(y))
+end
+
 function interpolate_at(space, smp, row, vals, p)
     GR.ismapped(GR.weightsat!(row, smp, p)) || return nothing
     return sum(row.weights[k] * vals[row.indices[k]] for k in 1:length(row))
@@ -546,14 +558,7 @@ storedvalues(mov, f) = [f(DGG.cell_centroid(
             @test GR.ismapped(GR.weightsat!(row, smp, p))
             allhosted &= DGG.localindex(mov, p) == host
             cell = GR.dualcellat(smp, p)
-            # The query-centered chart makes the expected affine value the origin.
-            x = y = 0.0
-            for k in 1:length(row)
-                j = findfirst(==(row.indices[k]), cell.indices)
-                x += row.weights[k] * cell.nodes[j][1]
-                y += row.weights[k] * cell.nodes[j][2]
-            end
-            charterr = max(charterr, abs(x), abs(y))
+            charterr = max(charterr, chartresidual(row, cell))
             # Affine laws alone cannot detect the wrong descendant representative.
             want = representatives(mov, coarse, p)
             for i in row.indices
@@ -581,13 +586,7 @@ storedvalues(mov, f) = [f(DGG.cell_centroid(
                 finite &= all(isfinite, row.weights)
                 sumerr = max(sumerr, abs(sum(row.weights) - 1.0))
                 cell = GR.dualcellat(smp, p)
-                x = y = 0.0
-                for k in 1:length(row)
-                    j = findfirst(==(row.indices[k]), cell.indices)
-                    x += row.weights[k] * cell.nodes[j][1]
-                    y += row.weights[k] * cell.nodes[j][2]
-                end
-                charterr = max(charterr, abs(x), abs(y))
+                charterr = max(charterr, chartresidual(row, cell))
             else
                 # Degeneracies must clear the row and return a status.
                 @test isempty(row)

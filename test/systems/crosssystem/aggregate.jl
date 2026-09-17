@@ -33,6 +33,12 @@ rooted_subtree(sys, l) = DGG.CellVector(DGG.subtree(sys, first(DGG.rootcells(sys
 centroid_lat(cv) = (g = DGG.levelgrid(DGG.system(cv), DGG.level(cv));
 [LONLAT(DGG.cell_centroid(g, c))[2] for c in cv])
 
+# The REGION coverage at `level` with one distinct value per cell.
+function coverage_fixture(sys, level)
+    cv = DGG.CellVector(DGG.query(sys, DGG.MultiOrderCoverage(REGION); level))
+    return cv, Float64.(eachindex(cv))
+end
+
 # Leaf index -> index into a data array laid out against `cv`.
 dataindex(cv) = (g = DGG.levelgrid(DGG.system(cv), DGG.level(cv));
 Dict(DGG.localindex(g, c) => k for (k, c) in enumerate(cv)))
@@ -107,7 +113,6 @@ end
         @test cells isa DGG.CellVector
         @test DGG.level(cells) == coarse
         @test DGG.system(cells) == sys
-        # A whole level aggregates to a whole level — no coarse cell dropped.
         @test length(cells) == DGG.ncells(DGG.levelgrid(sys, coarse))
         @test collect(cells) == want
         @test out == wantvals
@@ -116,9 +121,7 @@ end
     end
 
     @testset "a coverage subset, with partial groups" begin
-        set = DGG.query(sys, DGG.MultiOrderCoverage(REGION); level=deep)
-        cv = DGG.CellVector(set)
-        values = Float64.(eachindex(cv))
+        cv, values = coverage_fixture(sys, deep)
         cells, out = DGG.aggregate(sum, cv, values, shallow)
         want, wantvals, groups = brute_aggregate(sum, sys, collect(cv), values, shallow)
 
@@ -126,8 +129,7 @@ end
         @test out == wantvals
         @test sum(out) == sum(values)
         @test length(cells) < length(cv)
-        # A coarse cell with no present descendant is ABSENT, not reduced over
-        # nothing.
+        # A coarse cell with no present descendant is absent.
         @test length(cells) < DGG.ncells(DGG.levelgrid(sys, shallow))
         # The fixture must contain partial groups.
         @test count(a -> length(groups[a]) <
@@ -135,15 +137,12 @@ end
     end
 
     @testset "the reducer sees one contiguous view per group" begin
-        set = DGG.query(sys, DGG.MultiOrderCoverage(REGION); level=deep)
-        cv = DGG.CellVector(set)
-        values = Float64.(eachindex(cv))
+        cv, values = coverage_fixture(sys, deep)
         seen = Any[]
         DGG.aggregate(v -> (push!(seen, v); sum(v)), cv, values, shallow)
 
-        # Views into the caller's array, tiling it contiguously in order. A
-        # group straddling a window gap is still one range, since the data
-        # array indexes only the cells `cv` holds.
+        # Views into the caller's array tile it in order; a group straddling a
+        # window gap is one range because the data indexes only `cv`'s cells.
         @test all(v -> v isa SubArray && parent(v) === values, seen)
         spans = [only(parentindices(v)) for v in seen]
         @test all(s -> s isa AbstractUnitRange, spans)
@@ -154,9 +153,7 @@ end
 
     @testset "aggregating twice is aggregating once" begin
         # Associative `f` plus refining groups: two-step equals one-step.
-        set = DGG.query(sys, DGG.MultiOrderCoverage(REGION); level=deep)
-        cv = DGG.CellVector(set)
-        values = Float64.(eachindex(cv))
+        cv, values = coverage_fixture(sys, deep)
         mid, midvals = DGG.aggregate(sum, cv, values, shallow)
         twice, twicevals = DGG.aggregate(sum, mid, midvals, coarse)
         once, oncevals = DGG.aggregate(sum, cv, values, coarse)
@@ -170,11 +167,9 @@ end
     cv = DGG.CellVector(DGG.levelgrid(sys, leaf))
     values = Float64.(eachindex(cv))
 
-    # Same-level and deeper targets throw.
     @test_throws ArgumentError DGG.aggregate(sum, cv, values, leaf)
     @test_throws ArgumentError DGG.aggregate(sum, cv, values, leaf + 1)
     @test_throws ArgumentError DGG.aggregate(sum, cv, values, -1)
-    # A values length that does not match the cells throws.
     @test_throws ArgumentError DGG.aggregate(sum, cv, values[1:end-1], leaf - 1)
 
     # A5 has no descendant ranges, so `aggregate` refuses it.
@@ -192,8 +187,7 @@ end
     top = first(DGG.levels(sys))
     parents = DGG.descendants(sys, root, L - 1)
 
-    # Deterministic fields: constant per level-`L-1` sibling group, all
-    # distinct, and banded.
+    # Fields: constant per level-`L-1` sibling group, all distinct, and banded.
     parentgroup = [Float64(DGG.localindex(DGG.levelgrid(sys, L - 1),
         DGG.ancestor(sys, c, L - 1))) for c in cv]
     distinct = Float64.(eachindex(cv))
@@ -215,8 +209,6 @@ end
 
     @testset "piecewise-constant data collapses to its pieces" begin
         cells, vals = EN._coarsen(cv, parentgroup; atol=0.0)
-        # Exactly the level-`L-1` cells: constant within each, differing
-        # between them.
         @test cells == parents
         @test vals ≈ unique(parentgroup)
         @test length(cells) < n
@@ -226,8 +218,7 @@ end
         cells, vals = EN._coarsen(cv, distinct; atol=0.0)
         @test cells == collect(cv)
         @test vals == distinct
-        # An unmerged leaf keeps its own value, so an integer field stays `Int`
-        # (routing through `by = mean` would make it `Float64`).
+        # An unmerged leaf keeps its own value, so an integer field stays `Int`.
         ints = collect(1:n)
         _, intvals = EN._coarsen(cv, ints; atol=0)
         @test intvals == ints
@@ -235,8 +226,7 @@ end
     end
 
     @testset "a span wider than its own integer type never merges" begin
-        # `typemax - typemin` wraps negative, which a bare `<= atol` reads as a
-        # flat group.
+        # `typemax - typemin` wraps negative, which a bare `<= atol` reads as flat.
         wide = fill(0, n)
         wide[1] = typemin(Int)
         wide[2] = typemax(Int)
@@ -250,7 +240,6 @@ end
         cells, vals = EN._coarsen(cv, flat; atol=0.0)
         @test cells == [root]
         @test vals == [7.0]
-        # `minlevel` stops the climb at that level.
         for stop in (L - 1, L)
             cells, vals = EN._coarsen(cv, flat; atol=0.0, minlevel=stop)
             @test cells == DGG.descendants(sys, root, stop)
@@ -297,17 +286,15 @@ end
             # `atol` of its stored value.
             @test all(abs(lat[k] - stored[k]) <= atol for k in eachindex(lat))
         end
-        # A larger tolerance never stores more; over this sweep, strictly
-        # fewer — so the bound is not met by refusing to merge.
+        # A larger tolerance never stores more, and the sweep does merge.
         @test issorted(lengths; rev=true)
         @test first(lengths) == n
         @test last(lengths) < n
     end
 
     @testset "completeness is what makes the cell set recoverable" begin
-        # Holes are punched per sibling group (first leaf of every third), not
-        # by index stride: a small stride hits every radix-7 group and would
-        # leave the mixed-level assertions below vacuous.
+        # Holes go in the first leaf of every third sibling group; an index
+        # stride would hit every radix-7 group and leave nothing to merge.
         grid = DGG.levelgrid(sys, L)
         dropped = Set(first(DGG.descendant_range(sys, a, L))
                       for (j, a) in enumerate(parents) if j % 3 == 0)
@@ -330,9 +317,8 @@ end
     end
 
     @testset "the index-list window shape answers the same" begin
-        # Every fixture above stores `RangeWindows`; this one forces
-        # `IndexWindows` — first sibling group kept whole, the rest thinned
-        # to every other cell — so the merge path runs on that shape too.
+        # Forces `IndexWindows`: first sibling group whole, the rest thinned to
+        # every other cell.
         g = length(DGG.descendant_range(sys, parents[1], L))
         thin = cv[[k for k in 1:n if k <= g || isodd(k)]]
         @test EN.windows(thin) isa EN.IndexWindows
@@ -344,8 +330,7 @@ end
         want, wantvals = brute_coarsen(sys, thin, values, 0.0, mean, top)
         @test cells == want
         @test isequal(vals, wantvals)
-        # The whole group merged, the thinned cells did not, and nothing
-        # outside `thin` was named.
+        # The whole group merged, the thinned cells did not, nothing else is named.
         @test parents[1] in cells
         @test any(c -> DGG.level(c) == L, cells)
         @test all(c -> DGG.level(c) == L ? c in thin : true, cells)

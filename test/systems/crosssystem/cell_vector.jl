@@ -133,9 +133,7 @@ end
     end
 
     @testset "cellposition forwards to localindex, deprecated" begin
-        # `cv` is a partial coverage, not a complete level, so `localindex`
-        # and `globalindex` disagree here (see "the five ways in agree" below)
-        # — a shim that forwarded to the wrong one would be caught.
+        # On a partial coverage `localindex` and `globalindex` differ.
         c = cv[1]
         @test DGG.cellposition(cv, c) == DGG.localindex(cv, c)
         lon, lat = LONLAT(DGG.cell_centroid(grid, c))

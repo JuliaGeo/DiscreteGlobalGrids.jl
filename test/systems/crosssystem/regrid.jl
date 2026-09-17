@@ -842,15 +842,13 @@ end
 const MOCSYS = DGG.HEALPixSystem()
 const MOCREF = 3
 
-function mixedcontainer()
-    l1 = DGG.levelgrid(MOCSYS, 1)
-    roots = [DGG.cellindex(l1, i) for i in 1:DGG.ncells(l1)]
-    kids(c, l) = collect(DGG.CellVector(DGG.subtree(MOCSYS, c, l)))
-    cells = vcat(kids(roots[1], 3), kids(roots[2], 2), roots[3:end])
-    return DGG.MultiOrderVector(MOCSYS, cells; reference_level = MOCREF)
-end
+const MOCROOTS = collect(DGG.CellVector(DGG.levelgrid(MOCSYS, 1)))
+mockids(c, l) = collect(DGG.CellVector(DGG.subtree(MOCSYS, c, l)))
 
-const MOV = mixedcontainer()
+# Three stored levels in one container.
+const MOV = DGG.MultiOrderVector(MOCSYS,
+    vcat(mockids(MOCROOTS[1], 3), mockids(MOCROOTS[2], 2), MOCROOTS[3:end]);
+    reference_level = MOCREF)
 # Distinct values expose any mismatch between value and geometry ordering.
 const MOCVALS = collect(1.0:length(MOV))
 const MOCCUBE = DD.DimArray(MOCVALS, DGG.Cells(DGG.MultiOrderLookup(MOV)))
@@ -992,11 +990,9 @@ end
           parent(DGG.regrid(MOCCUBE; to = MOCDST))
 
     # Equal counts cannot detect geometry paired with another container's values.
-    l1 = DGG.levelgrid(MOCSYS, 1)
-    roots = [DGG.cellindex(l1, i) for i in 1:DGG.ncells(l1)]
-    kids(c, l) = collect(DGG.CellVector(DGG.subtree(MOCSYS, c, l)))
     other = DGG.MultiOrderVector(MOCSYS,
-        vcat(roots[1:2], kids(roots[3], 3), kids(roots[4], 2), roots[5:end]);
+        vcat(MOCROOTS[1:2], mockids(MOCROOTS[3], 3), mockids(MOCROOTS[4], 2),
+            MOCROOTS[5:end]);
         reference_level = MOCREF)
     @test length(other) == length(MOV) && collect(other) != collect(MOV)
     for spelling in (other, DGG.MultiOrderLookup(other))

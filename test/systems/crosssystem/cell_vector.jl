@@ -249,6 +249,14 @@ end
     @test both ⊆ small
     @test big ⊆ big
     @test !(big ⊆ small)
+    # One range window of `a` spans several single-index windows of `b`.
+    grid = DGG.levelgrid(sys, leaf)
+    a = DGG.CellVector(EN._range_windows((3:4,)), grid, nothing, leaf)
+    b = DGG.CellVector(sys, leaf, [DGG.cellindex(grid, p) for p in (3, 4, 9)])
+    @test EN.windows(a) isa EN.RangeWindows
+    @test EN.windows(b) isa EN.IndexWindows
+    @test issubset(a, b)
+    @test !issubset(b, a)
     @test intersect(big, big) == big
     @test isempty(intersect(big, DGG.CellVector(
         DGG.query(sys, DGG.MultiOrderCoverage(NOWHERE); level=leaf))))

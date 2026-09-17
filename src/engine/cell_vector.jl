@@ -594,15 +594,7 @@ _intersect_intervals(x::CellWindows, y::CellWindows) =
 
 function Base.issubset(a::CellVector, b::CellVector)
     system(a) == system(b) && a.level == b.level || return isempty(a)
-    B = intervals(b.windows)
-    j = 1
-    for (lo, hi) in intervals(a.windows)
-        while j <= length(B) && B[j][2] < lo
-            j += 1
-        end
-        (j <= length(B) && B[j][1] <= lo && hi <= B[j][2]) || return false
-    end
-    return true
+    return isempty(_setdiff_intervals(intervals(a.windows), intervals(b.windows)))
 end
 
 # --- show ------------------------------------------------------------------

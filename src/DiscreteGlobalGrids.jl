@@ -373,6 +373,9 @@ public slotcount, slotindex, slotcell
 # visualization package's in-memory one.
 export AbstractPyramid
 export holdsdata, cellvalues
+# What `dggread` answers with on a pyramid store; named, never constructed by a
+# caller. The layout beside it is the store's shape, for slot arithmetic.
+public StorePyramid, PyramidLayout
 # Caught, not called.
 public NeighborCallbackError
 

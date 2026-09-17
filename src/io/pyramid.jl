@@ -418,6 +418,35 @@ end
 pyramid_runs(l::PyramidLayout, J::Integer, cells::AbstractVector) =
     _pyramid_runs(l, Int(J), _pyramid_intervals(l, Int(J), cells))
 
+"""
+    pyramid_index_runs(layout, J, indices) -> Vector{PyramidRun}
+
+[`pyramid_runs`](@ref) from INDICES of the complete level-`J` grid rather than
+from cells, strictly ascending.
+
+This is what a level built by [`pyramid_reduce`](@ref) is written from: the
+reduction names its parents by index, and turning those back into cells only to
+turn them into indices again would be the same arithmetic twice.
+"""
+function pyramid_index_runs(l::PyramidLayout, J::Integer,
+    indices::AbstractVector{<:Integer})
+    _checklevel(l, J)
+    ivs = Tuple{Int,Int}[]
+    previous = 0
+    for x in indices
+        p = Int(x)
+        p > previous || throw(ArgumentError(
+            "the indices must be strictly ascending; $p follows $previous."))
+        if !isempty(ivs) && p == previous + 1
+            ivs[end] = (ivs[end][1], p)
+        else
+            push!(ivs, (p, p))
+        end
+        previous = p
+    end
+    return _pyramid_runs(l, Int(J), ivs)
+end
+
 # Ascending, disjoint index intervals from an explicit cell vector. The fallback
 # path: a `CellVector` already keeps these and hands them over for free.
 function _pyramid_intervals(l::PyramidLayout, J::Int, cells::AbstractVector)
@@ -711,3 +740,151 @@ function pyramid_layout(attrs; store::AbstractString="")
                "`$PYRAMID_LEVEL_PREFIX` followed by the level number."))
     return l
 end
+
+# ===========================================================================
+# The cube a pyramid store reads back as
+# ===========================================================================
+
+"""
+    StorePyramid(layout, stacks, fills, identifier)
+
+Every level of a pyramid store, lazily, as one [`AbstractPyramid`](@ref).
+
+    pyr[3]            # level 3, as a `DimStack` over that level's `Cells` axis
+    pyr[:elevation]   # one variable, at every level, as a `StorePyramid` again
+    keys(pyr)         # the variables
+    levels(pyr)       # the levels
+    pyr.layout        # the `PyramidLayout` the store declares
+
+A level is an ordinary cube over the COMPLETE level in canonical order: the slot
+space the store is laid out on stops at the store, and a cell axis holds cells.
+Values the store never had read back as `missing` through
+[`cellvalues`](@ref DiscreteGlobalGrids.cellvalues), and as the array's own fill
+value through the cube.
+
+[`holdsdata`](@ref DiscreteGlobalGrids.holdsdata) and
+[`cellvalues`](@ref DiscreteGlobalGrids.cellvalues) answer for ONE variable, so
+they are asked of `pyr[:elevation]` rather than of a pyramid holding several.
+That is the only thing the single-variable view is for.
+
+Built by [`dggread`](@ref DiscreteGlobalGrids.dggread) on a store whose
+attributes [`ispyramidstore`](@ref) recognizes.
+"""
+struct StorePyramid{L<:PyramidLayout,S,F} <: AbstractPyramid
+    layout::L
+    stacks::S
+    fills::F
+    identifier::String
+end
+
+system(p::StorePyramid) = system(p.layout)
+levels(p::StorePyramid) = levels(p.layout)
+Base.keys(p::StorePyramid) = keys(p.fills)
+
+function Base.getindex(p::StorePyramid, J::Integer)
+    j = Int(J)
+    j in levels(p) || throw(ArgumentError(
+        "this pyramid holds levels $(levels(p)), and $j is not one of them."))
+    return p.stacks[j-first(levels(p))+1]
+end
+
+function Base.getindex(p::StorePyramid, var::Symbol)
+    haskey(p.fills, var) || throw(ArgumentError(
+        "this pyramid has no variable `$var`; it holds " *
+        join(string.(keys(p.fills)), ", ") * "."))
+    stacks = [s[(var,)] for s in p.stacks]
+    return StorePyramid(p.layout, stacks, NamedTuple{(var,)}((p.fills[var],)),
+        p.identifier)
+end
+
+Base.show(io::IO, p::StorePyramid) = print(io, "StorePyramid(", p.identifier, ", ",
+    p.layout, ", ", join(string.(keys(p)), ", "), ")")
+
+# The one variable the reading verbs answer for. A pyramid over several is a
+# container; `holdsdata` and `cellvalues` are about values, and there is no
+# honest single answer over more than one.
+function _onlyvar(p::StorePyramid)
+    ks = keys(p.fills)
+    length(ks) == 1 && return only(ks)
+    throw(ArgumentError(
+        "this pyramid holds " * join(string.(ks), ", ") * ", and `holdsdata` " *
+        "and `cellvalues` answer for one variable. Select one first: " *
+        "`pyr[:$(first(ks))]`."))
+end
+
+function holdsdata(p::StorePyramid, c::AbstractCellIndex)
+    var = _onlyvar(p)
+    J = level(c)
+    J in levels(p) || throw(ArgumentError(
+        "$c is at level $J and this pyramid holds levels $(levels(p))."))
+    i = globalindex(levelgrid(system(p), J), c)
+    # A well-formed id naming no cell holds nothing, which is the honest answer
+    # rather than an error: a descent meets these where a subtree was deleted.
+    i === nothing && return false
+    v = only(_leveldata(p, J, var)[i:i])
+    return !isequal(v, p.fills[var])
+end
+
+function cellvalues(p::StorePyramid, J::Integer, cells)
+    var = _onlyvar(p)
+    j = Int(J)
+    j in levels(p) || throw(ArgumentError(
+        "this pyramid holds levels $(levels(p)), and $j is not one of them."))
+    sys = system(p)
+    grid = levelgrid(sys, j)
+    fillvalue = p.fills[var]
+    data = _leveldata(p, j, var)
+    T = eltype(data)
+
+    n = length(cells)
+    out = Vector{Union{T,Missing}}(undef, n)
+    fill!(out, missing)
+    n == 0 && return out
+
+    indices = Vector{Int}(undef, n)
+    for (i, c) in enumerate(cells)
+        indices[i] = _valueindex(grid, j, c)
+    end
+
+    # One read per CHUNK touched, which is one store read: the cells of a frame
+    # are scattered over the level but clustered in the tree, so a per-cell read
+    # would fetch the same chunk hundreds of times.
+    order = sortperm(indices)
+    rl = chunkrootlevel(p.layout, j)
+    i = 1
+    while i <= n
+        start = indices[order[i]]
+        if start == 0
+            i += 1
+            continue
+        end
+        r = descendant_range(sys, ancestor(sys, cellindex(grid, start), rl), j)
+        k = i
+        while k <= n && indices[order[k]] <= last(r)
+            k += 1
+        end
+        stop = indices[order[k-1]]
+        block = data[start:stop]
+        for t in i:(k-1)
+            slot = order[t]
+            v = block[indices[slot]-start+1]
+            isequal(v, fillvalue) || (out[slot] = v)
+        end
+        i = k
+    end
+    return out
+end
+
+# Zero for a cell this level does not have, which `cellvalues` reports as
+# `missing` rather than refusing: a descent over a deleted branch asks.
+function _valueindex(grid, j::Int, c::AbstractCellIndex)
+    level(c) == j || throw(ArgumentError(
+        "`cellvalues` was asked for level $j and given the level-$(level(c)) cell $c."))
+    i = globalindex(grid, c)
+    return i === nothing ? 0 : i
+end
+
+# The array behind one variable at one level: a lazy store-backed vector, or a
+# plain one where the pyramid was materialized. `parent` of a `DimArray` is
+# whichever it is, and the reading verbs need nothing else from the cube.
+_leveldata(p::StorePyramid, J::Integer, var::Symbol) = parent(p[J][var])

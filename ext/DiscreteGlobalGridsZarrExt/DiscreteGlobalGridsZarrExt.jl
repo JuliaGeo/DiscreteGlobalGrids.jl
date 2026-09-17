@@ -15,5 +15,8 @@ include("write.jl")
 # `dggwrite`'s entry points and neither of their pipelines. Last, because both
 # of those route into it by name.
 include("subzones.jl")
+# The multi-level pyramid layout, which shares those entry points on the same
+# terms and answers `dggread` with a `StorePyramid` rather than a cube.
+include("pyramid.jl")
 
 end # module DiscreteGlobalGridsZarrExt

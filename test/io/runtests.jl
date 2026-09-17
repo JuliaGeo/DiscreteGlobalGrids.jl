@@ -32,6 +32,7 @@ using .ChunkedLookups
     include("write.jl")
     include("stores.jl")
     include("subzone_store.jl")
+    include("pyramid_store.jl")
     # A stored axis as a region, and the traversal that follows its chunks.
     # Both round-trip through a real store, so both live behind the same skip.
     include("region.jl")

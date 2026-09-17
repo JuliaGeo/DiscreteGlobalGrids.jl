@@ -125,11 +125,14 @@ end
 @noinline function _otherlayout(layout::Symbol, dest, src; kw...)
     layout === :subzones && return DiscreteGlobalGridsZarrExt.DGGSZarrSubzones.write_subzones(
         dest, src; kw...)
+    layout === :pyramid && return DiscreteGlobalGridsZarrExt.DGGSZarrPyramid.write_pyramid(
+        dest, src; kw...)
     throw(ArgumentError(
         "dggwrite writes the `:cells` layout — one cell dimension, the default — " *
-        "and the `:subzones` layout, which is the two-dimensional " *
-        "ancestor-subzone store and takes an `ancestor_level`. " *
-        "$(repr(layout)) is neither."))
+        "the `:subzones` layout, which is the two-dimensional ancestor-subzone " *
+        "store and takes an `ancestor_level`, and the `:pyramid` layout, which " *
+        "is every level of the hierarchy on its slot space. " *
+        "$(repr(layout)) is none of them."))
 end
 
 @noinline function _reject_remote(path)

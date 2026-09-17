@@ -90,9 +90,11 @@ _projected_crs_native_to_unit_sphere(crs) = throw(ArgumentError(
     "GlobalRegridding recognizes as geographic longitude/latitude without " *
     "Proj. Load Proj (`import Proj`) so the CRS can be classified and a " *
     "transformation derived from it, or pass `native_to_unit_sphere` " *
-    "explicitly."))
+    "explicitly. If Proj is already loaded, the GlobalRegriddingRastersProjExt " *
+    "extension did not load; check " *
+    "`Base.get_extension(GlobalRegridding, :GlobalRegriddingRastersProjExt)` " *
+    "and rebuild stale precompilation with `Pkg.precompile()`."))
 
-# Fill in the forward chart from CRS metadata only when the caller gave none.
 function _with_crs_transform(A, kwargs)
     (haskey(kwargs, :native_to_unit_sphere) || haskey(kwargs, :transform)) &&
         return kwargs

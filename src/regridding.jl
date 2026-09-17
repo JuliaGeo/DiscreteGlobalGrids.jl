@@ -392,8 +392,6 @@ function GR.sourceview(lk::MultiOrderLookup, A::DD.AbstractDimArray, method)
     return expand(A, reference_level(lk))
 end
 
-GR.sourceview(::MultiOrderLookup, A, method) = nothing
-
 @noinline _nointerpolation(lk::MultiOrderLookup, method) = throw(ArgumentError(
     "$(nameof(typeof(method))) changes when replicated values move from stored " *
     "cells to their leaf sites, so the mixed-level source cannot refine to " *

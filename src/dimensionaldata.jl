@@ -1033,23 +1033,15 @@ end
 
 _rebuild(lk::MultiOrderLookup, mov::MultiOrderVector) = MultiOrderLookup(mov)
 
-# Concatenation preserves this lookup only for ascending, disjoint ids.
+# Concatenation preserves this lookup only for strictly ascending ids.
 function _rebuild(lk::MultiOrderLookup, ids::AbstractVector{<:AbstractCellIndex})
     mov = parent(lk)
     sys = system(mov)
     # Key the concatenated axis at its deepest cell level.
-    ref = reference_level(mov)
-    for c in ids
-        ref = max(ref, level(c))
-    end
-    ascending = true
-    prev = 0
-    for c in ids
-        s = first(descendant_range(sys, c, ref))
-        s > prev || (ascending = false)
-        prev = s
-    end
-    ascending || return Lookups.Categorical(collect(ids); order=Lookups.Unordered())
+    ref = maximum(level, ids; init=reference_level(mov))
+    starts = [first(descendant_range(sys, c, ref)) for c in ids]
+    issorted(starts; lt=<=) ||
+        return Lookups.Categorical(collect(ids); order=Lookups.Unordered())
     return MultiOrderLookup(MultiOrderVector(sys, ids; reference_level=ref))
 end
 

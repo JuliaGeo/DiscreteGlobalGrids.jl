@@ -225,3 +225,50 @@ mean(mine[routed] .== vec(directions)[routed])
 # |---|---|
 # | `flowaccumulation` with `D8()`, the default | any |
 # | `flowaccumulation` with `DInf()` or `FD8()`, and `height_above_nearest_drainage` | IGEO7 — these need relative-cell arithmetic, which the IGEO7 backend provides |
+
+# ## Store the result as a pyramid
+#
+# `dggwrite` writes this cube in [The pyramid layout](@ref): every level from
+# the root down to the data's own, each one array laid out on the level's slot
+# space and chunked at a power of seven, so that one chunk is exactly one
+# subtree.
+
+using Zarr
+
+store = joinpath(mktempdir(), "ortler.zarr")
+DGG.dggwrite(store, rebuild(elevation; name = :elevation); layout = :pyramid)
+
+# The level the tile landed on addresses close to a trillion cells worldwide,
+# and the store holds sixteen million of them. Only the chunks a cell fell into
+# were ever written:
+
+leaf_slots = DGG.slotcount(sys, leaf_level)
+possible = leaf_slots ÷ 7^6
+written = length(filter(!startswith('.'),
+    readdir(joinpath(store, "elevation", "level$leaf_level"))))
+
+leaf_level, DGG.ncells(sys, leaf_level), possible, written
+
+# Reading it back gives a `StorePyramid`: every level, lazily. A level is a cube
+# over the complete level in canonical order, so the leaf level is a lazy array
+# of nearly a trillion elements — the point is never to read it whole.
+
+pyramid = DGG.dggread(store)[:elevation]
+DGG.levels(pyramid), length(pyramid[leaf_level][:elevation])
+
+# Ask instead for the cells you want. `cellvalues` reads one chunk per chunk
+# touched and answers `missing` where the store holds nothing, which is both the
+# value and the presence test a viewer needs:
+
+coarse = DGG.levelgrid(sys, 6)
+sampled = DGG.cellvalues(pyramid, 6, [DGG.cellindex(coarse, i) for i in 1:DGG.ncells(sys, 6)])
+count(!ismissing, sampled), DGG.ncells(sys, 6)
+
+# Thirty-three cells out of a million: one coarse read says where the tile is,
+# and a descent through the levels narrows that to the handful of leaf chunks
+# worth fetching without probing the store for any of them. That is what makes
+# the coarse levels the store's own index — and why the layout always writes
+# them.
+
+DGG.holdsdata(pyramid, DGG.cellat(DGG.levelgrid(sys, 3), 10.5, 46.5)),
+DGG.holdsdata(pyramid, DGG.cellat(DGG.levelgrid(sys, 3), -70.0, -30.0))

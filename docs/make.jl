@@ -117,6 +117,7 @@ const DOCS_PAGES = [
         "Assigning chunks to workers" => "api/partitioning.md",
         "Requesting neighbour fields" => "api/neighbor-fields.md",
         "The ancestor-subzone layout" => "api/subzone-layout.md",
+        "The pyramid layout" => "api/pyramid-layout.md",
     ],
     "Internals" => [
         "Grid extension reference" => "internals/grid-contracts.md",

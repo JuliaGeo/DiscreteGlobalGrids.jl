@@ -8,6 +8,7 @@ module RegionAlgebraTests
 using Test
 using Statistics
 import DiscreteGlobalGrids as DGG
+import DimensionalData as DD
 
 include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
 using .DGGTestHelpers: syslabel
@@ -130,6 +131,16 @@ end
                 predicate = within_one,
                 reduce = mean,
             )) == [root]
+
+            cube = DD.DimArray(values, DGG.Cells(DGG.CellLookup(cv)))
+            @test collect(DGG.simplify(cube; predicate = within_one,
+                reduce = mean)) == [root]
+            @test_throws ArgumentError DGG.simplify(
+                DD.DimArray(reshape(values, :, 1),
+                    (DGG.Cells(DGG.CellLookup(cv)), DD.Dim{:band}(1:1)));
+                predicate = within_one,
+                reduce = mean,
+            )
 
             outliers = copy(values)
             outliers[1] += 2

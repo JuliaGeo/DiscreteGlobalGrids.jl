@@ -103,25 +103,28 @@ count(isnan, elevation)
 # `simplify` compresses a single-level region from the leaves upward. Complete
 # sibling groups collapse when their values satisfy a predicate; `reduce`
 # supplies the temporary value used if the resulting parent is tested at the
-# next level. Here cells collapse when their topographic-position-index values
-# span at most one metre:
+# next level.
+#
+# A predicate is any callable. This one holds when the values span at most a
+# threshold, ignoring missing and non-finite values:
 
-tpi = GM.topographic_position_index(elevation)
-leaf_cells = parent(lookup(tpi, DGG.Cells))
-
-function similar_tpi(xs)
-    values = collect(xs)
-    return all(isfinite, values) && maximum(values) - minimum(values) <= 1
+struct WithinThreshold{T<:Real}
+    threshold::T
 end
 
-simplified_tpi = DGG.simplify(
-    leaf_cells,
-    vec(tpi);
-    predicate = similar_tpi,
-    reduce = mean,
-)
+function (w::WithinThreshold)(xs)
+    lo, hi = extrema((x for x in xs if !ismissing(x) && isfinite(x));
+        init = (Inf, -Inf))
+    return hi - lo <= w.threshold
+end
 
-(dense_cells = length(leaf_cells),
+# Here cells collapse when their topographic-position-index values span at most
+# one metre:
+
+tpi = GM.topographic_position_index(elevation)
+simplified_tpi = DGG.simplify(tpi; predicate = WithinThreshold(1), reduce = mean)
+
+(dense_cells = length(tpi),
  compressed_cells = length(simplified_tpi),
  levels = extrema(DGG.level, simplified_tpi))
 

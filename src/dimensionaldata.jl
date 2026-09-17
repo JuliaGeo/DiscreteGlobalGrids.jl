@@ -35,7 +35,7 @@ import ..DiscreteGlobalGrids.Engine: PartialGrid, SubtreeIds,
 # Core collection operations delegated to `CellVector`.
 import ..DiscreteGlobalGrids.Engine: CellVector, cellset, covering,
     covering_indices, predicate_indices, windows, nwindows, RangeWindows, CellWindows, _derive,
-    _windows, SubsetIndexedCell, mapneighbors, foreachneighbors,
+    _windows, SubsetIndexedCell, mapneighbors, foreachneighbors, simplify,
     StorageOrder, _capacity, _ringtype, Neighborhood, Disc, Ring, _steps, _checkneighborhood
 
 import SmallCollections
@@ -876,6 +876,21 @@ adjacency(A::DD.AbstractDimArray; kw...) =
 
 adjacency(A::DD.AbstractDimArray, dims::DimSelector; kw...) =
     adjacency(parent(DD.lookup(A, _cells_dimnum(A, dims))); kw...)
+
+"""
+    simplify(A::AbstractDimArray; predicate, reduce) -> MultiOrderCellSet
+
+[`simplify`](@ref) a one-dimensional cube: the region is its cell dimension and
+the values are its data. The keywords are those of the [`CellVector`](@ref)
+method.
+"""
+function simplify(A::DD.AbstractDimArray; predicate, reduce)
+    ndims(A) == 1 || throw(ArgumentError(
+        "simplify reads one value per cell, so the cube is one-dimensional; " *
+        "got dims $(map(DD.name, DD.dims(A)))"))
+    lk = DD.lookup(A, _cells_dimnum(A, nothing))
+    return simplify(parent(lk), parent(A); predicate, reduce)
+end
 
 """
     mapneighbors(f, A::AbstractDimArray, dims; kw...)

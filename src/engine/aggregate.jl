@@ -21,6 +21,8 @@ function _within_levels(sys::AbstractHierarchicalGridSystem, l::Int)
 end
 
 # --- window helpers ---------------------------------------------------------
+
+# First present global index at or after `lo`.
 function _next_index(w::RangeWindows, lo::Int)
     j = searchsortedfirst(w.stops, lo)
     j <= length(w.stops) || return nothing
@@ -68,16 +70,13 @@ function aggregate(f, cv::CellVector, values::AbstractVector, l::Integer)
         "aggregation goes UP the hierarchy: level $target is not coarser than the " *
         "vector's level $(level(cv))"))
     coarse = levelgrid(sys, target)
-    indices, segments = _aggregate_segments(cv, coarse, target)
+    indices, segments = _aggregate_segments(cv, cv.windows, coarse, target)
     out = map(r -> f(view(values, r)), segments)
     # `_windows` verifies the ordering promised by `has_sorted_subtrees`.
     return CellVector(_windows(indices), coarse, nothing, target), out
 end
 
-# Specialize on the window shape and compute each output ancestor once.
-_aggregate_segments(cv::CellVector, coarse::AbstractGrid, target::Int) =
-    _aggregate_segments(cv, cv.windows, coarse, target)
-
+# Taking the windows as an argument specializes the walk on their shape.
 function _aggregate_segments(cv::CellVector, w::CellWindows, coarse::AbstractGrid,
         target::Int)
     sys = system(cv)
@@ -131,12 +130,7 @@ function coarsen(cv::CellVector, values::AbstractVector; atol, by=_mean,
     return MultiOrderVector(system(cv), cells; reference_level=level(cv)), vals
 end
 
-"""
-    _coarsen(cv, values; atol, by, minlevel) -> (Vector{ID}, Vector)
-
-Return [`coarsen`](@ref)'s stored cells in descendant-range order and their
-aligned values.
-"""
+# `coarsen`'s stored cells in descendant-range order, with their aligned values.
 function _coarsen(cv::CellVector, values::AbstractVector; atol, by=_mean,
         minlevel::Integer=first(levels(system(cv))))
     sys = system(cv)

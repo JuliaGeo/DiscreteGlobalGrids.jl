@@ -20,12 +20,12 @@ cellset(g::MultiOrderGrid) = g.cells
 
 Base.show(io::IO, g::MultiOrderGrid) =
     print(io, "MultiOrderGrid(", typeof(g.cells.system).name.name, ", ",
-        length(g.cells), " cells", isempty(g.cells) ? "" :
-        ", levels $(minimum(level, g.cells)):$(maximum(level, g.cells))", ")")
+        length(g.cells), " cells",
+        isempty(g.cells) ? "" : ", " * _levelspan(g.cells), ")")
 
 Base.show(io::IO, ::MIME"text/plain", g::MultiOrderGrid) = show(io, g)
 
-# --- the base grid interface ------------------------------------------------
+# --- base grid interface ----------------------------------------------------
 
 ncells(g::MultiOrderGrid) = length(g.cells)
 cellindex(g::MultiOrderGrid, i::Int) = g.cells[i]
@@ -43,7 +43,6 @@ cell_extent(g::MultiOrderGrid, c::AbstractCellIndex) = cell_extent(_ownlevel(g, 
 # Level-grid area methods preserve exact answers for curvilinear cells.
 cell_area(g::MultiOrderGrid, c::AbstractCellIndex) = cell_area(_ownlevel(g, c), c)
 
-# Forward analytic caps and their cost trait at the cell's own level.
 Fallbacks.cell_cap(g::MultiOrderGrid, c::AbstractCellIndex) =
     Fallbacks.cell_cap(_ownlevel(g, c), c)
 
@@ -68,7 +67,7 @@ localindex(g::MultiOrderGrid, p::GO.UnitSphericalPoint) = localindex(g.cells, p)
 
 cellat(g::MultiOrderGrid, p::GO.UnitSphericalPoint) = cellat(g.cells, p)
 
-# --- the spatial tree -------------------------------------------------------
+# --- spatial tree -----------------------------------------------------------
 
 """
     treeify(::Manifold, g::MultiOrderGrid) -> IndexTreeNode
@@ -83,8 +82,7 @@ treeify(::GOCore.Manifold, g::MultiOrderGrid) = IndexTreeNode(IndexTree(g), 1)
 @noinline function _nolevelindex(g::MultiOrderGrid, c::AbstractCellIndex)
     throw(ArgumentError(
         "$c has no global index in a MultiOrderGrid, whose cells span " *
-        "$(isempty(g.cells) ? "no levels" :
-           "levels $(minimum(level, g.cells)):$(maximum(level, g.cells))"). " *
+        "$(isempty(g.cells) ? "no levels" : _levelspan(g.cells)). " *
         "Use `localindex(grid, c)` for the stored index or " *
         "`globalindex(levelgrid(system(grid), level(c)), c)` for the cell's " *
         "level-specific index."))

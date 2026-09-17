@@ -575,8 +575,6 @@ end
 
 # --- set arithmetic ---------------------------------------------------------
 
-# Base's first-appearance union order may violate the ascending invariant.
-
 function _same_space(a::CellVector, b::CellVector, verb::AbstractString)
     system(a) == system(b) || throw(ArgumentError(
         "cannot $verb cell vectors from $(typeof(system(a))) and $(typeof(system(b)))"))
@@ -590,18 +588,9 @@ function Base.intersect(a::CellVector, b::CellVector)
     return _derive(a, _windows_from_intervals(_intersect_intervals(a.windows, b.windows)))
 end
 
-function _intersect_intervals(x::CellWindows, y::CellWindows)
-    A, B = intervals(x), intervals(y)
-    out = Tuple{Int,Int}[]
-    i = j = 1
-    while i <= length(A) && j <= length(B)
-        lo = max(A[i][1], B[j][1])
-        hi = min(A[i][2], B[j][2])
-        lo <= hi && push!(out, (lo, hi))
-        A[i][2] < B[j][2] ? (i += 1) : (j += 1)
-    end
-    return out
-end
+# The interval merge is shared with `MultiOrderVector`.
+_intersect_intervals(x::CellWindows, y::CellWindows) =
+    _intersect_intervals(intervals(x), intervals(y))
 
 function Base.issubset(a::CellVector, b::CellVector)
     system(a) == system(b) && a.level == b.level || return isempty(a)

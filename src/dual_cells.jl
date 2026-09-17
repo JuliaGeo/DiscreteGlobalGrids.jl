@@ -118,13 +118,10 @@ end
 
 # Stored-cell caps give a useful reach bound for the single-chunk mixed grid.
 function _dualreach(space::DGGSpace{<:MultiOrderGrid})
-    mov = space.grid.cells
-    sys = mov.system
+    grid = space.grid
     r = 0.0
-    for i in eachindex(mov.cells)
-        c = @inbounds mov.cells[i]
-        cap = Fallbacks.cell_cap(levelgrid(sys, level(c)), c)
-        r = max(r, Float64(cap.radius))
+    for c in grid.cells
+        r = max(r, Float64(Fallbacks.cell_cap(grid, c).radius))
     end
     return min(Float64(pi), 2 * r)
 end

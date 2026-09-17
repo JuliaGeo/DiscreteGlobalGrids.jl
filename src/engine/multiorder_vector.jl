@@ -40,7 +40,7 @@ function _multiorder_vector(sys::S, cells::Vector{ID}, starts::Vector{Int},
     return MultiOrderVector{ID,S}(sys, cells, starts, stops, offsets, ref, checked)
 end
 
-# Validate the reference level before computing descendant ranges.
+# Runs before any `descendant_range` call, which needs a valid reference level.
 function _check_reference(sys::AbstractHierarchicalGridSystem, cells, ref::Int)
     has_sorted_subtrees(sys) || throw(ArgumentError(
         "$(typeof(sys)) has no descendant ranges, so a cell's subtree is not one " *
@@ -55,9 +55,9 @@ function _check_reference(sys::AbstractHierarchicalGridSystem, cells, ref::Int)
     return nothing
 end
 
+# Every checked builder runs `_check_reference` first, to compute the intervals.
 function _check_multiorder(sys::AbstractHierarchicalGridSystem, cells, starts, stops,
     ref::Int)
-    _check_reference(sys, cells, ref)
     n = ncells(levelgrid(sys, ref))
     for i in eachindex(starts)
         starts[i] <= stops[i] || throw(ArgumentError(
@@ -78,7 +78,7 @@ function _check_multiorder(sys::AbstractHierarchicalGridSystem, cells, starts, s
     return nothing
 end
 
-# --- the two ways in -------------------------------------------------------
+# --- construction ------------------------------------------------------------
 
 function MultiOrderVector(set::MultiOrderCellSet)
     sys = system(set)
@@ -89,7 +89,7 @@ function MultiOrderVector(set::MultiOrderCellSet)
     return _multiorder_vector(sys, copy(set.cells), copy(set.keys), stops, ref, true)
 end
 
-# A positional helper keeps the keyword separate from the accessor.
+# The keyword `reference_level` shadows the accessor, so the body lives in a helper.
 MultiOrderVector(sys::AbstractHierarchicalGridSystem, cells::AbstractVector;
     reference_level::Integer=_default_reference_level(sys, cells)) =
     _multiorder_from_cells(sys, cells, Int(reference_level))
@@ -103,7 +103,6 @@ function _multiorder_from_cells(sys::AbstractHierarchicalGridSystem, cells, ref:
     ID = isconcretetype(E) && E <: AbstractCellIndex ? E : cellindextype(sys)
     cs = collect(ID, cells)
     _check_reference(sys, cs, ref)
-    # Store interval endpoints directly in the container's arrays.
     starts = Vector{Int}(undef, length(cs))
     stops = Vector{Int}(undef, length(cs))
     sorted = true
@@ -141,7 +140,7 @@ function _rekey(mov::MultiOrderVector, ref::Int)
     return _multiorder_vector(mov.system, mov.cells, starts, stops, ref, false)
 end
 
-# --- the collection surface ------------------------------------------------
+# --- collection interface ----------------------------------------------------
 
 Base.size(mov::MultiOrderVector) = (length(mov.cells),)
 Base.IndexStyle(::Type{<:MultiOrderVector}) = Base.IndexLinear()
@@ -201,7 +200,7 @@ reference_level(mov::MultiOrderVector) = mov.reference_level
 intervals(mov::MultiOrderVector) =
     [(@inbounds(mov.starts[i]), @inbounds(mov.stops[i])) for i in eachindex(mov.starts)]
 
-# --- membership, and the covering ancestor ---------------------------------
+# --- membership and covering ancestor ----------------------------------------
 
 """
     localindex(mov::MultiOrderVector, c::AbstractCellIndex) -> Union{Int,Nothing}
@@ -267,7 +266,7 @@ end
 localindex(mov::MultiOrderVector, lon::Real, lat::Real) =
     localindex(mov, unit_point(lon, lat))
 
-# --- the bridge into everything `CellVector` knows -------------------------
+# --- expansion to `CellVector` -----------------------------------------------
 
 """
     CellVector(mov::MultiOrderVector; level = reference_level(mov))
@@ -282,18 +281,17 @@ CellVector(mov::MultiOrderVector; level::Integer=reference_level(mov)) =
 """
     cellset(mov::MultiOrderVector)
 
-The container itself: a stored mixed-level collection is its own backing, as
-`cellset(CellVector(mov))` returns it for the expansion.
+The container itself. A stored mixed-level collection is its own backing, and
+`cellset(CellVector(mov))` returns it.
 """
 cellset(mov::MultiOrderVector) = mov
 
 function _cellvector(mov::MultiOrderVector, l::Int)
-    sys = mov.system
     for c in mov.cells
         level(c) <= l || throw(ArgumentError(
             "cannot expand to level $l: the container holds a level-$(level(c)) cell"))
     end
-    return CellVector(_range_windows(_expanded_ranges(mov, l)), levelgrid(sys, l), mov, l)
+    return CellVector(_range_windows(_expanded_ranges(mov, l)), levelgrid(mov.system, l), mov, l)
 end
 
 # Adjacent subtrees merge into one window, matching `level_ranges`.
@@ -310,7 +308,7 @@ function _expanded_ranges(mov::MultiOrderVector, l::Int)
     return out
 end
 
-# --- selecting a region ----------------------------------------------------
+# --- region selection --------------------------------------------------------
 
 """
     covering(mov::MultiOrderVector, target) -> MultiOrderVector
@@ -327,9 +325,8 @@ end
 """
     covering_indices(mov::MultiOrderVector, target) -> Vector{Int}
 
-The indices in `mov` of the cells [`covering`](@ref) selects, ascending — for
-indexing a data array laid out against the container without building the
-sub-container.
+The ascending indices in `mov` of the cells [`covering`](@ref) selects. They
+index a data array laid out against the container directly.
 """
 function covering_indices(mov::MultiOrderVector, target)
     out = Int[]
@@ -349,7 +346,7 @@ function covering_indices(mov::MultiOrderVector, target)
     return out
 end
 
-# --- set arithmetic ---------------------------------------------------------
+# --- set arithmetic ----------------------------------------------------------
 
 function _same_space(a::MultiOrderVector, b::MultiOrderVector, verb::AbstractString)
     system(a) == system(b) || throw(ArgumentError(
@@ -358,26 +355,24 @@ function _same_space(a::MultiOrderVector, b::MultiOrderVector, verb::AbstractStr
     return nothing
 end
 
-function Base.union(a::MultiOrderVector, b::MultiOrderVector)
-    _same_space(a, b, "union")
+# Both operands' intervals at their deeper reference level, and that level.
+function _common_intervals(a::MultiOrderVector, b::MultiOrderVector)
     ref = max(a.reference_level, b.reference_level)
-    return _cells_from_intervals(a.system,
-        _union_intervals(intervals(_rekey(a, ref)), intervals(_rekey(b, ref))), ref)
+    return intervals(_rekey(a, ref)), intervals(_rekey(b, ref)), ref
 end
 
-function Base.intersect(a::MultiOrderVector, b::MultiOrderVector)
-    _same_space(a, b, "intersect")
-    ref = max(a.reference_level, b.reference_level)
-    return _cells_from_intervals(a.system,
-        _intersect_intervals(intervals(_rekey(a, ref)), intervals(_rekey(b, ref))), ref)
+function _setop(merge, a::MultiOrderVector, b::MultiOrderVector, verb::AbstractString)
+    _same_space(a, b, verb)
+    A, B, ref = _common_intervals(a, b)
+    return _cells_from_intervals(a.system, merge(A, B), ref)
 end
 
-function Base.setdiff(a::MultiOrderVector, b::MultiOrderVector)
-    _same_space(a, b, "setdiff")
-    ref = max(a.reference_level, b.reference_level)
-    return _cells_from_intervals(a.system,
-        _setdiff_intervals(intervals(_rekey(a, ref)), intervals(_rekey(b, ref))), ref)
-end
+Base.union(a::MultiOrderVector, b::MultiOrderVector) =
+    _setop(_union_intervals, a, b, "union")
+Base.intersect(a::MultiOrderVector, b::MultiOrderVector) =
+    _setop(_intersect_intervals, a, b, "intersect")
+Base.setdiff(a::MultiOrderVector, b::MultiOrderVector) =
+    _setop(_setdiff_intervals, a, b, "setdiff")
 
 # Binary folds preserve interval order and normalization in n-ary operations.
 Base.union(a::MultiOrderVector, b::MultiOrderVector, rest::MultiOrderVector...) =
@@ -390,16 +385,14 @@ Base.setdiff(a::MultiOrderVector, b::MultiOrderVector, rest::MultiOrderVector...
 # Interval predicates recognize equivalent parent and child coverage.
 function Base.issubset(a::MultiOrderVector, b::MultiOrderVector)
     system(a) == system(b) || return isempty(a)
-    ref = max(a.reference_level, b.reference_level)
-    return isempty(_setdiff_intervals(intervals(_rekey(a, ref)),
-        intervals(_rekey(b, ref))))
+    A, B, _ = _common_intervals(a, b)
+    return isempty(_setdiff_intervals(A, B))
 end
 
 function Base.isdisjoint(a::MultiOrderVector, b::MultiOrderVector)
     system(a) == system(b) || return true
-    ref = max(a.reference_level, b.reference_level)
-    return isempty(_intersect_intervals(intervals(_rekey(a, ref)),
-        intervals(_rekey(b, ref))))
+    A, B, _ = _common_intervals(a, b)
+    return isempty(_intersect_intervals(A, B))
 end
 
 Base.issetequal(a::MultiOrderVector, b::MultiOrderVector) =
@@ -520,14 +513,11 @@ function _cells_from_intervals(sys::AbstractHierarchicalGridSystem,
     return _multiorder_vector(sys, cells, starts, stops, ref, false)
 end
 
-# --- equality and geometry -------------------------------------------------
+# --- equality and geometry ---------------------------------------------------
 
 # Equality compares stored cell identities; reference levels only key intervals.
-function Base.:(==)(a::MultiOrderVector, b::MultiOrderVector)
-    system(a) == system(b) || return false
-    length(a) == length(b) || return false
-    return a.cells == b.cells
-end
+Base.:(==)(a::MultiOrderVector, b::MultiOrderVector) =
+    system(a) == system(b) && a.cells == b.cells
 
 """
     cell_polygons(mov::MultiOrderVector) -> Vector{<:GI.Polygon}
@@ -538,13 +528,14 @@ own level's grid.
 cell_polygons(mov::MultiOrderVector) =
     [cell_polygon(levelgrid(mov.system, level(c)), c) for c in mov.cells]
 
-# --- show ------------------------------------------------------------------
+# --- show --------------------------------------------------------------------
+
+_levelspan(cells) = "levels $(minimum(level, cells)):$(maximum(level, cells))"
 
 function Base.show(io::IO, mov::MultiOrderVector)
     print(io, "MultiOrderVector(", typeof(mov.system).name.name, ", ",
         length(mov.cells), " cells")
-    isempty(mov.cells) || print(io, ", levels ",
-        minimum(level, mov.cells), ":", maximum(level, mov.cells))
+    isempty(mov.cells) || print(io, ", ", _levelspan(mov.cells))
     print(io, ", ref ", mov.reference_level, ")")
 end
 

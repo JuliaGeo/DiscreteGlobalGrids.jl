@@ -19,7 +19,8 @@ abstract type CandidateLocator end
 
 The dual-tree `CandidateLocator`: candidate pairs come from a
 depth-first descent of both spaces' `subtree`s, and a point is located
-by descending one tree. Works for every space.
+by descending one tree and testing the cell's chord polygon, the geometry the
+conservative clipper measures. Works for every space.
 """
 struct TreeLocator <: CandidateLocator end
 
@@ -27,7 +28,8 @@ struct TreeLocator <: CandidateLocator end
     AnalyticLocator()
 
 The closed-form `CandidateLocator`: a point is located with
-[`cellat`](@ref), and candidate pairs come from a breadth-first walk over
+[`cellat`](@ref), the system's own answer and the one point methods use, and
+candidate pairs come from a breadth-first walk over
 `cellneighbors` seeded under each cell's centroid and corners, pruned
 by spherical-cap intersection (`cellcap`). Builds no tree.
 
@@ -135,10 +137,14 @@ end
 The index within `inds` of the cell of `space` containing `p`, or `0` when no
 cell of `inds` contains it.
 
-An [`AnalyticLocator`](@ref) asks the space ([`cellat`](@ref)); a
-[`TreeLocator`](@ref) tests the polygon [`getcell`](@ref) returns. Where a
-cell's edge is a chart curve the polygon approximates by chords, a point in the
-sliver between the two may be assigned to either neighbour.
+The two locators answer from different authorities. An
+[`AnalyticLocator`](@ref) returns the system's true cell: the answer
+[`cellat`](@ref) gives, and the one point methods use. A [`TreeLocator`](@ref)
+returns the cell whose chord polygon ([`getcell`](@ref)) contains the point,
+consistent with the polygons the conservative clipper measures. Where a cell's
+edge is a chart curve the polygon replaces by chords, a point in the sliver
+between the two lies in the chord polygon of one neighbour and the true cell
+of the other, and the two answers differ.
 """
 function locatecell end
 

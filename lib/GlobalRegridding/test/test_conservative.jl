@@ -1009,24 +1009,25 @@ end
                 n = ncells(space)
                 inds = (n ÷ 4):(3n ÷ 4)
                 # Both systems' chart edges are curves the polygon replaces by
-                # chords, so the two answers may name neighbours for a point in
-                # that sliver, and nothing else.
-                disagreements = 0
+                # chords. The tree answers by chord polygon and the walk by the
+                # system's true cell, so for a point in the sliver between the
+                # two the tree names the neighbour whose chord polygon holds it.
+                points = Random.Xoshiro(11)
                 for _ in 1:400
-                    p = GO.UnitSphericalPoint(LinearAlgebra.normalize(randn(rng, 3)))
+                    p = GO.UnitSphericalPoint(LinearAlgebra.normalize(randn(points, 3)))
                     tree = GR.locatecell(TreeLocator(), space, 1:n, p)
                     walk = GR.locatecell(AnalyticLocator(), space, 1:n, p)
                     @test walk != 0
+                    @test walk == cellat(space, p)
                     if tree != walk
-                        disagreements += 1
                         @test tree in GR.cellneighbors(space, walk)
+                        @test GR._cellcontains(getcell(space, tree), p) === true
                     end
                     restricted = GR.locatecell(TreeLocator(), space, inds, p)
                     @test restricted == (tree in inds ? tree - first(inds) + 1 : 0)
                     @test GR.locatecell(AnalyticLocator(), space, inds, p) ==
                           (walk in inds ? walk - first(inds) + 1 : 0)
                 end
-                @test disagreements < 20
                 @test GR.locatecell(AnalyticLocator(), space, 1:n, cellcentroid(space, 5)) == 5
                 @test GR.locatecell(TreeLocator(), space, 1:n, cellcentroid(space, 5)) == 5
                 @test GR.locatecell(TreeLocator(), space, 6:n, cellcentroid(space, 5)) == 0

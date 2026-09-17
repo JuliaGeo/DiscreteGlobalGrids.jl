@@ -474,6 +474,7 @@ public CONVENTION_REGISTRY
 public DEFAULT_WRITE_CONVENTIONS
 public ENCODING_REGISTRY
 public GRID_REFERENCE
+public XDGGS_GRIDS, require_xdggs_readable, xdggs_ellipsoid_attrs
 
 function __init__()
     Base.Experimental.register_error_hint(PartitionBackendUnavailable) do io, err

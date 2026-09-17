@@ -50,7 +50,7 @@ dggread(args...; kwargs...) = _needs_zarr("dggread")
 """
     dggwrite(dest, stack_or_array; encoding = :auto,
              conventions = DEFAULT_WRITE_CONVENTIONS, chunks = :auto,
-             merge = :step, chunk_target = 1_000_000) -> dest
+             merge = :step, chunk_target = 1_000_000, target = nothing) -> dest
 
 Write a `DimArray` or `DimStack` with a cell lookup to a Zarr v2 store.
 Requires `using Zarr`. `dest` is a local directory or writable `Zarr.ZGroup`;
@@ -60,6 +60,11 @@ remote URL writing is not supported.
 stores each ID; `:ranges` stores intervals; `:implicit` requires a complete level.
 `merge=:step` joins integer-adjacent IDs. `merge=:rank` joins consecutive valid
 cells and requires a rank-aware reader.
+
+`target=:xdggs` writes a store the Python package xdggs opens with
+`xdggs.decode`: the dense encoding, and a grid that xdggs or one of its plugins
+registers, checked by [`require_xdggs_readable`](@ref) before writing. See
+[Writing a store for xdggs](@ref).
 
 `chunks` is a cell chunk length or `:auto`. `chunk_target` counts all elements
 per chunk, including non-cell dimensions. Layer metadata become array attributes;

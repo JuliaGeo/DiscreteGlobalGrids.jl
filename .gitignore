@@ -3,6 +3,9 @@ Manifest.toml
 Manifest-v*.toml
 LocalPreferences.toml
 
+# The conda environment CondaPkg resolves for test/CondaPkg.toml.
+.CondaPkg/
+
 # docs/ carries the Documenter build alongside working design notes that stay
 # local. Track only the build files and the site source; everything else there
 # -- build output, node_modules, and the note directories -- is ignored.

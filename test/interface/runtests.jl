@@ -103,7 +103,8 @@ end
               :cap_inflation, :directioncode, :authalic_sphere,
               :StoreSnapshot, :StoreDescription, :ArrayEntry, :ChunkManifest,
               :GridReference, :CONVENTION_REGISTRY, :DEFAULT_WRITE_CONVENTIONS,
-              :ENCODING_REGISTRY, :GRID_REFERENCE)
+              :ENCODING_REGISTRY, :GRID_REFERENCE, :XDGGS_GRIDS,
+              :require_xdggs_readable, :xdggs_ellipsoid_attrs)
         @test n in PUBLIC
         @test !Base.isexported(DiscreteGlobalGrids, n)
     end

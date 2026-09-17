@@ -1,6 +1,7 @@
 [deps]
 Rasters = "a3a2b9e3-a471-40c9-b274-f788e487c689"
 KaHyPar_jll = "87a0c12d-51e1-52a8-b1ed-2b00825fe6a4"
+CondaPkg = "992eb4ea-22a4-4c89-a5bb-47a3300528ab"
 ConservativeRegridding = "8e50ac2c-eb48-49bc-a402-07c87b949343"
 DimensionalData = "0703355e-b756-11e9-17c0-8b28908087d0"
 DiskArrays = "3c3547ce-8d99-4f5e-a174-61eb10b00ae3"

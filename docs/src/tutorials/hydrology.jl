@@ -113,7 +113,7 @@ struct WithinThreshold{T<:Real}
 end
 
 function (w::WithinThreshold)(xs)
-    lo, hi = extrema((x for x in xs if !ismissing(x) && isfinite(x));
+    lo, hi = extrema((x for x in skipmissing(xs) if isfinite(x));
         init = (Inf, -Inf))
     return hi - lo <= w.threshold
 end

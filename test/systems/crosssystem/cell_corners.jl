@@ -30,10 +30,21 @@ end
 igeo7_pentagons(grid) =
     [c for c in (cellindex(grid, i) for i in 1:ncells(grid)) if DGG.IGeo7.is_pentagon(c)]
 
+# The corner count each system's cells have; a set where it varies by cell.
+expected_corners(::DGG.HEALPixSystem) = (4,)
+expected_corners(::DGG.ISEA4RSystem) = (4,)
+expected_corners(::DGG.S2System) = (4,)
+expected_corners(::DGG.CopernicusDEMSystem) = (3, 4)
+expected_corners(::DGG.IGeo7System) = (5, 6)
+expected_corners(::DGG.H3System) = (5, 6)
+expected_corners(::DGG.A5System) = (3, 5)
+
 function check_corners(grid, cells)
+    counts = expected_corners(DGG.system(grid))
     for c in cells
         boundary = collect(cell_boundary(grid, c))
         corners = collect(cell_corners(grid, c))
+        @test length(corners) in counts
         @test length(boundary) % length(corners) == 0
         stride = length(boundary) ÷ length(corners)
         # A5's densified ring starts one edge in, so the first corner is the
@@ -59,6 +70,13 @@ end
             end
             check_corners(grid, cells)
         end
+    end
+
+    @testset "A5 level 1 triangles" begin
+        grid = levelgrid(DGG.A5System(), 1)
+        cells = [cellindex(grid, i) for i in 1:ncells(grid)]
+        @test all(length(cell_corners(grid, c)) == 3 for c in cells)
+        check_corners(grid, cells)
     end
 
     @testset "PartialGrid forwards to its complete grid" begin

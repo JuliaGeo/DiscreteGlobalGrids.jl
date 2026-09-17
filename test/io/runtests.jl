@@ -34,6 +34,8 @@ using .ChunkedLookups
     # Both round-trip through a real store, so both live behind the same skip.
     include("region.jl")
     include("chunk_sweep.jl")
+    # The real xdggs opening a `target = :xdggs` store; needs `DGG_XDGGS_PYTHON`.
+    include("xdggs_python.jl")
 end
 
 end # module DGGIOTests

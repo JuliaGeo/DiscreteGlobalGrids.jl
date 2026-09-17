@@ -20,13 +20,12 @@ for P in (:(Makie.PointBased), :(Type{<:Makie.Poly}))
             Makie.convert_arguments(P, _lonlat(DGG.cell_polygons(set)))
         Makie.convert_arguments(P::$P, vector::DGG.AbstractCellVector) =
             Makie.convert_arguments(P, DGG.PartialGrid(vector))
-        Makie.convert_arguments(P::$P, lookup::DGG.AbstractCellLookup) =
+        # A cell axis, single-level or mixed, plots the container it wraps.
+        Makie.convert_arguments(P::$P, lookup::DGG.CellLookups.AbstractCellAxis) =
             Makie.convert_arguments(P, parent(lookup))
         # Mixed-level polygons resolve through each cell's own level grid.
         Makie.convert_arguments(P::$P, vector::DGG.MultiOrderVector) =
             Makie.convert_arguments(P, _lonlat(DGG.cell_polygons(vector)))
-        Makie.convert_arguments(P::$P, lookup::DGG.MultiOrderLookup) =
-            Makie.convert_arguments(P, parent(lookup))
         Makie.convert_arguments(P::$P, iterator::SubtreeIterator) =
             Makie.convert_arguments(P, _partial_grid(iterator))
     end

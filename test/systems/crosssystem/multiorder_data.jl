@@ -140,6 +140,9 @@ end
         lon, y = LONLAT(DGG.cell_centroid(DGG.levelgrid(sys, DGG.level(other)), other))
         @test DGG.cellat(mov, lon, y) === nothing
         @test_throws DD.Lookups.SelectorError M[DGG.Cells(DD.Contains(lon, y))]
+
+        # `Near` is refused as on a single-level axis: id order is not distance.
+        @test_throws "nearest id is not the nearest cell" M[DGG.Cells(DD.Near(ids[1]))]
     end
 
     @testset "Covering keeps a stored cell whole" begin

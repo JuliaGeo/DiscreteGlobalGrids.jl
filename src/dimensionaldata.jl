@@ -43,6 +43,13 @@ import SmallCollections
 import DimensionalData as DD
 import DimensionalData: Dimensions, Lookups
 
+# --- shared cell-axis surface -----------------------------------------------
+
+# The DimensionalData surface every cell axis shares, single-level
+# (`AbstractCellLookup`) or mixed-level (`MultiOrderLookup`). A method lives here
+# when all it needs is `parent(lk)` being a cell container. Private.
+abstract type AbstractCellAxis{ID} <: Lookups.Lookup{ID,1} end
+
 # --- same-level lookup ------------------------------------------------------
 
 """
@@ -66,11 +73,17 @@ be refused by an operation that works on the identical cube built in memory.
 `level`, `localindex`, the neighbourhood and region verbs, `PartialGrid`,
 regridding and plotting — is generic over that one method.
 
-A subtype still writes its own `Lookups.rebuild` and `Lookups.selectindices`,
-because what a SUBSET of it should be is a property of the backing: a computed
-window set stays compressed, and a stored axis stops being stored.
+A subtype still writes its own subsetting and rebuild rules (`_subset`,
+`_rebuild`), because what a SUBSET of it should be is a property of the backing:
+a computed window set stays compressed, and a stored axis stops being stored.
+
+Indexing, the `At`/`Contains`/`Covering` selectors and the `DimensionalData`
+plumbing are shared with the mixed-level [`MultiOrderLookup`](@ref) and are
+defined one level up, on the private supertype `AbstractCellAxis`. Only the
+single-level verbs — `level`, topology, `PartialGrid`, `region` — are defined on
+this type.
 """
-abstract type AbstractCellLookup{ID} <: Lookups.Lookup{ID,1} end
+abstract type AbstractCellLookup{ID} <: AbstractCellAxis{ID} end
 
 """
     CellLookup(cv::CellVector)
@@ -177,36 +190,39 @@ windows(lk::CellLookup) = windows(parent(lk))
 
 # DimensionalData requires `parent` to return the logical lookup values.
 Base.parent(lk::CellLookup) = lk.cells
-Base.IndexStyle(::Type{<:AbstractCellLookup}) = Base.IndexLinear()
+Base.IndexStyle(::Type{<:AbstractCellAxis}) = Base.IndexLinear()
 
 # Empty lookups have no lower or upper value bound.
 Lookups.bounds(lk::AbstractCellLookup) =
     isempty(lk) ? (nothing, nothing) : (first(lk), last(lk))
 
-Base.@propagate_inbounds Base.getindex(lk::AbstractCellLookup, k::Int) = parent(lk)[k]
-Base.@propagate_inbounds Base.getindex(lk::AbstractCellLookup, k::CartesianIndex{1}) =
+Base.@propagate_inbounds Base.getindex(lk::AbstractCellAxis, k::Int) = parent(lk)[k]
+Base.@propagate_inbounds Base.getindex(lk::AbstractCellAxis, k::CartesianIndex{1}) =
     parent(lk)[k[1]]
 
 # Base handles shaped indices; vector indices may preserve compressed windows.
 for f in (:getindex, :view, :dotview)
-    @eval Base.$f(lk::AbstractCellLookup, ::Colon) = lk
-    @eval Base.$f(lk::AbstractCellLookup, i::AbstractVector{<:Integer}) = _subset(lk, i)
+    @eval Base.$f(lk::AbstractCellAxis, ::Colon) = lk
+    @eval Base.$f(lk::AbstractCellAxis, i::AbstractVector{<:Integer}) =
+        _subset(lk, _subsetindices(lk, i))
 end
 
 # Route reversal through lookup indexing so the result remains a valid lookup.
-Base.reverse(lk::AbstractCellLookup) = lk[lastindex(lk):-1:firstindex(lk)]
+Base.reverse(lk::AbstractCellAxis) = lk[lastindex(lk):-1:firstindex(lk)]
 
 # Resolve the method ambiguity with SmallCollections vector indexing.
-Base.getindex(lk::AbstractCellLookup,
-    i::SmallCollections.AbstractFixedOrSmallOrPackedVector{<:Integer}) = _subset(lk, i)
+Base.getindex(lk::AbstractCellAxis,
+    i::SmallCollections.AbstractFixedOrSmallOrPackedVector{<:Integer}) =
+    _subset(lk, _subsetindices(lk, i))
 
-# Concrete mask methods avoid the `Bool <: Integer` catch-all ambiguity.
-function _masksubset(lk::Lookups.Lookup, mask::AbstractArray{Bool})
+# A mask resolves to indices before the per-backing `_subset`: a mask method of
+# `_subset` itself would be ambiguous with every backing's `_subset(lk, idx)`.
+# The axes are checked first because `findall` discards them.
+_subsetindices(lk::AbstractCellAxis, idx) = idx
+function _subsetindices(lk::AbstractCellAxis, mask::AbstractArray{Bool})
     axes(mask) == axes(lk) || throw(BoundsError(lk, (mask,)))
-    return _subset(lk, findall(mask))
+    return findall(mask)
 end
-
-_subset(lk::CellLookup, mask::AbstractArray{Bool}) = _masksubset(lk, mask)
 
 # Only ascending subsets retain compressed interval order.
 function _subset(lk::CellLookup, idx)
@@ -219,18 +235,22 @@ end
 
 """
     cellset(lk::AbstractCellLookup)
+    cellset(lk::MultiOrderLookup)
 
 Return the set or grid that constructed the lookup. Derived and stored-axis
-lookups return their describing [`PartialGrid`](@ref).
+lookups return their describing [`PartialGrid`](@ref). A mixed-level lookup
+returns the [`MultiOrderVector`](@ref) backing it, the same collection as
+`Base.parent(lk)`.
 """
-cellset(lk::AbstractCellLookup) = cellset(parent(lk))
+cellset(lk::AbstractCellAxis) = cellset(parent(lk))
 
 """
     system(lk::AbstractCellLookup)
+    system(lk::MultiOrderLookup)
 
 The grid system the lookup's cells are named in.
 """
-system(lk::AbstractCellLookup) = system(parent(lk))
+system(lk::AbstractCellAxis) = system(parent(lk))
 
 # Wrapping preserves the backing vector's neighbor bound.
 maxneighbors(lk::AbstractCellLookup, connectivity::Connectivity) =
@@ -246,12 +266,15 @@ level(lk::AbstractCellLookup) = level(parent(lk))
 
 """
     localindex(lk::AbstractCellLookup, c::AbstractCellIndex) -> Union{Int,Nothing}
+    localindex(lk::MultiOrderLookup, c::AbstractCellIndex) -> Union{Int,Nothing}
 
 Index of cell `c` in the lookup, or `nothing` when the lookup does not hold
-it — including when `c` is at another level. The inverse of `lk[k]`, and the
-half of the bijection every selector ends at.
+it — including when `c` is at another level, or when a mixed-level lookup
+stores only an ancestor or descendant of `c`. The inverse of `lk[k]`, and the
+half of the bijection every selector ends at; `DimensionalData.At` resolves
+through it.
 """
-localindex(lk::AbstractCellLookup, c::AbstractCellIndex) = localindex(parent(lk), c)
+localindex(lk::AbstractCellAxis, c::AbstractCellIndex) = localindex(parent(lk), c)
 globalindex(lk::AbstractCellLookup, c::AbstractCellIndex) = globalindex(parent(lk), c)
 
 """
@@ -319,10 +342,10 @@ DGG.region(lk::AbstractCellLookup) = DGG.region(parent(lk))
 
 # Canonical id order satisfies DimensionalData's ordered-lookup contract.
 Lookups.order(::AbstractCellLookup) = Lookups.ForwardOrdered()
-Lookups.metadata(::AbstractCellLookup) = Lookups.NoMetadata()
+Lookups.metadata(::AbstractCellAxis) = Lookups.NoMetadata()
 
 # Rebuild preserves compression only for ascending ids.
-function Lookups.rebuild(lk::CellLookup; data=nothing, kw...)
+function Lookups.rebuild(lk::AbstractCellAxis; data=nothing, kw...)
     (data === nothing || data === lk || data === parent(lk)) && return lk
     return _rebuild(lk, data)
 end
@@ -351,7 +374,7 @@ end
     "indexing, and replace one wholesale with `set(A, Cells => NoLookup())`."))
 
 # A reduced cell axis no longer corresponds to a cell id.
-Lookups.reducelookup(::AbstractCellLookup) = Lookups.NoLookup(Base.OneTo(1))
+Lookups.reducelookup(::AbstractCellAxis) = Lookups.NoLookup(Base.OneTo(1))
 
 # A broadcast combines its operands' axes with `Lookups.promote_first`, whose
 # `Lookup` fallback keeps a lookup only when the operands' CONCRETE types are
@@ -375,18 +398,18 @@ Lookups.promote_first(l1::AbstractCellLookup, l2::AbstractCellLookup,
     all(==(l1), (l2, ls...)) ? l1 : Lookups.NoLookup(Base.OneTo(length(l1)))
 
 # Use the window membership search instead of searching all logical cell ids.
-Lookups.hasselection(lk::AbstractCellLookup, sel::Lookups.At{<:AbstractCellIndex}) =
+Lookups.hasselection(lk::AbstractCellAxis, sel::Lookups.At{<:AbstractCellIndex}) =
     localindex(lk, Lookups.val(sel)) !== nothing
 
 Lookups.hasselection(lk::AbstractCellLookup,
     sel::Lookups.Contains{<:AbstractCellIndex}) =
     localindex(lk, Lookups.val(sel)) !== nothing
 
-Lookups.hasselection(lk::AbstractCellLookup,
+Lookups.hasselection(lk::AbstractCellAxis,
     sel::Lookups.Contains{<:Tuple{Real,Real}}) =
     localindex(parent(lk), Lookups.val(sel)...) !== nothing
 
-Dimensions.format(lk::AbstractCellLookup, ::Type, values, axis::AbstractRange) = lk
+Dimensions.format(lk::AbstractCellAxis, ::Type, values, axis::AbstractRange) = lk
 
 Base.:(==)(a::CellLookup, b::CellLookup) = parent(a) == parent(b)
 
@@ -867,10 +890,10 @@ end
 Base.show(io::IO, sel::Covering) =
     print(io, "Covering(", typeof(sel.val).name.name, ")")
 
-Lookups.selectindices(lk::AbstractCellLookup, sel::Covering; kw...) =
+Lookups.selectindices(lk::AbstractCellAxis, sel::Covering; kw...) =
     covering_indices(parent(lk), Lookups.val(sel))
 
-Lookups.selectindices(lk::AbstractCellLookup, sel::Covering{<:AbstractVector};
+Lookups.selectindices(lk::AbstractCellAxis, sel::Covering{<:AbstractVector};
     kw...) = covering_indices(parent(lk), Lookups.val(sel))
 
 """
@@ -898,7 +921,7 @@ Outside a cube, the equivalent selection is `predicate_indices(cv, pred)`.
 Lookups.selectindices(lk::AbstractCellLookup, pred::QueryPredicate; kw...) =
     predicate_indices(parent(lk), pred)
 
-Lookups.selectindices(lk::AbstractCellLookup,
+Lookups.selectindices(lk::AbstractCellAxis,
     sel::Lookups.At{<:AbstractCellIndex}; kw...) =
     _found(lk, localindex(lk, Lookups.val(sel)), sel)
 
@@ -907,11 +930,11 @@ Lookups.selectindices(lk::AbstractCellLookup,
     _found(lk, localindex(lk, Lookups.val(sel)), sel)
 
 # Resolve a point to a leaf-grid cell, then search its index in the windows.
-Lookups.selectindices(lk::AbstractCellLookup,
+Lookups.selectindices(lk::AbstractCellAxis,
     sel::Lookups.Contains{<:Tuple{Real,Real}}; kw...) =
     _found(lk, localindex(parent(lk), Lookups.val(sel)...), sel)
 
-Lookups.selectindices(lk::AbstractCellLookup,
+Lookups.selectindices(lk::AbstractCellAxis,
     sel::Lookups.At{<:Tuple{Real,Real}}; kw...) =
     _found(lk, localindex(parent(lk), Lookups.val(sel)...), sel)
 
@@ -936,7 +959,7 @@ membership, `Contains` resolves the stored ancestor, and [`Covering`](@ref)
 selects stored cells meeting a region. Ascending subsets retain the lookup;
 reordered subsets use `Categorical`.
 """
-struct MultiOrderLookup{ID,M<:MultiOrderVector} <: Lookups.Lookup{ID,1}
+struct MultiOrderLookup{ID,M<:MultiOrderVector} <: AbstractCellAxis{ID}
     cells::M
 end
 
@@ -951,31 +974,6 @@ MultiOrderLookup(lk::MultiOrderLookup) = lk
 
 # DimensionalData treats the parent as the lookup's values.
 Base.parent(lk::MultiOrderLookup) = lk.cells
-Base.IndexStyle(::Type{<:MultiOrderLookup}) = Base.IndexLinear()
-
-"""
-    cellset(lk::MultiOrderLookup)
-
-Return the [`MultiOrderVector`](@ref) backing the axis. This is the same
-collection as `Base.parent(lk)`.
-"""
-cellset(lk::MultiOrderLookup) = cellset(parent(lk))
-
-Base.@propagate_inbounds Base.getindex(lk::MultiOrderLookup, k::Int) = parent(lk)[k]
-Base.@propagate_inbounds Base.getindex(lk::MultiOrderLookup, k::CartesianIndex{1}) =
-    parent(lk)[k[1]]
-
-for f in (:getindex, :view, :dotview)
-    @eval Base.$f(lk::MultiOrderLookup, ::Colon) = lk
-    @eval Base.$f(lk::MultiOrderLookup, i::AbstractVector{<:Integer}) = _subset(lk, i)
-end
-
-Base.reverse(lk::MultiOrderLookup) = lk[lastindex(lk):-1:firstindex(lk)]
-
-Base.getindex(lk::MultiOrderLookup,
-    i::SmallCollections.AbstractFixedOrSmallOrPackedVector{<:Integer}) = _subset(lk, i)
-
-_subset(lk::MultiOrderLookup, mask::AbstractArray{Bool}) = _masksubset(lk, mask)
 
 # Ascending subsets preserve disjoint interval order.
 function _subset(lk::MultiOrderLookup, idx)
@@ -987,13 +985,6 @@ end
 # --- metadata ---------------------------------------------------------------
 
 """
-    system(lk::MultiOrderLookup)
-
-The grid system the lookup's cells are named in.
-"""
-system(lk::MultiOrderLookup) = system(parent(lk))
-
-"""
     reference_level(lk::MultiOrderLookup) -> Int
 
 Return the backing container's interval level, which is at least as deep as
@@ -1001,14 +992,6 @@ every cell on the axis. This function is public but unexported; call it as
 `DiscreteGlobalGrids.reference_level(lk)`.
 """
 reference_level(lk::MultiOrderLookup) = reference_level(parent(lk))
-
-"""
-    localindex(lk::MultiOrderLookup, c::AbstractCellIndex) -> Union{Int,Nothing}
-
-Return the index of the exact cell `c`, or `nothing` when the axis stores only
-an ancestor or descendant. `DimensionalData.At` uses this lookup.
-"""
-localindex(lk::MultiOrderLookup, c::AbstractCellIndex) = localindex(parent(lk), c)
 
 """
     covering_index(lk::MultiOrderLookup, c::AbstractCellIndex) -> Union{Int,Nothing}
@@ -1024,12 +1007,6 @@ covering_index(lk::MultiOrderLookup, c::AbstractCellIndex) =
 
 # Cell-id ordering compares levels first, while selectors use interval order.
 Lookups.order(::MultiOrderLookup) = Lookups.Unordered()
-Lookups.metadata(::MultiOrderLookup) = Lookups.NoMetadata()
-
-function Lookups.rebuild(lk::MultiOrderLookup; data=nothing, kw...)
-    (data === nothing || data === lk || data === parent(lk)) && return lk
-    return _rebuild(lk, data)
-end
 
 _rebuild(lk::MultiOrderLookup, mov::MultiOrderVector) = MultiOrderLookup(mov)
 
@@ -1050,19 +1027,9 @@ end
     "$(typeof(data)). Use `vcat` or `cat` for cell axes, indexing for subsets, " *
     "or `set(A, Cells => NoLookup())` to replace the lookup."))
 
-Lookups.reducelookup(::MultiOrderLookup) = Lookups.NoLookup(Base.OneTo(1))
-
 # The interval index gives each selector one binary search.
-Lookups.hasselection(lk::MultiOrderLookup, sel::Lookups.At{<:AbstractCellIndex}) =
-    localindex(lk, Lookups.val(sel)) !== nothing
-
 Lookups.hasselection(lk::MultiOrderLookup, sel::Lookups.Contains{<:AbstractCellIndex}) =
     covering_index(lk, Lookups.val(sel)) !== nothing
-
-Lookups.hasselection(lk::MultiOrderLookup, sel::Lookups.Contains{<:Tuple{Real,Real}}) =
-    localindex(parent(lk), Lookups.val(sel)...) !== nothing
-
-Dimensions.format(lk::MultiOrderLookup, ::Type, values, axis::AbstractRange) = lk
 
 Base.:(==)(a::MultiOrderLookup, b::MultiOrderLookup) = parent(a) == parent(b)
 
@@ -1078,26 +1045,9 @@ Base.show(io::IO, ::MIME"text/plain", lk::MultiOrderLookup) = show(io, lk)
 
 # --- selectors -------------------------------------------------------------
 
-Lookups.selectindices(lk::MultiOrderLookup, sel::Covering; kw...) =
-    covering_indices(parent(lk), Lookups.val(sel))
-
-Lookups.selectindices(lk::MultiOrderLookup, sel::Covering{<:AbstractVector}; kw...) =
-    covering_indices(parent(lk), Lookups.val(sel))
-
-Lookups.selectindices(lk::MultiOrderLookup, sel::Lookups.At{<:AbstractCellIndex}; kw...) =
-    _found(lk, localindex(parent(lk), Lookups.val(sel)), sel)
-
 Lookups.selectindices(lk::MultiOrderLookup,
     sel::Lookups.Contains{<:AbstractCellIndex}; kw...) =
     _found(lk, covering_index(parent(lk), Lookups.val(sel)), sel)
-
-Lookups.selectindices(lk::MultiOrderLookup,
-    sel::Lookups.Contains{<:Tuple{Real,Real}}; kw...) =
-    _found(lk, localindex(parent(lk), Lookups.val(sel)...), sel)
-
-Lookups.selectindices(lk::MultiOrderLookup,
-    sel::Lookups.At{<:Tuple{Real,Real}}; kw...) =
-    _found(lk, localindex(parent(lk), Lookups.val(sel)...), sel)
 
 # --- lazy expansion values -------------------------------------------------
 
@@ -1263,9 +1213,9 @@ end
     "At(cell) for one cell, Contains(lon, lat) for the cell holding a point, " *
     "or Covering(region) for a region."))
 
-Lookups.selectindices(lk::AbstractCellLookup, sel::Lookups.Near; kw...) =
+Lookups.selectindices(lk::AbstractCellAxis, sel::Lookups.Near; kw...) =
     _no_near(lk, sel)
-Lookups.selectindices(lk::AbstractCellLookup, sel::Lookups.Near{<:AbstractVector};
+Lookups.selectindices(lk::AbstractCellAxis, sel::Lookups.Near{<:AbstractVector};
     kw...) = _no_near(lk, sel)
 
 # Cell-specific selector failures expose likely level or system mismatches.

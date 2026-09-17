@@ -21,17 +21,23 @@
 
 A set of values on a hierarchical grid, readable at several levels.
 
-Four verbs, and no fields:
+Three verbs every pyramid answers, and no fields:
 
     system(pyr)                      -> AbstractHierarchicalGridSystem
     levels(pyr)                      -> AbstractUnitRange{Int}
     holdsdata(pyr, cell)             -> Bool
-    cellvalues(pyr, level, cells)    -> AbstractVector
 
 A descent starts at [`rootcells`](@ref), keeps the cells that are on screen and
 whose subtrees [`holdsdata`](@ref DiscreteGlobalGrids.holdsdata) admits, refines
-what survives, and stops when the cells are about a pixel across — at which
-point [`cellvalues`](@ref DiscreteGlobalGrids.cellvalues) answers the frame.
+what survives, and stops when the cells are about a pixel across.
+
+A pyramid that OWNS its values answers a fourth:
+
+    cellvalues(pyr, level, cells)    -> AbstractVector
+
+which is the frame itself, in one read per chunk touched. A store pyramid does;
+`CellPyramid` deliberately does not, because keeping the colour vector with the
+plot is what lets a recolour re-read a frame instead of rebuilding it.
 """
 abstract type AbstractPyramid end
 

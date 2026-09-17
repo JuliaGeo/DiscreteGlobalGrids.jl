@@ -92,7 +92,8 @@ Conservative
 touch. The weights are the same whichever is used; only the discovery differs.
 `TreeLocator()` descends spatial trees and works for every space.
 `AnalyticLocator()` locates points in closed form and walks cell
-neighbourhoods, and needs a `DGGSpace` on at least one side.
+neighbourhoods, and needs a `DGGSpace` on at least one side; when both sides
+are one, the coarser side is walked and the finer side supplies the seeds.
 
 ```@docs
 TreeLocator

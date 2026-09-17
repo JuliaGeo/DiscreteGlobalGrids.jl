@@ -34,8 +34,8 @@ candidate pairs come from a breadth-first walk over
 by spherical-cap intersection (`cellcap`). Builds no tree.
 
 One side must answer `hasanalyticlocation` with `true`; that side is
-walked. When both do, the side with fewer cells is walked so the finer side is
-iterated. Weights built with either locator are identical.
+walked. When both do, the coarser side (fewer cells) is walked and the finer
+side supplies the seeds. Weights built with either locator are identical.
 """
 struct AnalyticLocator <: CandidateLocator end
 
@@ -66,7 +66,7 @@ function overlappairs(::AnalyticLocator, dst_space::RegridSpace, dst_inds,
 end
 
 # Walk into the side that can place a point and name its neighbours; when both
-# can, into the one with fewer cells, so the finer side is iterated.
+# can, into the coarser one, so the finer side supplies the seeds.
 function _walksdestination(dst_space, dst_inds, src_space, src_inds)
     d, s = hasanalyticlocation(dst_space), hasanalyticlocation(src_space)
     d || s || throw(ArgumentError(

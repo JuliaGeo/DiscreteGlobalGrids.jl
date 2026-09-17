@@ -674,8 +674,9 @@ struct ChunkedPlan{M<:AbstractRegriddingMethod,P<:AbstractMissingPolicy,
     locator::L
 end
 
-# The positional forms build the relation too; the nine-argument form is the
-# one way to assemble a plan around an existing relation, or around none.
+# The positional forms build the relation too; the forms that take
+# `dependencies` are the one way to assemble a plan around an existing
+# relation, or around none.
 ChunkedPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
     dst_space::RegridSpace, src_space::RegridSpace, storage::AbstractBlockStorage,
     budget::Integer, chunks) =

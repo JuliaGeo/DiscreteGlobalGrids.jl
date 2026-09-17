@@ -241,6 +241,6 @@ end
 
 Present a mixed-level array at level `l`, reindexing each stored value over the
 cells it covers. The lazy result retains one value per multi-order cell.
-Methods accept arrays carrying a [`Cells`](@ref) axis.
+Methods accept arrays carrying a [`Cells`](@ref DiscreteGlobalGrids.CellLookups.Cells) axis.
 """
 function expand end

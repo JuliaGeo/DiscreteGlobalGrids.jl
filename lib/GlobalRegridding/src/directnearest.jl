@@ -16,7 +16,7 @@ missing policy and with any nodata sentinel. Choose between them by plan use:
     to inspect, store, or apply the weight operator. Its matrix locates every
     destination once and reuses those indices.
 
-The fallback [`buildweights!`](@ref) delegates to `NearestCell`, preserving the
+The fallback `buildweights!` delegates to `NearestCell`, preserving the
 same result on generic assembly routes.
 """
 struct DirectNearest <: AbstractRegriddingMethod end

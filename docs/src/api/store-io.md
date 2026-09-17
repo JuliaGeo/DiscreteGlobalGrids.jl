@@ -134,6 +134,7 @@ coverage](../tutorials/multiorder.md) is the tutorial for them.
 ```@docs
 MultiOrderLookup
 MultiOrderVector
+MultiOrderGrid
 coarsen
 aggregate
 covering_index

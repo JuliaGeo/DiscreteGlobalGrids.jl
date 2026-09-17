@@ -184,7 +184,7 @@ Build a reusable regridding plan without reading source values. `missingval` is
 the source sentinel alone here — a plan reads data and never writes it, so the
 destination's sentinel belongs to [`regrid`](@ref).
 
-  - Eager plans use one whole-domain [`DirectPlan`](@ref).
+  - Eager plans use one whole-domain `DirectPlan`.
   - Lazy plans build blocks on demand and default to a budget-limited
     [`PerChunk`](@ref) cache.
 
@@ -198,16 +198,16 @@ A lazy plan owns one chunk dependency relation. `dependencies` selects its
 origin:
 
   - `nothing` or `true` builds a relation;
-  - a [`ChunkDependencyGraph`](@ref) adopts and validates that relation;
+  - a `ChunkDependencyGraph` adopts and validates that relation;
   - `false` omits the relation.
 
-Every [`LazyRegridArray`](@ref) requires a relation for source selection, tile
+Every `LazyRegridArray` requires a relation for source selection, tile
 order, wave costing, reference counts, and prefetching. `refine(dstchunk,
 srcchunk) -> Bool` supplies a conservative narrow phase; `narrow` names that
 phase in the relation identity. `refine` must reject only pairs proven
 disconnected because a false rejection corrupts results.
 
-[`dependencies`](@ref)`(plan)` returns the relation. The relation remains fixed
+`dependencies(plan)` returns the relation. The relation remains fixed
 for the plan's lifetime; build another plan to use a different one.
 """
 function plan_regrid(data; to, from = nothing,

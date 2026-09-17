@@ -69,7 +69,7 @@ common read contract. `s3://` additionally requires `using AWSS3`.
 A single-level store opens as a
 [`ChunkedCellLookup`](@ref DiscreteGlobalGrids.ChunkedLookups.ChunkedCellLookup);
 a `compacted` store opens as a
-[`MultiOrderLookup`](@ref DiscreteGlobalGrids.MultiOrderLookup) over its aligned
+[`MultiOrderLookup`](@ref DiscreteGlobalGrids.CellLookups.MultiOrderLookup) over its aligned
 `cell_ids` and `cell_levels` columns.
 
 For ancestor-subzone stores, `ancestors` selects ancestor cells or column indices.

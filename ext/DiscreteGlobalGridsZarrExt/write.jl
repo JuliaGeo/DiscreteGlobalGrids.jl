@@ -58,7 +58,7 @@ const Cube = Union{DD.AbstractDimArray,DD.AbstractDimStack}
 Zarr v2 implementation of `dggwrite`, including consolidated metadata.
 The generic function describes encodings, chunks, and metadata handling.
 The cell dimension must retain an `AbstractCellLookup` or a
-[`MultiOrderLookup`](@ref DiscreteGlobalGrids.MultiOrderLookup); a categorical
+[`MultiOrderLookup`](@ref DiscreteGlobalGrids.CellLookups.MultiOrderLookup); a categorical
 axis created by operations such as `reverse` is rejected.
 
 A `MultiOrderLookup` axis writes as `compacted`: `cell_ids` and `cell_levels` as

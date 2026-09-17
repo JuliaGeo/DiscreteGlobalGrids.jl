@@ -11,7 +11,7 @@ const DEFAULT_CHUNK_CELLS = 4096
 """
     DGGSpace(grid::AbstractGrid; chunklevel = nothing, chunkcells = $DEFAULT_CHUNK_CELLS)
 
-Wrap `grid` as a [`GlobalRegridding.RegridSpace`](@ref). Chunks use nonempty
+Wrap `grid` as a `GlobalRegridding.RegridSpace`. Chunks use nonempty
 ancestor subtrees at `chunklevel`; the default chooses roughly `chunkcells`
 cells per chunk. Grids without sorted subtrees use one chunk. Construction
 computes one covering cap per chunk.

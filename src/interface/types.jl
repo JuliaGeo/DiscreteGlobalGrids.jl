@@ -134,9 +134,9 @@ Everything else dispatches on the **grid**. A system's fast paths —
 alias:
 
     import DiscreteGlobalGrids as DGG
-    const LevelGrid = DGG.HierarchicalLevelGrid{MySystem}
+    const MySystemLevelGrid = DGG.HierarchicalLevelGrid{MySystem}
 
-    DGG.cellat(g::LevelGrid, p::DGG.UnitSphericalPoint) = ...
+    DGG.cellat(g::MySystemLevelGrid, p::DGG.UnitSphericalPoint) = ...
 
 Every fast path is optional, and must return what the generic implementation
 would have returned.

@@ -514,16 +514,11 @@ Base.eltype(::Type{LatticeNeighbors}) = Int
     k > r.n ? nothing : (@inbounds(r.cells[k]), k + 1)
 @inline Base.in(i::Int, r::LatticeNeighbors) = any(k -> @inbounds(r.cells[k]) == i, 1:r.n)
 
-# The X columns adjacent to `ix`: wrapped when the raster spans its period,
-# and never listing a column twice on rasters of one or two columns.
+# The X columns adjacent to `ix`, wrapped when the raster spans its period.
 @inline function _neighborcolumns(space::RasterGrid, ix::Int)
     nx = _nx(space)
     if _xwraps(space)
-        lo = mod1(ix - 1, nx)
-        hi = mod1(ix + 1, nx)
-        lo == ix && return (ix, ix, ix, 1)
-        lo == hi && return (lo, ix, ix, 2)
-        return (lo, ix, hi, 3)
+        return (mod1(ix - 1, nx), ix, mod1(ix + 1, nx), 3)
     end
     lo, hi = ix - 1, ix + 1
     lo < 1 && return (ix, hi, hi, hi <= nx ? 2 : 1)
@@ -531,13 +526,7 @@ Base.eltype(::Type{LatticeNeighbors}) = Int
     return (lo, ix, hi, 3)
 end
 
-# Whether the X edges close on themselves under `xperiod`.
-@inline function _xwraps(space::RasterGrid)
-    p = space.xperiod
-    p === nothing && return false
-    e = space.xedges
-    return isapprox(abs(e[end] - e[1]), p; rtol = 1e-9)
-end
+@inline _xwraps(space::RasterGrid) = first(chartperiod(space)) !== nothing
 
 function cellneighbors(space::RasterGrid, i::Int)
     ix, iy = cellsubscript(space, i)
@@ -560,9 +549,9 @@ function cellcorners(space::RasterGrid, i::Int)
     return _cellcorners(space, ix, iy)
 end
 
-# The clipper measures the densified ring `getcell` returns. A raster's ring is
-# its four corners with polar duplicates dropped, so the cap over the corners
-# bounds it; the relative margin absorbs rounding in the cap arithmetic.
+# The clipper measures the ring `getcell` returns: the four corners with polar
+# duplicates dropped, so the cap over the corners bounds it; the relative margin
+# absorbs rounding in the cap arithmetic.
 function cellcap(space::RasterGrid, i::Int)
     c = cellcorners(space, i)
     cap = SphericalCap(c[1], 0.0)

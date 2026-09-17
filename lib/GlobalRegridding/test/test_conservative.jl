@@ -1130,11 +1130,10 @@ end
                 @test GR.localindex(fine, nx, 1) in corner
                 @test GR.localindex(fine, nx, 2) in corner
                 @test GR.localindex(fine, 1, 1) ∉ corner
-                # Every neighbour relation is symmetric.
                 @test all(i -> all(j -> i in GR.cellneighbors(fine, j), GR.cellneighbors(fine, i)),
                     1:ncells(fine))
                 f(s, i) = (GR.cellneighbors(s, i); @allocated GR.cellneighbors(s, i))
-                @test f(fine, interior) == 0
+                @test f(fine, interior) == 0 skip = VERSION < v"1.12"
 
                 open = RasterGrid(DD.DimArray(zeros(nx, ny),
                     (DD.X(range(-175, 175; length = nx)), DD.Y(range(-85, 85; length = ny))));

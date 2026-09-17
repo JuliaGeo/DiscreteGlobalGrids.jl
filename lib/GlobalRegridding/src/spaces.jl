@@ -310,14 +310,14 @@ fastest dimension first, with lookups carrying `sampling`. The default is
 destinationdims(::RegridSpace, ::DD.Lookups.Sampling) = nothing
 
 """
-    sourcesampling(space::RegridSpace) -> Sampling or nothing
+    spacesampling(space::RegridSpace) -> Sampling or nothing
 
 Return what a value on this space represents: `Intervals` for an average over
 its cell, `Points` for a sample at its site, or `nothing` when the space does
-not say. [`Auto`](@ref) reads it for sources that carry no dimensions of their
-own. The default is `nothing`.
+not say. [`Auto`](@ref) reads it for the destination, and for a source that
+carries no dimensions of its own. The default is `nothing`.
 """
-sourcesampling(::RegridSpace) = nothing
+spacesampling(::RegridSpace) = nothing
 
 # The one sampling a set of spatial dimensions agrees on, or `nothing` when none
 # of them says `Points` or `Intervals`.

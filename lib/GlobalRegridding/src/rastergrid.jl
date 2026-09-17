@@ -323,12 +323,12 @@ function _withsampling(dim, edges::Vector{Float64}, sampling::DD.Lookups.Interva
 end
 
 """
-    sourcesampling(space::RasterGrid)
+    spacesampling(space::RasterGrid)
 
 Return the sampling the X and Y lookups agree on, or `nothing` when neither
 says `Points` or `Intervals`. Lookups that disagree are an error.
 """
-sourcesampling(space::RasterGrid) = _commonsampling((space.xdim, space.ydim))
+spacesampling(space::RasterGrid) = _commonsampling((space.xdim, space.ydim))
 
 # Dimension and edge extraction
 

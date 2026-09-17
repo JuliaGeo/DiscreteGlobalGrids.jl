@@ -308,7 +308,7 @@ GR.dimsource(lk::AbstractCellLookup) = cellset(lk)
 
 # A cell is a region, as its `CellLookup` says, so `Auto()` reads a value on a
 # bare grid as that region's mean.
-GR.sourcesampling(::DGGSpace) = DD.Lookups.Intervals(DD.Lookups.Center())
+GR.spacesampling(::DGGSpace) = DD.Lookups.Intervals(DD.Lookups.Center())
 
 # Labelling the output
 

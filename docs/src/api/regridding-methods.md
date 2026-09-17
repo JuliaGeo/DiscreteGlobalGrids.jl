@@ -56,14 +56,14 @@ Check the source dataset's definition of a pixel. Elevations published at
 coordinates, often called **posts**, suit `BarycentricPoint()`. Elevations
 published as averages over pixel footprints suit `Conservative()`.
 
-`Auto()` makes that check from the source's own dimensions: `Intervals`
-lookups select `Conservative()` and `Points` lookups select
-`BarycentricPoint()`. A `Raster` read through GDAL takes its sampling from the
+`Auto()` makes that check from the dimensions on both sides: `Points` on
+either side selects `BarycentricPoint()`, and `Intervals` onto `Intervals`
+selects `Conservative()`. A `Raster` read through GDAL takes its sampling from the
 file's `AREA_OR_POINT` tag, and a DGGS cell axis is `Intervals`. A lookup
 built in memory without an explicit sampling is `Points` in DimensionalData,
 and a NetCDF coordinate without bounds is read as `Points` too, so check these
-before relying on `Auto()`. Sources whose axes disagree, or that say neither,
-are refused.
+before relying on `Auto()`. Axes that disagree, or a source that says neither
+onto a destination that is not `Points`, are refused.
 
 ```julia
 DGG.regrid(dem; to = grid, method = DGG.Auto())

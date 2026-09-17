@@ -256,7 +256,7 @@ end
             DD.Y(DD.Lookups.Sampled(-90.0:45.0:45.0;
                 sampling = DD.Lookups.Intervals(DD.Lookups.Start()))))))
         @test GR.chartaxes(intervals) == (collect(raster_lon()), collect(raster_lat()))
-        @test GR.sourcesampling(intervals) isa DD.Lookups.Intervals
+        @test GR.spacesampling(intervals) isa DD.Lookups.Intervals
     end
 
     @testset "lookup order" begin

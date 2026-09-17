@@ -193,45 +193,60 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         @test DD.dims(regrid(src; to = yfirst)) isa Tuple{<:DD.Y,<:DD.X}
     end
 
-    @testset "Auto chooses the method from the source's sampling" begin
+    @testset "Auto chooses the method from both sides' sampling" begin
         f(lon, lat) = 2.0 + sind(2 * lat) + 0.25 * cosd(lon)
         xs, ys = t6_centres(-180, 180, 36), t6_centres(-90, 90, 18)
-        dst = t6_space(t6_centres(-180, 180, 9), t6_centres(-90, 90, 6))
+        dxs, dys = t6_centres(-180, 180, 9), t6_centres(-90, 90, 6)
         intervals(v) = DD.Lookups.Sampled(v; order = DD.Lookups.ForwardOrdered(),
             span = DD.Lookups.Regular(v[2] - v[1]),
             sampling = DD.Lookups.Intervals(DD.Lookups.Center()))
+        cells = RasterGrid((DD.X(intervals(dxs)), DD.Y(intervals(dys))))
+        sites = t6_space(dxs, dys)
+        auto(data, dst) = GR.resolvemethod(Auto(), data, RasterGrid(data), dst)
 
-        # Posts interpolate; DimensionalData gives unannotated lookups `Points`.
+        # DimensionalData gives unannotated lookups `Points`.
         posts = t6_raster(f, xs, ys)
-        @test DD.sampling(DD.lookup(posts, DD.X)) isa DD.Lookups.Points
-        @test GR.resolvemethod(Auto(), posts, RasterGrid(posts)) == BarycentricPoint()
-        auto = regrid(posts; to = dst, method = Auto())
-        @test isequal(parent(auto),
-            parent(regrid(posts; to = dst, method = BarycentricPoint())))
-        @test DD.sampling(DD.lookup(auto, DD.X)) isa DD.Lookups.Points
-
-        # Cell means conserve, and the plan holds the resolved method.
         means = DD.DimArray(parent(posts), (DD.X(intervals(xs)), DD.Y(intervals(ys))))
-        @test plan_regrid(means; to = dst, method = Auto()).method == Conservative()
-        @test isequal(parent(regrid(means; to = dst, method = Auto())),
-            parent(regrid(means; to = dst, method = Conservative())))
-        @test plan_regrid(means; to = dst, method = Auto(), lazy = true).method ==
+        @test DD.sampling(DD.lookup(posts, DD.X)) isa DD.Lookups.Points
+        @test GR.spacesampling(sites) isa DD.Lookups.Points
+        @test GR.spacesampling(cells) isa DD.Lookups.Intervals
+
+        # `Points` on either side interpolates; only cells onto cells conserve.
+        @test auto(posts, sites) == BarycentricPoint()
+        @test auto(posts, cells) == BarycentricPoint()
+        @test auto(means, sites) == BarycentricPoint()
+        @test auto(means, cells) == Conservative()
+
+        # The plan holds the resolved method on both routes, and the result is
+        # the explicit method's.
+        @test plan_regrid(means; to = cells, method = Auto()).method == Conservative()
+        @test plan_regrid(means; to = cells, method = Auto(), lazy = true).method ==
               Conservative()
+        @test isequal(parent(regrid(means; to = cells, method = Auto())),
+            parent(regrid(means; to = cells, method = Conservative())))
+        pointwise = regrid(posts; to = cells, method = Auto())
+        @test isequal(parent(pointwise),
+            parent(regrid(posts; to = cells, method = BarycentricPoint())))
+        @test DD.sampling(DD.lookup(pointwise, DD.X)) isa DD.Lookups.Points
 
         # A bare array reads the sampling off its source space.
-        @test GR.resolvemethod(Auto(), parent(means), RasterGrid(means)) == Conservative()
-        @test GR.sourcesampling(RasterGrid(posts)) isa DD.Lookups.Points
+        @test GR.resolvemethod(Auto(), parent(means), RasterGrid(means), cells) ==
+              Conservative()
 
         # An explicit method is never second-guessed.
-        @test GR.resolvemethod(NearestCell(), means, RasterGrid(means)) == NearestCell()
+        @test GR.resolvemethod(NearestCell(), means, RasterGrid(means), sites) ==
+              NearestCell()
 
-        # Lookups that disagree, or a source that says nothing, are refused.
+        # Lookups that disagree, or a source that says nothing onto a
+        # destination that is not `Points`, are refused.
         mixed = DD.DimArray(parent(posts), (DD.X(intervals(xs)), DD.Y(ys)))
-        @test_throws ArgumentError regrid(mixed; to = dst, method = Auto())
+        @test_throws ArgumentError regrid(mixed; to = cells, method = Auto())
         toy = ToyLonLatSpace(4, 2)
-        @test GR.sourcesampling(toy) === nothing
+        @test GR.spacesampling(toy) === nothing
         @test_throws ArgumentError regrid(zeros(ncells(toy)); from = toy, to = toy,
             method = Auto())
+        @test GR.resolvemethod(Auto(), zeros(ncells(toy)), toy, sites) ==
+              BarycentricPoint()
     end
 
     @testset "irregular posts interpolate at their own coordinates" begin

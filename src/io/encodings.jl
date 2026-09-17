@@ -1,5 +1,3 @@
-# Separate grid-arithmetic and storage-layout interfaces make every combination reusable.
-
 """
     Encodings
 
@@ -24,7 +22,7 @@ import ..DiscreteGlobalGrids: IGeo7
 # From `errors.jl`, which the including module reads before this file.
 import ..DGGSFormatError
 
-# The store boundary adds identifiers and convention names to these layer-neutral errors.
+# Errors thrown here carry no store context; the extension that opened the store adds it.
 
 export CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding,
     CompactedEncoding

@@ -63,9 +63,9 @@ axis created by operations such as `reverse` is rejected.
 
 A `MultiOrderLookup` axis writes as `compacted`: `cell_ids` and `cell_levels` as
 aligned columns under `refinement_level: null`, with the `refinement_levels`
-attribute naming the level column. Only the DGGS convention is stamped there,
-because xdggs attributes describe a single-level coordinate, and every
-single-level encoding asks for `expand(A, level)` first.
+attribute naming the level column. A compacted store carries the DGGS
+convention alone, because xdggs attributes describe a single-level coordinate.
+Single-level encodings require `expand(A, level)` first.
 
 `target = :xdggs` writes the store xdggs opens: the dense coordinate, with the
 description checked through
@@ -73,8 +73,8 @@ description checked through
 before a byte is written. An `encoding` other than `:auto` or `:dense`
 contradicts the target and is an `ArgumentError`, like every other keyword
 conflict; a description xdggs cannot read is a `DGGSFormatError` with
-`check = :not_xdggs_readable`. The dense coordinate is single-level, so a
-mixed-level cube reaches the target only through `expand`.
+`check = :not_xdggs_readable`. The dense coordinate is single-level; `expand` a
+mixed-level cube before writing it for this target.
 
 The writer persists a chunk-manifest sidecar so readers can open the axis
 without scanning every ID. It never overwrites an existing layer: conflicting
@@ -197,16 +197,16 @@ function _writemixed(opengroup, identifier, src, celldim, mov,
     isempty(mov) && throw(ArgumentError(
         "dggwrite has nothing to write: the cell axis is empty."))
     enc = _mixedencoding(encoding)
+    sys = system(mov)
     layers = _layers(src, celldim)
-    target = _celltarget(chunk_target, layers, celldim)
-    plan = _movchunkplan(chunks, mov, target)
+    plan = _chunkplan(chunks, nothing, mov, _celltarget(chunk_target, layers, celldim))
     lv = Int8[level(c) for c in mov]
-    I = idtype(levelgrid(system(mov), Int(maximum(lv))))
+    I = idtype(levelgrid(sys, Int(maximum(lv))))
     ids = I[convert(I, rawid(c)) for c in mov]
-    # Reject invalid alignment before creating a partial store.
-    cellaxis(enc, system(mov), lv, ids; declared_length=length(mov))
+    # The reader's own constructor rejects a misaligned axis before any array exists.
+    cellaxis(enc, sys, lv, ids; declared_length=length(mov))
     manifest = _movmanifest(mov, plan.chunklength)
-    desc = _description(system(mov), nothing, enc, layers)
+    desc = _description(sys, nothing, enc, layers)
     arrays = _arrayplan(enc, (lv, ids), layers, celldim, plan, manifest, desc)
     return _commit(opengroup, identifier, src, desc, conventions, arrays;
         reference_level=DGG.reference_level(mov))
@@ -237,7 +237,7 @@ end
 _stampable(::DGGSConvention, desc) = true
 _stampable(::XdggsConvention, desc) = desc.level !== nothing
 
-# v1 of zarr-conventions/dggs lacks a level-column key, so publish the extension.
+# `refinement_levels` extends v1 of zarr-conventions/dggs, which has no level-column key.
 function _declarelevels!(attrs)
     dggs = get(attrs, "dggs", nothing)
     dggs isa AbstractDict || return attrs
@@ -275,19 +275,9 @@ _attrs(md::AbstractDict) = Dict{String,Any}(String(k) => deepcopy(v) for (k, v) 
 _attrs(md::NamedTuple) = Dict{String,Any}(String(k) => deepcopy(v) for (k, v) in pairs(md))
 _attrs(md::DD.Metadata) = _attrs(DD.val(md))
 
-"""
-    _cellaxis(src) -> (dim, grid, ids)
-
-Return the cube's cell dimension, its complete level grid and its raw ids.
-
-Materializing raw ids once supplies eligibility checks, chunk planning and the
-dense coordinate without a second axis copy. `idcell` reconstructs an individual
-typed cell when needed.
-
-[`AbstractCellLookup`](@ref) guarantees a sorted, unique single-level axis.
-DimensionalData represents noncanonical cell axes as `Categorical`, which this
-writer rejects. `_mixedaxis` handles `MultiOrderLookup` before this method runs.
-"""
+# `(dim, grid, raw ids)` of a single-level cube. One materialized id vector serves
+# eligibility, chunk planning and the dense coordinate. An `AbstractCellLookup` is
+# sorted and unique; a noncanonical axis arrives as `Categorical` and is rejected.
 function _cellaxis(src)
     for d in DD.dims(src)
         lk = DD.val(d)
@@ -329,14 +319,7 @@ end
                         " carries a cell lookup."))
 end
 
-"""
-    _encoding(spec, grid, cells) -> CellEncoding
-
-Resolve the encoding for a single-level axis. `:auto` selects
-[`RangesEncoding`](@ref) for an eligible sorted, unique axis and
-[`DenseEncoding`](@ref) otherwise. Keyword aliases resolve through
-`ENCODING_REGISTRY`; direct instances use the same eligibility check.
-"""
+# Resolve a single-level encoding: `:auto` is ranges when eligible, dense otherwise.
 function _encoding(spec::Symbol, grid, cells)
     spec === :auto && return write_eligible(RangesEncoding(), grid, cells) ?
                              RangesEncoding() : DenseEncoding()
@@ -366,13 +349,7 @@ _ineligible(::CompactedEncoding, grid) =
     "level-$(level(grid)) axis as dense or ranges."
 _ineligible(::CellEncoding, grid) = "its `write_eligible` method returned false."
 
-"""
-    _mixedencoding(spec) -> CompactedEncoding
-
-Resolve the encoding for a `MultiOrderLookup` axis. `:auto` and `:compacted`
-select [`CompactedEncoding`](@ref); single-level encodings report how to use
-`expand` first.
-"""
+# A `MultiOrderLookup` axis writes as compacted; a single-level request names `expand`.
 function _mixedencoding(spec)
     (spec === :auto || spec === :compacted || spec isa CompactedEncoding) &&
         return CompactedEncoding()
@@ -405,28 +382,15 @@ _xdggs_encoding(enc) = _xdggs_conflict(enc)
     "`target = :xdggs` writes one id per cell, which is `encoding = :dense`; " *
     "$(repr(spec)) asks for a coordinate xdggs cannot read."))
 
-"""
-    _coordinate(enc, grid, cells, merge)
-
-Compute the axis representation once:
-
-  - ranges use an `(n, 2)` inclusive-range array;
-  - dense uses the materialized raw-id vector directly; and
-  - implicit uses the axis length.
-
-`_axis` validates the same representation before writing.
-"""
+# The on-disk axis representation: the `(n, 2)` range array, the raw-id vector,
+# or the axis length. `_axis` validates the same value before writing.
 _coordinate(::RangesEncoding, grid, cells, merge) = idranges(grid, cells; merge=merge)
 _coordinate(::DenseEncoding, grid, cells, merge) = cells
 _coordinate(::ImplicitEncoding, grid, cells, merge) = length(cells)
 _coordinate(enc::CellEncoding, grid, cells, merge) = _nowritepath(enc)
 
-"""
-    _axis(enc, grid, coord, plan, n) -> ChunkedCellVector
-
-Rebuild and validate the reader-visible axis from `coord`. The declared count
-`n` catches expansion or counting disagreements before the store is committed.
-"""
+# Rebuild the reader-visible axis from `coord`; the declared count `n` catches a
+# counting disagreement before the store is committed.
 _axis(::RangesEncoding, grid, coord, plan, n) =
     cellaxis(RangesEncoding(), grid, coord; declared_length=n)
 
@@ -438,12 +402,7 @@ _axis(::ImplicitEncoding, grid, coord, plan, n) =
 
 _axis(enc::CellEncoding, grid, coord, plan, n) = _nowritepath(enc)
 
-"""
-    _nowritepath(enc)
-
-Raise a named unsupported-encoding error when an encoding lacks any required
-write verb: `_coordinate`, `_axis`, `_coordinate!` or `_coordinatename`.
-"""
+# The fallback of every write verb: a named error for an encoding missing one.
 @noinline function _nowritepath(enc::CellEncoding)
     registered = sort!(collect(keys(ENCODING_REGISTRY)))
     throw(DGGSFormatError(check=:unsupported_encoding, observed=_encodinglabel(enc),
@@ -561,9 +520,9 @@ end
 
 # --- the mixed-level plan ---------------------------------------------------
 
-_movchunkplan(chunks::Integer, mov, target) = _chunkplan(chunks, nothing, mov, target)
-
-function _movchunkplan(chunks::Symbol, mov, target)
+# `grid === nothing` marks a mixed-level axis, whose ancestor descent stops at the
+# system's coarsest level.
+function _chunkplan(chunks::Symbol, ::Nothing, mov, target)
     chunks === :auto || throw(ArgumentError(
         "chunks is :auto or a positive integer, not $(repr(chunks))"))
     n = length(mov)

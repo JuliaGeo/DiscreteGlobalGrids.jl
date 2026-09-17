@@ -56,15 +56,15 @@ unique and single-level; a [`MultiOrderLookup`](@ref) axis is mixed-level.
 `encoding=:auto` chooses compacted for a mixed-level axis, an eligible ranges
 encoding for a single-level one, and dense IDs otherwise. `:dense` stores each
 ID; `:ranges` stores intervals; `:implicit` requires a complete level;
-`:compacted` stores the aligned ID and level columns of a mixed-level axis, and
-is the only encoding that axis accepts — the single-level ones need
-[`expand`](@ref) first. `merge=:step` joins integer-adjacent IDs. `merge=:rank`
+`:compacted` stores the aligned ID and level columns of a mixed-level axis. A
+mixed-level axis accepts `:compacted` alone; [`expand`](@ref) it to use a
+single-level encoding. `merge=:step` joins integer-adjacent IDs. `merge=:rank`
 joins consecutive valid cells and requires a rank-aware reader.
 
 `target=:xdggs` writes a store the Python package xdggs opens with
 `xdggs.decode`: the dense encoding, and a grid that xdggs or one of its plugins
 registers, checked by [`require_xdggs_readable`](@ref) before writing. It
-therefore needs a single-level cube. See [Writing a store for xdggs](@ref).
+requires a single-level cube. See [Writing a store for xdggs](@ref).
 
 `chunks` is a cell chunk length or `:auto`. `chunk_target` counts all elements
 per chunk, including non-cell dimensions. Layer metadata become array attributes;

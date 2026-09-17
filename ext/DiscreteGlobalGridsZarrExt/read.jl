@@ -51,9 +51,9 @@ const MANIFEST_VALIDATED = "strict"
 """
     COMPACTED_LEVELS_ARRAY
 
-The second column of a `compacted` cell axis: one integer level per stored
-cell, aligned with the id coordinate. It sits on a dimension of its own so
-that no convention reads it as a data variable.
+The level column of a `compacted` cell axis: one integer level per stored cell,
+aligned with the id coordinate. Its own dimension keeps conventions from reading
+it as a data variable.
 """
 const COMPACTED_LEVELS_ARRAY = "cell_levels"
 
@@ -265,13 +265,8 @@ end
 
 # --- the axis ---------------------------------------------------------------
 
-"""
-    storedlookup(encoding, group, snapshot, desc, n, validate, samples) -> Lookup
-
-The cube axis of the store: a [`ChunkedCellLookup`](@ref) over the
-single-level axis `storedaxis` builds, or — for a `compacted` store — a
-`MultiOrderLookup` over the validated `MultiOrderVector` its two columns name.
-"""
+# The cube axis: a `ChunkedCellLookup` over `storedaxis` for a single-level store,
+# a `MultiOrderLookup` over the two validated columns for a compacted one.
 storedlookup(enc::CellEncoding, group, snap, desc, n, validate, samples) =
     ChunkedCellLookup(storedaxis(enc, describedgrid(desc), group, snap, desc, n,
         validate, samples))
@@ -286,8 +281,7 @@ function storedlookup(enc::CompactedEncoding, group, snap, desc, n, validate, sa
     z = coordinatearray(group, snap, desc, 1)
     lv = levelscolumn(group, snap, n)
     # Validate every compacted pair regardless of the single-level scan policy.
-    mov = cellaxis(enc, sys, lv, Array(z); declared_length=n)
-    return MultiOrderLookup(mov)
+    return MultiOrderLookup(cellaxis(enc, sys, lv, Array(z); declared_length=n))
 end
 
 function levelscolumn(group, snap, n)

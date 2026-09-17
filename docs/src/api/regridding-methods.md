@@ -86,6 +86,19 @@ Extensive
 Conservative
 ```
 
+## Candidate locators
+
+`locator` chooses how a build finds the source cells a destination cell may
+touch. The weights are the same whichever is used; only the discovery differs.
+`TreeLocator()` descends spatial trees and works for every space.
+`AnalyticLocator()` locates points in closed form and walks cell
+neighbourhoods, and needs a `DGGSpace` on at least one side.
+
+```@docs
+TreeLocator
+AnalyticLocator
+```
+
 ## The sentinel a blanked cell holds
 
 `missingpolicy` decides *which* cells are blanked. `missingval` decides what

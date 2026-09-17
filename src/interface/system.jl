@@ -72,7 +72,7 @@ of its own and answers the [`AbstractGrid`](@ref) contract there.
 
 These are the five methods [`HierarchicalLevelGrid`](@ref) forwards to. Each
 carries its grid-level contract — [`ncells`](@ref), [`cellindex`](@ref),
-[`globalindex`](@ref), [`cell_boundary`](@ref), [`cell_centroid`](@ref) —
+[`globalindex`](@ref DiscreteGlobalGrids.globalindex), [`cell_boundary`](@ref), [`cell_centroid`](@ref) —
 minus the two things the grid method has already settled:
 
   - `cellindex` may assume `i in 1:ncells(sys, l)`. The grid bounds-checks.
@@ -146,46 +146,17 @@ function children end
 """
     node_extent(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex) -> GO.UnitSpherical.SphericalCap
 
-The covering region of the entire subtree rooted at `c`.
+Return a spherical cap containing the geometry of every descendant of `c`,
+at every level through `maxlevel(sys)`. Query engines use it to prune subtrees.
 
-**Defaulted**: the generic implementation inflates the cell's own bounding cap
-by [`cap_inflation(sys)`](@ref cap_inflation), and a system able to compute a
-tighter covering cap overrides it. The covering law below holds either way, and
-validating it is the system's responsibility.
+The cap need not contain child caps or child `node_extent` results. Bounds
+along a branch are not required to be nested or to have decreasing radii.
+A cell's own bounding cap is not a substitute for its subtree extent.
 
-> **Guaranteed.** `node_extent(sys, c)` contains the *geometry* of every
-> descendant of `c`, at every depth — every point of every cell boundary in the
-> subtree, all the way down to `maxlevel(sys)`, independent of a caller's
-> planned traversal depth.
->
-> **Not guaranteed.** It need not contain the descendants' `cell_cap`s or their
-> own `node_extent`s, and for real systems it does not. A cap is an inflated or
-> sampled bound *around* geometry, not geometry, so a child's cap can stand
-> partly outside its parent's extent while every child polygon lies inside it.
-
-Both halves are load-bearing. A cell's own boundary does not cover its
-subtree — aperture-7 children extend beyond the parent boundary — so `cell_cap`
-is never a substitute for `node_extent`. Equally, the extents down a branch are
-not a nested chain of caps: a consumer that compares a parent's `node_extent`
-against a child's `node_extent` or `cell_cap`, or that expects radii to shrink
-with depth, is testing a property this function does not have and never
-promised.
-
-Pruning is sound against queries derived from geometry, which is what tree
-descent asks: a query cap disjoint from `node_extent(sys, c)` meets no
-descendant cell polygon, so discarding the subtree can drop no result. Every
-node is tested against the query, never against its parent. Over-coverage only
-reduces pruning; under-coverage can omit valid results. For a convex cap of
-angular radius at most 90°, containing all boundary vertices also contains their
-great-circle arcs. Non-convex extents must establish containment of the full
-geometry.
-
-A merge of the children's caps (`Extents.union` over `cell_cap`) is a bound over
-caps — a different and looser object, and one that says nothing about levels
-below those children. It is not `node_extent` and does not substitute for it.
-
-Extents are `SphericalCap`s throughout this package, at every node of every
-tree, which is what lets one predicate vocabulary serve all of them.
+The default inflates the cell cap by [`cap_inflation`](@ref). Implementors
+must validate the full descendant-geometry guarantee, including between sampled
+vertices. See [Collection and traversal contracts](@ref) for the complete
+pruning contract.
 """
 function node_extent end
 
@@ -326,7 +297,7 @@ end
     STATIC_RING_CAP
     STATIC_RING_BYTES
 
-Where a declared bound stops buying a stack container: `64` elements, and `512`
+Where a declared bound stops buying a stack container: `64` elements, and `768`
 bytes of them. Past either, [`static_capacity`](@ref) reports no bound and the
 heap path runs instead, exactly as for a system that declared nothing.
 
@@ -341,7 +312,7 @@ and 492 at `N == 65` — a 56% step for one more slot, with no recovery above it
 (752 at `N == 96`). `STATIC_RING_BYTES` is not; a 16-byte id shows no such step,
 but costs roughly 3.6x as much emitted code per element everywhere, so the byte
 limit bounds the total rather than catching a jump — it stops `S2`'s 16-byte
-`LevelIndex` at 32 elements. For a 4-byte id neither limit is tight: no cliff
+`LevelIndex` at 48 elements, its radius-3 disc. For a 4-byte id neither limit is tight: no cliff
 appears through `N == 160`, and the element cap is simply conservative.
 
 `benchmark/maxneighbors.jl` part 4 reproduces the ladder.
@@ -349,7 +320,7 @@ appears through `N == 160`, and the element cap is simply conservative.
 const STATIC_RING_CAP = 64
 
 @doc (@doc STATIC_RING_CAP)
-const STATIC_RING_BYTES = 512
+const STATIC_RING_BYTES = 768
 
 """
     static_capacity(M, ::Type{T}) -> Union{Val,Nothing}
@@ -387,7 +358,7 @@ Whether the descendants of any cell, at any fixed deeper level, occupy a
 **contiguous interval** of that level's canonical dense order.
 
 `false` by default. A system opting in must implement
-[`descendant_range`](@ref). The property enables range-based subtree membership
+[`descendant_range`](@ref DiscreteGlobalGrids.descendant_range). The property enables range-based subtree membership
 and traversal.
 
 Systems whose canonical order is a space-filling curve (nested HEALPix, Z7,
@@ -395,6 +366,24 @@ H3's resolution-major order) have this property; it is a fact about the
 ordering, and declaring it falsely produces silently wrong subtree answers.
 """
 has_sorted_subtrees(::AbstractHierarchicalGridSystem) = false
+
+"""
+    has_congruent_refinement(sys::AbstractHierarchicalGridSystem) -> Bool
+
+Whether a cell's children **tile the cell**: no part of the parent is left
+uncovered and no child reaches outside it.
+
+`false` by default, and declaring it falsely is a correctness bug rather than a
+performance one. The quad-face family refines an aligned lattice per face and
+qualifies; aperture-7 rosettes (IGEO7, H3) and A5's Hilbert children do not,
+which is why a coverage there can leave slivers.
+
+What it buys the traversals is REACHABILITY: children inside their parent means
+a cell that meets a target has a parent that meets it too, so a descent through
+cells that meet the target reaches every cell that does. Without it a covering
+must also descend through cells that miss.
+"""
+has_congruent_refinement(::AbstractHierarchicalGridSystem) = false
 
 """
     has_direct_location(sys::AbstractHierarchicalGridSystem) -> Bool
@@ -474,9 +463,11 @@ Every descendant of `c` at level `l`, in ascending canonical order, for
 `descendants(sys, c, level(c))` is `[c]`. `l < level(c)` throws an
 `ArgumentError` (uniformly across systems, so generic code can catch it).
 
-This materializes `O(subtree)` ids. Use [`descendant_range`](@ref) when
-available, or [`border`](@ref)`(subtree(sys, c, l))` when only the border is
-needed.
+The result is a vector of cell IDs; its storage and mutability depend on the
+system. Some systems materialize the IDs, while CopernicusDEM returns a lazy,
+read-only vector. Use `collect` when an owned mutable vector is required.
+Use [`descendant_range`](@ref DiscreteGlobalGrids.descendant_range) when available, or
+`border(subtree(sys, c, l))` when only the border is needed.
 """
 function descendants end
 
@@ -513,7 +504,7 @@ level validation, so their `ArgumentError`s are the ones the eager verbs raise.
 Engine selection uses private dispatch on the system type and is not part of
 the public compatibility surface.
 
-The generic border and interior engines scan [`descendant_range`](@ref), or
+The generic border and interior engines scan [`descendant_range`](@ref DiscreteGlobalGrids.descendant_range), or
 materialize descendants when [`has_sorted_subtrees`](@ref) is `false`. The
 generic halo engine walks cells outside the subtree because a halo is not a
 single descendant interval.

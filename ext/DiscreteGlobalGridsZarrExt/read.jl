@@ -59,60 +59,27 @@ const COMPACTED_LEVELS_ARRAY = "cell_levels"
 
 """
     dggread(store; vars = All(), lazy = true, validate = :strict,
-            conventions = CONVENTION_REGISTRY, description = nothing) -> DimStack
+            conventions = CONVENTION_REGISTRY, description = nothing,
+            ancestors = nothing) -> DimStack
     dggread(store, var::Symbol; kwargs...) -> DimArray
 
-Read a DGGS store into plain DimensionalData with one `Cells` dimension shared
-by every layer. The dimension carries one of two lookups:
+Zarr implementation of [`dggread`](@ref DiscreteGlobalGrids.dggread). The generic function documents the
+common read contract. `s3://` additionally requires `using AWSS3`.
 
-  - [`ChunkedCellLookup`](@ref) resolves cells on a stored single-level axis
-    without scanning it.
-  - [`MultiOrderLookup`](@ref) represents the mixed-level cells of a
-    `compacted` store.
+A single-level store opens as a
+[`ChunkedCellLookup`](@ref DiscreteGlobalGrids.ChunkedLookups.ChunkedCellLookup);
+a `compacted` store opens as a
+[`MultiOrderLookup`](@ref DiscreteGlobalGrids.MultiOrderLookup) over its aligned
+`cell_ids` and `cell_levels` columns.
 
-Every other store dimension, such as time or bands, becomes an ordinary `Dim`
-and uses the values of its like-named coordinate array when present.
+For ancestor-subzone stores, `ancestors` selects ancestor cells or column indices.
+The default includes the full level, including unwritten columns that read as fill.
+The result still has a `Cells` dimension; its data use the subzone layout lazily.
+Its metadata contain `"layout"` instead of ordinary encoding/convention/description
+entries. Other dimensions use stored coordinates when available.
 
-`store` accepts a `Zarr.ZGroup`, `Zarr.AbstractStore`, local path or URL.
-`gs://BUCKET/PATH` maps to the public
-`https://storage.googleapis.com/BUCKET/PATH` endpoint. `s3://` support comes from
-Zarr's AWSS3 extension, loaded with `using AWSS3`.
-
-  - `vars`: `All()` reads every data variable; symbols select specific variables.
-    An unknown name raises an error that lists the available variables.
-  - `lazy`: `true` keeps the store's chunked arrays; `false` materializes them.
-  - `validate`: controls cell-id validation.
-    - `:strict` checks every stored id unless a trusted package-written manifest
-      supplies the axis.
-    - `:lazy` samples `LAZY_SAMPLES` ids per chunk.
-    - `:scan` ignores a manifest and checks every id.
-
-    Every mode checks sortedness, uniqueness and declared lengths when it scans.
-    A trusted manifest instead verifies each chunk's first id, last id and
-    length when that chunk is read; see `persistedmanifest`.
-  - `conventions`: the conventions to try, in order.
-  - `ancestors`: restricts an ancestor-subzone store to selected ancestor cells
-    or column indices. The default returns the complete level, including unwritten
-    columns as fill values.
-  - `description`: supplies a [`StoreDescription`](@ref) and skips detection.
-    The id and closed-form count checks still run, enabling attribute-free stores.
-
-The stack's `metadata` carries the provenance a value-identical rewrite needs:
-
-| key | |
-|---|---|
-| `"source"` | the store URL or path |
-| `"conventions"` | the conventions that fired, in order |
-| `"encoding"` | the cell-axis layout, as the store spells it |
-| `"attrs"` | the group attributes verbatim |
-| `"description"` | the [`StoreDescription`](@ref) everything was read through |
-
-Each layer keeps its own array attributes as its metadata.
-
-**Ancestor-subzone stores** use their own attributes and read path. Their layers
-retain a `Cells` dimension backed by a lazy [`SubzoneCellArray`](@ref), with one
-subtree per chunk. Their stack metadata records a [`SubzoneLayout`](@ref) under
-`"layout"`.
+See [Workflow execution details](@ref) for validation, manifest trust, and the
+metadata keys retained for a rewrite.
 """
 function DiscreteGlobalGrids.dggread(store::StoreLike; vars=DD.All(), lazy::Bool=true,
     validate::Symbol=:strict, conventions=DiscreteGlobalGrids.CONVENTION_REGISTRY,

@@ -21,7 +21,7 @@ Chart edges are curved and [`cell_boundary`](@ref) densifies them.
 struct ISEA4RSystem <: DGG.AbstractQuadFaceGridSystem end
 
 # Grid descriptor for all `10 * 4^l` cells in Morton order.
-const LevelGrid = DGG.HierarchicalLevelGrid{ISEA4RSystem}
+const ISEA4RLevelGrid = DGG.HierarchicalLevelGrid{ISEA4RSystem}
 
 "The deepest level at which `10 * 4^level` still fits a signed 64-bit integer."
 const MAX_LEVEL = 29
@@ -102,12 +102,24 @@ function DGG.cell_boundary(sys::ISEA4RSystem, c::DGG.LevelIndex)
 end
 
 """
+    cell_corners(grid, c) -> SmallVector{4,UnitSphericalPoint}
+
+The four chart corners of cell `c`, counterclockwise from `(x+,y+)` as
+[`cell_boundary`](@ref) visits them.
+"""
+function DGG.cell_corners(sys::ISEA4RSystem, c::DGG.LevelIndex)
+    nside = DGG.nside(DGG.level(c))
+    ix, iy, d = morton_to_xyd(DGG.checked_id(sys, c), nside)
+    return SmallVector{4,GO.UnitSphericalPoint{Float64}}(cell_corners(ix, iy, d, nside))
+end
+
+"""
     cell_area(grid, c) -> Float64
 
 Exact cell area in steradians: `4π/(10*4^level)`. This `O(1)` value is
 independent of the approximate boundary polygon.
 """
-DGG.cell_area(g::LevelGrid, c::DGG.LevelIndex) =
+DGG.cell_area(g::ISEA4RLevelGrid, c::DGG.LevelIndex) =
     (DGG.checked_id(g, c); 4 * Float64(π) / DGG.ncells(g))
 
 """
@@ -144,8 +156,8 @@ rectangle exactly, so a cap covering that rectangle covers all descendants;
 radius.
 """
 _subtree_cap(ix::Integer, iy::Integer, diamond::Integer, nside::Integer) =
-    DGG.sampled_cap(cell_center(ix, iy, diamond, nside),
-        _perimeter_points(ix, iy, diamond, nside, CAP_EDGE_SEGMENTS))
+    DGG.sampled_cap(cell_center(ix, iy, diamond, nside), xyd_to_point,
+        ix, iy, diamond, nside, CAP_EDGE_SEGMENTS)
 
 """
     node_extent(ISEA4RSystem(), c) -> SphericalCap
@@ -175,7 +187,7 @@ Return the cell containing `p` via the analytic chart inverse. Complete grids
 never return `nothing`. Boundary ties use Snyder's face choice and the
 higher-side lattice cell, deterministically per floating-point platform.
 """
-DGG.cellat(g::LevelGrid, p::GO.UnitSphericalPoint) =
+DGG.cellat(g::ISEA4RLevelGrid, p::GO.UnitSphericalPoint) =
     DGG.LevelIndex(g.level, point_to_morton(p, DGG.nside(g.level)))
 
 # ===========================================================================
@@ -196,7 +208,7 @@ lookup and they cannot be off the lattice. Re-deriving `ispow2(nside)` and two
 range tests per neighbour is the whole cost of this function otherwise, and this
 is the inner loop of every breadth-first shell walk.
 """
-function DGG.one_ring(g::LevelGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
+function DGG.one_ring(g::ISEA4RLevelGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
     nside = DGG.nside(g.level)
     ix, iy, d = morton_to_xyd(DGG.checked_id(g, c), nside)
     out = SmallVector{9,DGG.LevelIndex}()
@@ -224,7 +236,7 @@ corner cells at finer levels.
 `k == 0` returns an empty container; `k == 1` returns a
 `SmallCollections.SmallVector` sized by [`maxneighbors`](@ref).
 """
-Base.@constprop :aggressive function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
+Base.@constprop :aggressive function DGG.neighbors(g::ISEA4RLevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return SmallVector{9,DGG.LevelIndex}()
@@ -238,7 +250,7 @@ end
 Cells at lattice distance exactly `k`, counterclockwise from the first ring-1
 direction. `k == 0` returns `[c]`; outer-ring azimuth ties use canonical order.
 """
-Base.@constprop :aggressive function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
+Base.@constprop :aggressive function DGG.ring(g::ISEA4RLevelGrid, c::DGG.LevelIndex, k::Integer;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return DGG.LevelIndex[c]
@@ -250,7 +262,7 @@ end
 # type parameter so the declared ring bound folds to a fixed buffer capacity and
 # the shell is built and returned on the stack. See the interface `Val` methods
 # for why this is opt-in rather than generic.
-function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, ::Val{K};
+function DGG.neighbors(g::ISEA4RLevelGrid, c::DGG.LevelIndex, ::Val{K};
         connectivity::DGG.Connectivity = DGG.Vertex()) where {K}
     DGG.checked_steps(K)
     K == 0 && return SmallVector{9,DGG.LevelIndex}()
@@ -258,7 +270,7 @@ function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, ::Val{K};
     return DGG.shell_disc(g, c, Val(K), connectivity)
 end
 
-function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, ::Val{K};
+function DGG.ring(g::ISEA4RLevelGrid, c::DGG.LevelIndex, ::Val{K};
         connectivity::DGG.Connectivity = DGG.Vertex()) where {K}
     DGG.checked_steps(K)
     K == 0 && return DGG.LevelIndex[c]

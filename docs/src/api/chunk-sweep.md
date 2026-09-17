@@ -4,21 +4,16 @@
 CurrentModule = DiscreteGlobalGrids
 ```
 
-A cell-at-a-time pass over a lazy cube decodes one storage chunk **per scalar
-read**. A cell near a chunk boundary has ring members in the next chunk over, so
-that chunk is decoded, dropped, and decoded again for the cell after it — and
-again for the one after that. The cost is not the arithmetic; it is the same
-compressed bytes being inflated hundreds of times.
+This API runs neighbourhood kernels over chunked cubes. It batches the cells
+owned by each storage chunk with the halo needed by their rings, reducing the
+repeated chunk decoding caused by scalar-at-a-time access.
 
-The traversal here follows the chunk grid the store already has. For each chunk
-it reads the cells the chunk owns once, reads the cells their rings reach
-outside it once per *distinct* foreign chunk, and hands the pair to the caller
-as an ordinary in-memory cube.
+The traversal follows the cube's existing chunk grid. Each callback receives an
+ordinary in-memory cube containing the owned cells and the halo cells reached by
+their rings. A foreign chunk can serve several halos and may be read again.
 
-It is spelled as a **plan** and a **runner**, because three decisions are made
-on a plan and none of them can be made inside a single opaque call: what order
-to read in, how to cut the work up, and what it will cost before anything is
-read.
+The API separates a **plan** from its **runner**. The plan records the read
+order, chunk partitioning, halo, and estimated work before data access begins.
 
 ```julia
 A    = dggread("dem.zarr")[:elevation]
@@ -32,20 +27,16 @@ mapneighbors!(out, slope, A, plan)
 
 ## The plan
 
-[`chunkplan`](@ref) reads the chunk boundaries from the data's own chunk grid,
-so a store chunked irregularly — one chunk per ancestor subtree, say — is
-planned on its real boundaries rather than on a nominal chunk length. Each
-chunk's halo is found by walking its boundary through [`halo`](@ref), which is
-CPU and no IO: a plan over a store of tens of millions of cells is built without
-touching a single data chunk.
+[`chunkplan`](@ref DiscreteGlobalGrids.chunkplan) reads boundaries from the data's chunk grid, including
+irregular layouts such as one chunk per ancestor subtree. It finds each halo by
+walking its boundary through [`halo`](@ref), so planning reads metadata and
+performs CPU work without loading data chunks.
 
-[`split`](@ref Base.split(::MapChunkPlan, ::Integer)) is how a sweep is
-parallelised, which is why the runner has no `threaded` keyword for the chunks
-themselves. Pieces of one plan own disjoint ranges of the axis, so tasks running
-at once write disjoint ranges of the destination and need no coordination —
-including when the destination is a store. Build the plan *before* splitting:
-that call fills the axis's [`region`](@ref) memo, so the pieces share one
-conversion instead of each repeating it.
+[`split`](@ref Base.split(::MapChunkPlan, ::Integer)) divides a plan into
+contiguous pieces with similar chunk counts. For weighted work, unequal worker
+capacities, or grouping chunks by shared inputs, use the
+[partitioning API](partitioning.md). Build the plan before assigning work so
+its [`region`](@ref) conversion is shared by in-process tasks.
 
 ```@docs
 chunkplan
@@ -60,19 +51,14 @@ Base.split(::MapChunkPlan, ::Integer)
 
 ## Running it
 
-[`foreachchunk`](@ref) hands the callback a [`ChunkCube`](@ref): the chunk's
-cells **and its halo**, in memory, as an ordinary cube over a
-[`CellLookup`](@ref). Every verb in this package then works on it unmodified,
-because there is nothing special about it — it is a cube over cells at one
-level, and the fact that some of those cells are context rather than results is
-carried beside it, not inside it.
+[`foreachchunk`](@ref) hands the callback a [`ChunkCube`](@ref) containing the
+chunk's cells and halo in memory, represented as an ordinary cube over a
+[`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup). Package operations work on it as they do on any one-level
+cell cube; ownership metadata remains alongside the cube.
 
-A chunk is a partial grid, so an index into that cube is **chunk-local** and
-means nothing outside it. Two accessors carry the translation. The owned cells
-are contiguous within the block — every halo cell is by definition outside the
-chunk's own run, so sorting the two into one axis leaves the owned run unbroken
-— which makes [`localindices`](@ref) a range, and [`ownedindices`](@ref) says
-where those results belong in the caller's cell axis.
+A chunk is a partial grid, so its indices are **chunk-local**. The owned cells
+form a contiguous range in the block, making [`localindices`](@ref) a range;
+[`ownedindices`](@ref) maps that range to the caller's cell axis.
 [`axisindices`](@ref) names **every** cell of the block, halo included, in that
 same axis, so `axisindices(cc)[localindices(cc)] == ownedindices(cc)`. It is
 what lets a sweep over a chunk report numbers the caller can use, and it is how
@@ -90,13 +76,25 @@ globalindices
 
 ## The sweeps built on it
 
-Because a chunk's halo carries every axis neighbour of every cell the chunk
-owns, a stencil reaching no further than the plan's halo width computes on a
-chunk exactly what it computes on the whole axis — clipped identically, in the
-same order. That is what lets the two sweep forms be built on the plan without
-qualifying their results.
+Halo width describes available input data. The `neighborhood` selector
+chooses which cells the callback receives. Repeating a one-ring sweep
+is a different operation from one sweep over a wider neighborhood.
 
-[`mapneighbors!`](@ref) is the streaming form: results are written into `dest` a
+[`mapneighbors!`](@ref DiscreteGlobalGrids.mapneighbors!) keeps that invariant itself. Its `halo` defaults to
+the radius of the `neighborhood` selector, `k` for both [`Disc`](@ref)`(k)`
+and [`Ring`](@ref)`(k)` and one ring for `Disc(0)`, and a supplied plan must carry at least that many
+rings: [`halowidth`](@ref)`(plan)` narrower than the radius throws an
+`ArgumentError` naming both widths. A wider halo than the radius is allowed.
+With `A` a stored cube, `out` a destination of the same shape and `kernel` a
+`(cell, value, values)` function:
+
+```julia
+plan = chunkplan(A; halo = 3)
+mapneighbors!(out, kernel, A, plan; neighborhood = Ring(3))   # halowidth(plan) ≥ 3
+mapneighbors!(out, kernel, A; neighborhood = Disc(3))         # plans halo = 3 itself
+```
+
+[`mapneighbors!`](@ref DiscreteGlobalGrids.mapneighbors!) is the streaming form: results are written into `dest` a
 chunk at a time, so neither the input nor the output has to fit in memory.
 [`mapneighbors`](@ref) with `pass = Values()` takes the same route by itself
 whenever the cube's data is chunked, and collects the results.
@@ -116,19 +114,12 @@ out  = zeros(Float64, size(A))
 mapneighbors!(out, steepest, A, plan; needs = (Value(A), Centroid()))
 ```
 
-[`Neighbors`](@ref) deliberately does **not** take this route. Its callback is
-handed cell handles and reaches back into the original array for values, so a
-sweep over blocks would hand it block indices to index the whole cube with.
-A chunked sweep is exactly the case where the values must flow through the
-traversal, which is what `Values()` means.
+[`Neighbors`](@ref) uses a different callback contract: it supplies cell handles
+and the callback reads values from the original array. Use `Values()` when a
+chunked sweep should stream the fields through the traversal.
 
-```@docs
-mapneighbors!
-mapneighbors
-foreachneighbors
-Values
-Neighbors
-```
+The [neighbourhood API](neighbors.md#compute-with-neighbourhoods) documents
+these kernels and callback forms.
 
 ## Index
 

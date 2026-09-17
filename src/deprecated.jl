@@ -13,13 +13,13 @@
 """
     cellposition(collection, c) -> Union{Int,Nothing}
 
-Deprecated. Use [`localindex`](@ref) for the index in a collection's own
-storage, or [`globalindex`](@ref) for the index in the complete grid at that
+Deprecated. Use [`localindex`](@ref DiscreteGlobalGrids.localindex) for the index in a collection's own
+storage, or [`globalindex`](@ref DiscreteGlobalGrids.globalindex) for the index in the complete grid at that
 level.
 
 The old name did not say which of the two it meant — it answered the local one,
 and on a complete grid that is also the global one, which is why the confusion
-was survivable for as long as it was. This forwards to [`localindex`](@ref), so
+was survivable for as long as it was. This forwards to [`localindex`](@ref DiscreteGlobalGrids.localindex), so
 existing calls keep their old behaviour exactly.
 """
 function cellposition end

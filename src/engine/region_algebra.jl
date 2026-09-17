@@ -41,10 +41,21 @@ end
     expand(set::MultiOrderCellSet, l::Integer) -> CellVector
     expand(mov::MultiOrderVector, l::Integer) -> CellVector
 
-Return every level-`l` descendant as one [`CellVector`](@ref). Sorted-subtree
-systems merge [`descendant_range`](@ref)s; other systems enumerate and sort
-[`descendants`](@ref). Non-congruent refinement can over-cover the original
-footprint; [`MultiOrderCoverage`](@ref) documents that margin.
+Every level-`l` descendant of the region's cells, as one [`CellVector`](@ref).
+`l` equal to the region's own level returns it unchanged; a coarser `l` (`l < level(region)`) throws.
+
+The expansion never assumes a cell's descendants are contiguous or ascending in
+the deeper level. Where [`has_sorted_subtrees`](@ref) holds it merges one
+[`descendant_range`](@ref DiscreteGlobalGrids.descendant_range) per cell; elsewhere (A5) it resolves
+[`descendants`](@ref) to indices and sorts them. Both paths visit every cell of
+the region, and the second visits every leaf it names.
+
+The set and vector forms are [`CellVector`](@ref)`(set; level = l)` — the same
+expansion, from the mixed-level side.
+
+Descendants of a member need not lie inside the member's own footprint under
+non-congruent refinement, so an expanded coverage over-covers exactly where the
+refinement does; [`MultiOrderCoverage`](@ref) sizes that margin per system.
 """
 function expand(cv::CellVector, l::Integer)
     target = Int(l)

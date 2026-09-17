@@ -27,7 +27,7 @@ struct Blocked{K} <: BlockStrategy end
     Bisected()
 
 Split the longer axis in two, the rule both trees over this lattice use. This
-is what [`treeify`](@ref) builds.
+is what [`treeify`](@ref ConservativeRegridding.Trees.treeify) builds.
 """
 struct Bisected <: BlockStrategy end
 
@@ -39,7 +39,7 @@ const DEFAULT_STRATEGY = Bisected()
                 strategy = DEFAULT_STRATEGY)
 
 A spatial-tree cursor over a rectangle of the complete Copernicus DEM lattice.
-Prefer [`treeify`](@ref), which wraps it in a [`MemoBlockCursor`](@ref).
+Prefer [`treeify`](@ref ConservativeRegridding.Trees.treeify), which wraps it in a [`MemoBlockCursor`](@ref).
 
   - A node is either a tile rectangle (`inpixels == false`) or a raster
     rectangle within tile `(r0, q0)` (`inpixels == true`).
@@ -497,7 +497,7 @@ end
     memoizes derived node extents per task; `BlockCursor(grid)` gives the bare
     cursor. The tiled raster cursor memoizes its own.
 """
-DGG.treeify(::GOCore.Manifold, grid::LevelGrid) = _memoized(BlockCursor(grid))
+DGG.treeify(::GOCore.Manifold, grid::CopernicusDEMLevelGrid) = _memoized(BlockCursor(grid))
 DGG.treeify(::GOCore.Manifold, c::BlockCursor) = c
 DGG.treeify(c::BlockCursor) = c
 
@@ -507,10 +507,10 @@ function DGG.treeify(::GOCore.Manifold,
     return tree === nothing ? DGG.HierarchicalGridCursor(grid) : tree
 end
 
-BlockCursor(grid::LevelGrid; strategy::BlockStrategy=DEFAULT_STRATEGY) =
+BlockCursor(grid::CopernicusDEMLevelGrid; strategy::BlockStrategy=DEFAULT_STRATEGY) =
     _level_cursor(grid, strategy)
 
-function _level_cursor(grid::LevelGrid, strategy::BlockStrategy)
+function _level_cursor(grid::CopernicusDEMLevelGrid, strategy::BlockStrategy)
     sys = DGG.system(grid)
     l = DGG.level(grid)
     return BlockCursor(grid, sys, strategy, l, Int64(-1),
@@ -530,14 +530,14 @@ The node covering grid indices `inds`, with leaf indices still `grid`'s own.
   - On a holding: the [`TiledRasterCursor`](@ref) over the rectangles that
     window holds, which every window has.
 """
-DGG.subcursor(grid::LevelGrid, inds::AbstractUnitRange{<:Integer}) =
+DGG.subcursor(grid::CopernicusDEMLevelGrid, inds::AbstractUnitRange{<:Integer}) =
     _memoized(_window_cursor(grid, DEFAULT_STRATEGY, inds))
 
 DGG.subcursor(grid::DGG.PartialGrid{<:CopernicusDEMSystem},
     inds::AbstractUnitRange{<:Integer}) = Engine.tiled_raster_tree(grid, inds)
 
 # `nothing` unless `inds` is one contiguous id run forming one rectangle.
-function _window_cursor(grid::LevelGrid, strategy::BlockStrategy,
+function _window_cursor(grid::CopernicusDEMLevelGrid, strategy::BlockStrategy,
         inds::AbstractUnitRange{<:Integer})
     isempty(inds) && return nothing
     lo_p, hi_p = Int(first(inds)), Int(last(inds))
@@ -550,7 +550,7 @@ function _window_cursor(grid::LevelGrid, strategy::BlockStrategy,
 end
 
 # The node covering the id run `lo:hi`, whose grid index is `id - origin`.
-function _run_cursor(grid::LevelGrid, strategy::BlockStrategy, origin::Int64,
+function _run_cursor(grid::CopernicusDEMLevelGrid, strategy::BlockStrategy, origin::Int64,
         lo::DGG.LevelIndex, hi::DGG.LevelIndex)
     sys = DGG.system(grid)
     l = DGG.level(grid)

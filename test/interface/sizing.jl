@@ -13,6 +13,7 @@ import DiscreteGlobalGrids as DGG
 import GeometryOpsCore as GOCore
 import DimensionalData as DD
 import Extents
+import GlobalRegridding as GR
 
 const HP = HEALPixSystem()
 const COP = DGG.CopernicusDEMSystem(90)
@@ -55,9 +56,11 @@ end
     end
 end
 
+const ARCTIC = Extents.Extent(X = (-10.0, 10.0), Y = (75.0, 85.0))
+const EQUATOR = Extents.Extent(X = (-10.0, 10.0), Y = (-5.0, 5.0))
+
 @testset "an area of interest moves the size where cell area varies" begin
-    arctic = Extents.Extent(X = (-10.0, 10.0), Y = (75.0, 85.0))
-    equator = Extents.Extent(X = (-10.0, 10.0), Y = (-5.0, 5.0))
+    arctic, equator = ARCTIC, EQUATOR
     # 1° boxes shrink as cos(latitude): ~111 km at the equator and ~47 km at
     # 80° N, against a ~93.5 km global median (the box at ±45°).
     @test cellsize(COP, 0; over = arctic) < 0.6 * cellsize(COP, 0)
@@ -67,6 +70,58 @@ end
     # measure itself.
     @test cellsize(HP, 5; over = arctic) == cellsize(HP, 5)
     @test cellsize(HP, 5; over = equator) == cellsize(HP, 5)
+end
+
+# A 1° lon/lat box at latitude φ has area (π/180)^2·cos φ steradians, so the
+# HEALPix level nearest a box centred on φ follows from cos φ alone.
+boxlevel(φ) = argmin(l -> abs(log(4pi / (12 * 4^l)) - log((pi / 180)^2 * cosd(φ))), 0:29)
+
+@testset "levelfor measures a spatial target within the area of interest" begin
+    r = globalraster(1.0)
+    grid = levelgrid(COP, 0)
+    # The arctic boxes are ~47 km across and the equatorial ones ~111 km, one
+    # HEALPix level apart, and each region takes the level its own boxes want.
+    @test boxlevel(80) == 7 > boxlevel(0) == 6
+    @test levelfor(HP, r; over = ARCTIC) == 7
+    @test levelfor(HP, r; over = EQUATOR) == 6
+    @test levelfor(HP, grid; over = ARCTIC) == 7
+    @test levelfor(HP, grid; over = EQUATOR) == 6
+    # A `RegridSpace` target — a raster space or a DGGSpace over the same
+    # cells — agrees with the raster and grid spellings.
+    for space in (GR.RasterGrid(r), DGG.DGGSpace(grid))
+        @test levelfor(HP, space; over = ARCTIC) == 7
+        @test levelfor(HP, space; over = EQUATOR) == 6
+    end
+    @test cellsize(r; over = ARCTIC) < cellsize(r; over = EQUATOR)
+    @test cellsize(GR.RasterGrid(r); over = ARCTIC) == cellsize(r; over = ARCTIC)
+    # A `DGGSpace` reads the grid it wraps, with an area of interest and without.
+    @test cellsize(DGG.DGGSpace(grid); over = ARCTIC) == cellsize(grid; over = ARCTIC)
+    @test cellsize(DGG.DGGSpace(grid)) == cellsize(grid)
+end
+
+@testset "a target in metres has one size everywhere" begin
+    r = globalraster(1.0)
+    for over in (ARCTIC, EQUATOR)
+        @test levelfor(HP, 25_000; over) == levelfor(HP, 25_000) == 8
+        @test levelfor(HP, cellsize(r); over) == levelfor(HP, cellsize(r)) == 6
+    end
+    # Without an area of interest the global median still decides.
+    @test levelfor(HP, r) == levelfor(HP, GR.RasterGrid(r)) == 6
+end
+
+@testset "an area of interest the target misses is an error" begin
+    step = 1.0
+    lon = (-180 + step / 2):step:180
+    lat = (step / 2):step:90
+    north = DD.DimArray([x + y for x in lon, y in lat],
+        (_axis(DD.X, lon, step), _axis(DD.Y, lat, step)))
+    south = Extents.Extent(X = (-10.0, 10.0), Y = (-60.0, -50.0))
+    @test_throws ArgumentError levelfor(HP, north; over = south)
+    @test_throws "the target does not meet the area of interest" levelfor(
+        HP, north; over = south)
+    @test_throws "the target does not meet the area of interest" cellsize(
+        north; over = south)
+    @test levelfor(HP, north; over = ARCTIC) == 7
 end
 
 end # module SizingTests

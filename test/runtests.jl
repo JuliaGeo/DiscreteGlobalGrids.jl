@@ -3,6 +3,14 @@ using DiscreteGlobalGrids
 
 # Separate suite modules prevent same-named system exports from colliding.
 @testset "DiscreteGlobalGrids.jl" begin
+    include("raster_selection.jl")
+    include("raster_geometry_regressions.jl")
+    include("query_frontier.jl")
+    include("rasterize.jl")
+    include("raster_extract_zonal.jl")
+    include("partitioning/runtests.jl")
+    include("partitioning/backends.jl")
+    include("partitioning/distributed.jl")
     include("interface/runtests.jl")
     include("fallbacks/runtests.jl")
     include("fallbacks/authalic.jl")
@@ -15,6 +23,8 @@ using DiscreteGlobalGrids
     # CopernicusDEM needs its own sweep because `systems()` omits it.
     include("systems/CopernicusDEM/runtests.jl")
     include("systems/crosssystem/runtests.jl")
+    include("systems/crosssystem/cell_corners.jl")
+    # Multi-order suites share the committed California outline fixture.
     include("systems/crosssystem/multiorder_polygons.jl")
     include("systems/crosssystem/multiorder_budget.jl")
     include("systems/crosssystem/cell_vector.jl")
@@ -38,4 +48,6 @@ using DiscreteGlobalGrids
     include("plotting/runtests.jl")
     include("scripts/copdem_source_mode.jl")
     include("scripts/copdem_policy.jl")
+    include("raster_rasters_ext.jl")
+    include("raster_api_regressions.jl")
 end

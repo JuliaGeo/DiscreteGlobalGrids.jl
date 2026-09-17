@@ -36,7 +36,8 @@ export idranges, write_eligible, validate_ranges, cellaxis, storedid
     idrank(grid::AbstractGrid, id::Integer) -> Int
 
 Return the number of `grid` cells whose raw id is less than `id`. This zero-based
-rank satisfies `idrank(grid, rawid(c)) + 1 == globalindex(grid, c)`.
+rank satisfies `idrank(grid, rawid(c)) + 1 ==`
+[`globalindex`](@ref DiscreteGlobalGrids.globalindex)`(grid, c)`.
 
 The function accepts every value of the grid's integer type:
 
@@ -47,7 +48,8 @@ The function accepts every value of the grid's integer type:
 This total definition counts stored `[start, stop]` intervals by rank difference,
 including intervals whose endpoints are not cells.
 
-`grid` must be a complete level grid. Subsets use [`localindex`](@ref).
+`grid` must be a complete level grid. Subsets use
+[`localindex`](@ref DiscreteGlobalGrids.localindex) instead.
 
 **Required** of a grid that is to be read from a store, together with
 [`idselect`](@ref) and [`idcount_between`](@ref).
@@ -169,6 +171,7 @@ end
 idrank(grid::AbstractGrid, ::Integer) = _no_arithmetic(grid)
 idselect(grid::AbstractGrid, ::Integer) = _no_arithmetic(grid)
 idcell(grid::AbstractGrid, ::Integer) = _no_arithmetic(grid)
+idvalid(grid::AbstractGrid, ::Integer) = _no_arithmetic(grid)
 
 function idcount_between(grid::AbstractGrid, lo::Integer, hi::Integer)
     I = idtype(grid)

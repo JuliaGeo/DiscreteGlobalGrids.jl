@@ -36,6 +36,7 @@ using Random
 
 using DiscreteGlobalGrids
 import DiscreteGlobalGrids as DGG
+using DiscreteGlobalGrids: cell_polygon
 const HP = DiscreteGlobalGrids.HEALPix
 
 using DiscreteGlobalGridsConformanceTesting
@@ -426,32 +427,57 @@ end
 # 5. Structural: the exact subtree cap
 # =========================================================================
 
-@testset "node_extent covers the true pixel, with margin" begin
-    # The conformance suite samples DESCENDANT VERTICES; this samples the
-    # continuous truth those vertices lie on, 32x finer than the cap is built
-    # from. A negative worst-overshoot means the cap is not merely passing the
-    # sampled law but bounding the real region.
+@testset "corner_cap covers the pixel" begin
+    # Sound iff the centre's distance over the whole chart square peaks at a
+    # corner. A 65 x 65 lattice plus the 32-sample boundary checks that per
+    # pixel: exactly at levels 0-12, within a hundredth of the margin deeper
+    # (rounding). Mutants: zero margin fails at 29; a dropped corner, the identity.
     #
-    # `pixel_sample(level, 512)` is every pixel at levels 0-2 (12, 48, 192) and
-    # a seeded 512-pixel draw at levels 3-6; the finer 256-per-edge perimeter
-    # below is what makes each sampled pixel's check sharp.
+    # `pixel_sample(level, 256)`: every pixel at levels 0-2, a seeded draw above.
+    # Every face's four corner pixels are added: the chart changes formula there.
+    m = 64
     worst_overshoot = -Inf
+    worst_excess_exact = -Inf
+    worst_excess_deep = -Inf
     max_radius = 0.0
-    for level in 0:6
+    for level in vcat(0:6, 8, 10, 12, 16, 20, 24, 29)
         nside = 1 << level
-        for p in pixel_sample(level, 512)
+        ids = Set(pixel_sample(level, 256))
+        for f in 0:11, ix in (0, nside - 1)
+            push!(ids, HP.xyf_to_nested(ix, ix, f, nside))
+            push!(ids, HP.xyf_to_nested(ix, nside - 1 - ix, f, nside))
+        end
+        excess = -Inf
+        for p in ids
             ix, iy, f = HP.nested_to_xyf(p, nside)
             cap = node_extent(SYS, LevelIndex(level, p))
+            @test cap == DGG.Fallbacks.cell_cap(levelgrid(SYS, level), LevelIndex(level, p))
             max_radius = max(max_radius, cap.radius)
-            for q in HP._perimeter_points(ix, iy, f, nside, 256)
-                worst_overshoot = max(worst_overshoot,
-                    US.spherical_distance(cap.point, q) - cap.radius)
+            centre = HP.pixel_center(ix, iy, f, nside)
+            corners = HP.pixel_corners(ix, iy, f, nside)
+            dcorner = maximum(q -> US.spherical_distance(centre, q), corners)
+            @test cap.radius == nextfloat(dcorner * (1 + HP.CORNER_CAP_MARGIN))
+            samples = HP._perimeter_points(ix, iy, f, nside, 8)
+            for i in 0:m, j in 0:m
+                push!(samples, HP.xyf_to_point((ix + i / m) / nside, (iy + j / m) / nside, f))
+            end
+            for q in samples
+                d = US.spherical_distance(centre, q)
+                worst_overshoot = max(worst_overshoot, d - cap.radius)
+                excess = max(excess, d / dcorner - 1)
             end
         end
+        if level <= 12
+            worst_excess_exact = max(worst_excess_exact, excess)
+        else
+            worst_excess_deep = max(worst_excess_deep, excess)
+        end
     end
-    @info "node_extent vs densely sampled true perimeter" worst_overshoot max_radius
-    @test worst_overshoot < 0            # strictly inside: slack never consumed
-    @test max_radius <= π / 2            # geodesically convex, as the harness asserts
+    @info "corner_cap vs dense chart lattice" worst_overshoot worst_excess_exact worst_excess_deep max_radius
+    @test worst_overshoot < 0                 # every sample inside the cap
+    @test worst_excess_exact <= 0             # the corner is the maximum
+    @test worst_excess_deep < HP.CORNER_CAP_MARGIN / 100
+    @test max_radius <= π / 2                 # geodesically convex, as the harness asserts
 end
 
 @testset "node_extent covers deep descendants" begin

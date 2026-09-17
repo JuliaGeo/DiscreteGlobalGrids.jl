@@ -25,7 +25,7 @@ contiguous. Maximum neighbour counts are 8 for `Vertex()` and 4 for `Edge()`.
 struct HEALPixSystem <: DGG.AbstractQuadFaceGridSystem end
 
 # Grid descriptor for all `12 * 4^level` pixels in nested order.
-const LevelGrid = DGG.HierarchicalLevelGrid{HEALPixSystem}
+const HEALPixLevelGrid = DGG.HierarchicalLevelGrid{HEALPixSystem}
 
 """
     HEALPixRingIndex(level, index) <: AbstractCellIndex
@@ -115,13 +115,25 @@ function DGG.cell_boundary(sys::HEALPixSystem, c::DGG.LevelIndex)
 end
 
 """
+    cell_corners(grid, c) -> SmallVector{4,UnitSphericalPoint}
+
+The four chart corners of pixel `c` in the order [`cell_boundary`](@ref) visits
+them: north, west, south, east.
+"""
+function DGG.cell_corners(sys::HEALPixSystem, c::DGG.LevelIndex)
+    nside = DGG.nside(DGG.level(c))
+    ix, iy, face = nested_to_xyf(DGG.checked_id(sys, c), nside)
+    return SmallVector{4,GO.UnitSphericalPoint{Float64}}(pixel_corners(ix, iy, face, nside))
+end
+
+"""
     cell_area(grid, c) -> Float64
 
 Return the exact equal-area solid angle `4π / (12 * 4^level)` in O(1). This is
 independent of boundary densification; the 32-vertex polygon underestimates it
 by about 0.18%.
 """
-DGG.cell_area(g::LevelGrid, c::DGG.LevelIndex) =
+DGG.cell_area(g::HEALPixLevelGrid, c::DGG.LevelIndex) =
     (DGG.checked_id(g, c); 4 * Float64(π) / DGG.ncells(g))
 
 """
@@ -140,31 +152,32 @@ end
 # node_extent — the subtree cap
 # ===========================================================================
 
-# Chart samples per edge used to bound a subtree.
-const CAP_EDGE_SEGMENTS = 8
+# Relative margin on the farthest-corner spherical_distance angle. The centre's
+# distance over the chart square peaks at a corner: a dense lattice shows zero
+# excess at levels 0-12 and at most 3.9e-8 to level 29 (nanoradian rounding);
+# 2^-16 is 400x that. Pinned by the `corner_cap covers the pixel` testset.
+const CORNER_CAP_MARGIN = 2.0^-16
 
 """
     _subtree_cap(ix, iy, face, nside) -> SphericalCap
 
-Return a cap for the pixel and its complete subtree. Nested refinement exactly
-subdivides the parent's chart square, so bounding that square bounds every
-descendant in O(1); [`DGG.sampled_cap`](@ref) turns the corner-inclusive
-perimeter samples into the radius.
+Return the cap for the pixel and its whole subtree, in O(1).
+
+- [`DGG.corner_cap`](@ref) about [`pixel_center`](@ref) with `CORNER_CAP_MARGIN`.
+- Nested refinement subdivides the parent's chart square exactly, so bounding
+  the square bounds every descendant.
 """
 _subtree_cap(ix::Integer, iy::Integer, face::Integer, nside::Integer) =
-    DGG.sampled_cap(pixel_center(ix, iy, face, nside),
-        _perimeter_points(ix, iy, face, nside, CAP_EDGE_SEGMENTS))
+    DGG.corner_cap(pixel_center(ix, iy, face, nside), xyf_to_point,
+        ix, iy, face, nside, CORNER_CAP_MARGIN)
 
 """
     node_extent(HEALPixSystem(), c) -> SphericalCap
 
-Return the pixel's subtree cap. Nested children exactly partition the parent, so
-no generic inflation is required. `_subtree_cap` derives its radius from the
-corner-inclusive perimeter samples plus conservative slack.
+Return the pixel's subtree cap, `_subtree_cap`.
 
-The geometry nests; the caps do not. A child's own cap is recentred on the child
-and may reach outside this one, which the covering law permits — it bounds
-descendant polygons, not descendant bounds.
+- Caps do not nest: a child's cap is recentred and may reach outside this one,
+  which the covering law permits (it bounds descendant polygons, not caps).
 """
 function DGG.node_extent(::HEALPixSystem, c::DGG.LevelIndex)
     l = DGG.level(c)
@@ -172,6 +185,21 @@ function DGG.node_extent(::HEALPixSystem, c::DGG.LevelIndex)
     ix, iy, face = nested_to_xyf(c.index, nside)
     return _subtree_cap(ix, iy, face, nside)
 end
+
+"""
+    cell_cap(grid::HEALPixLevelGrid, c) -> SphericalCap
+
+The pixel's own cap, `_subtree_cap`, from four chart evaluations.
+
+- Bounds the chart square and is convex (radius below `π/2`), so it also holds
+  every great-circle chord of [`cell_boundary`](@ref).
+"""
+function DGG.Fallbacks.cell_cap(g::HEALPixLevelGrid, c::DGG.LevelIndex)
+    nside = DGG.nside(DGG.level(c))
+    ix, iy, face = nested_to_xyf(DGG.checked_id(g, c), nside)
+    return _subtree_cap(ix, iy, face, nside)
+end
+DGG.Fallbacks.cell_cap_is_cheap(::HEALPixLevelGrid) = Val(true)
 
 # ===========================================================================
 # Location
@@ -185,7 +213,7 @@ level grid covers the sphere, so this never returns `nothing`. Boundary ties
 use `point_to_xyf`'s deterministic higher-side `floor` convention. Other
 HEALPix implementations may choose a different valid cell at shared borders.
 """
-DGG.cellat(g::LevelGrid, p::GO.UnitSphericalPoint) =
+DGG.cellat(g::HEALPixLevelGrid, p::GO.UnitSphericalPoint) =
     DGG.LevelIndex(g.level, point_to_nested(p, g.level))
 
 # ===========================================================================
@@ -199,7 +227,7 @@ Return immediate neighbours counter-clockwise from `SW`, as seen from outside
 the sphere. Missing entries are omitted and level-0 duplicates keep their
 first occurrence to preserve the cycle.
 """
-function DGG.one_ring(g::LevelGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
+function DGG.one_ring(g::HEALPixLevelGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
     DGG.checked_id(g, c)
     raw = nested_neighbors(c.index, g.level)
     out = SmallVector{8,DGG.LevelIndex}()
@@ -225,7 +253,7 @@ the `SW` spoke; outer rings use azimuth about the cell centre.
 `k == 0` returns an empty container. `k == 1` returns a fixed-capacity
 `SmallVector` without allocation.
 """
-Base.@constprop :aggressive function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
+Base.@constprop :aggressive function DGG.neighbors(g::HEALPixLevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return SmallVector{8,DGG.LevelIndex}()
@@ -241,7 +269,7 @@ outside the sphere. `k == 0` returns `[c]`; `k == 1` uses the lattice cycle.
 Outer rings are sorted by azimuth about the cell centre from the spoke through
 the `SW` neighbour, with canonical ids breaking ties.
 """
-Base.@constprop :aggressive function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
+Base.@constprop :aggressive function DGG.ring(g::HEALPixLevelGrid, c::DGG.LevelIndex, k::Integer;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return DGG.LevelIndex[c]
@@ -253,7 +281,7 @@ end
 # type parameter so the declared ring bound folds to a fixed buffer capacity and
 # the shell is built and returned on the stack. See the interface `Val` methods
 # for why this is opt-in rather than generic.
-function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, ::Val{K};
+function DGG.neighbors(g::HEALPixLevelGrid, c::DGG.LevelIndex, ::Val{K};
         connectivity::DGG.Connectivity = DGG.Vertex()) where {K}
     DGG.checked_steps(K)
     K == 0 && return SmallVector{8,DGG.LevelIndex}()
@@ -261,7 +289,7 @@ function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, ::Val{K};
     return DGG.shell_disc(g, c, Val(K), connectivity)
 end
 
-function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, ::Val{K};
+function DGG.ring(g::HEALPixLevelGrid, c::DGG.LevelIndex, ::Val{K};
         connectivity::DGG.Connectivity = DGG.Vertex()) where {K}
     DGG.checked_steps(K)
     K == 0 && return DGG.LevelIndex[c]

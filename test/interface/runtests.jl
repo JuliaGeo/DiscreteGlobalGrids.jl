@@ -80,16 +80,18 @@ end
     @test UnimplementedIndex() isa AbstractCellIndex
 
     # Required interface names are exported.
-    for n in (:ncells, :cellindex, :cell_boundary, :cell_centroid, :localindex,
-              :globalindex, :rawid, :reindex, :cellindextypes, :cell_polygon,
+    for n in (:ncells, :cellindex, :cell_boundary, :cell_corners, :cell_centroid, :cell_polygon, :localindex,
+              :globalindex, :rawid, :reindex, :cellindextypes,
               :cell_area, :cell_extent, :getcell, :cellat, :neighbors, :ring,
               :treeify, :query, :system, :level, :cellindextype, :levels,
               :maxlevel, :levelgrid, :rootcells, :children, :node_extent,
-              :maxneighbors, :has_sorted_subtrees, :has_direct_location,
+              :maxneighbors, :has_sorted_subtrees, :has_congruent_refinement,
+              :has_direct_location,
               :ancestor, :descendants,
               :descendant_range, :LevelIndex, :Connectivity, :Vertex, :Edge,
               :cellsize, :levelfor, :subtree, :halo, :border, :interior,
-              :adjacency, :AdjacencyTable, :halocells, :haloindices)
+              :adjacency, :AdjacencyTable, :halocells, :haloindices,
+              :CentroidCovered)
         @test n in EXPORTED
     end
 
@@ -102,7 +104,8 @@ end
               :cap_inflation, :directioncode, :authalic_sphere,
               :StoreSnapshot, :StoreDescription, :ArrayEntry, :ChunkManifest,
               :GridReference, :CONVENTION_REGISTRY, :DEFAULT_WRITE_CONVENTIONS,
-              :ENCODING_REGISTRY, :GRID_REFERENCE)
+              :ENCODING_REGISTRY, :GRID_REFERENCE, :XDGGS_GRIDS,
+              :require_xdggs_readable, :xdggs_ellipsoid_attrs)
         @test n in PUBLIC
         @test !Base.isexported(DiscreteGlobalGrids, n)
     end
@@ -169,7 +172,7 @@ end
     node_extent_doc = docstring(DiscreteGlobalGrids, :node_extent)
     @test occursin("covering law", lowercase(node_extent_doc))
     @test occursin("every descendant", node_extent_doc)
-    @test occursin("every depth", node_extent_doc)
+    @test occursin("every level", node_extent_doc)
 
     grid_doc = docstring(DiscreteGlobalGrids, :AbstractGrid)
     @test occursin("index", lowercase(grid_doc))
@@ -245,6 +248,7 @@ end
 
     # Documented defaults, live.
     @test has_sorted_subtrees(s) === false
+    @test has_congruent_refinement(s) === false
     @test DGG.cap_inflation(s) === 1.2
 
     # A standalone grid has no hierarchy, and says so rather than erroring.
@@ -263,6 +267,7 @@ end
     @test_throws MethodError cell_centroid(g, c)
     @test_throws MethodError globalindex(g, c)
     @test_throws MethodError cell_polygon(g, c)
+    @test !hasmethod(cell_polygon, Tuple{AbstractHierarchicalGridSystem,AbstractCellIndex})
     @test_throws MethodError cell_area(g, c)
     @test_throws MethodError cell_extent(g, c)
     @test_throws MethodError getcell(g, 1)

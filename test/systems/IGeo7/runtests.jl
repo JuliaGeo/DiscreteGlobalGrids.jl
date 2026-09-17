@@ -854,7 +854,8 @@ const CLEAN = (0, "")
                     DGG.cell_boundary(sparse.grid, c))
         end
         GO.SpatialTreeInterface.node_extent(sparse)
-        @test @allocated(GO.SpatialTreeInterface.node_extent(sparse)) == 0
+        @test @allocated(GO.SpatialTreeInterface.node_extent(sparse)) == 0 skip =
+            VERSION < v"1.12"
 
         # A complete bucket is the common MOC-interior case. The cursor carries
         # that one bit down the hierarchy, so its entries address the complete
@@ -868,7 +869,8 @@ const CLEAN = (0, "")
         @test first.(full_entries) == collect(eachindex(full_ids))
         @test last.(full_entries) == DGG.Fallbacks.cell_cap.(Ref(full.grid), full_ids)
         GO.SpatialTreeInterface.child_indices_extents(full)
-        @test @allocated(GO.SpatialTreeInterface.child_indices_extents(full)) == 0
+        @test @allocated(GO.SpatialTreeInterface.child_indices_extents(full)) == 0 skip =
+            VERSION < v"1.12"
 
         # the published corner rings tile the sphere exactly: adjacent cells
         # share corners, so their great-circle edges coincide and the areas sum

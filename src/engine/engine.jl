@@ -5,7 +5,7 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     AbstractQuadFaceGridSystem,
     AbstractCellIndex, LevelIndex, AbstractCellVector, Connectivity, Vertex, Edge,
     Winding, CounterClockwise, Clockwise, CustomOrder, Unordered,
-    ncells, cellindex, cell_boundary, cell_centroid,
+    ncells, cellindex, cell_boundary, cell_corners, cell_centroid,
     localindex, globalindex, rawid, reindex, cellindextypes,
     cell_polygon, cell_area, cell_extent, getcell,
     cellat, cellindices, neighbors, ring, one_ring, neighborcount,
@@ -16,7 +16,7 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     cellindextype, levels, maxlevel, levelgrid, rootcells, children,
     node_extent, cap_inflation, maxneighbors, maxring, winding,
     static_capacity, STATIC_RING_CAP, STATIC_RING_BYTES,
-    has_sorted_subtrees, has_direct_location,
+    has_sorted_subtrees, has_congruent_refinement, has_direct_location,
     ancestor, descendants, descendant_range,
     subtree,
     border_engine, interior_engine, halo_engine,
@@ -61,6 +61,8 @@ include("extent_memo.jl")
 include("tiled_raster.jl")
 include("query.jl")
 include("multiorder.jl")
+include("multiorder_budget.jl")
+include("multiorder_set.jl")
 include("cell_vector.jl")
 include("multiorder_vector.jl")
 include("multiorder_grid.jl")

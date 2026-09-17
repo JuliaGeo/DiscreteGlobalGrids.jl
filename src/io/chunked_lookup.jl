@@ -16,8 +16,8 @@
     ChunkedLookups
 
 The lazy cube axis of a DGGS store: [`ChunkManifest`](@ref),
-[`ChunkedCellVector`](@ref), and the `DimensionalData` lookup over them,
-[`ChunkedCellLookup`](@ref).
+[`ChunkedCellVector`](@ref DiscreteGlobalGrids.ChunkedLookups.ChunkedCellVector), and the `DimensionalData` lookup over them,
+[`ChunkedCellLookup`](@ref DiscreteGlobalGrids.ChunkedLookups.ChunkedCellLookup).
 
 Where `CellLookup` compresses a cell set into index windows it computes
 ids from, this lookup describes a set someone else has already written down,
@@ -31,7 +31,7 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractCellIndex, AbstractCellVecto
     AbstractHierarchicalGridSystem, ncells, cellindex, localindex, globalindex, cellat,
     level, system, cellindextype, rawid, query, descendants,
     has_sorted_subtrees, level_ranges, MultiOrderCoverage, CellVector,
-    CellLookup, Covering, covering_indices,
+    CellLookup, Covering, covering_indices, predicate_indices, DE9IMPredicate, QueryPredicate,
     PartialGrid, cellset, covering, maxneighbors,
     neighbors, ring, neighborcount, halo, border, interior, adjacency,
     mapneighbors, foreachneighbors, region
@@ -233,7 +233,7 @@ rawcell(axis::ChunkedCellVector, k::Integer) = _rawcell(axis.source, axis, Int(k
     axisindex(axis::ChunkedCellVector, id::Integer) -> Union{Int,Nothing}
 
 The index of raw id `id` in the axis, or `nothing` when the axis does not
-hold it. The inverse of [`rawcell`](@ref), and the half of the bijection every
+hold it. The inverse of `rawcell`, and the half of the bijection every
 selector ends at.
 
 Resolution is two-level wherever the ids are stored rather than computed: the
@@ -738,8 +738,8 @@ DGG.neighbors(axis::ChunkedCellVector, p::Int, k::Integer=1;
     connectivity::DGG.Connectivity=DGG.Vertex()) =
     neighbors(region(axis), p, k; connectivity)
 DGG.neighbors(axis::ChunkedCellVector;
-    connectivity::DGG.Connectivity=DGG.Vertex()) =
-    neighbors(region(axis); connectivity)
+    connectivity::DGG.Connectivity=DGG.Vertex(), neighborhood=DGG.Disc(1)) =
+    neighbors(region(axis); connectivity, neighborhood)
 DGG.ring(axis::ChunkedCellVector, c::AbstractCellIndex, k::Integer;
     connectivity::DGG.Connectivity=DGG.Vertex()) =
     ring(region(axis), c, k; connectivity)
@@ -796,6 +796,25 @@ function covering_indices(axis::ChunkedCellVector, target)
     return issorted(out) ? out : sort!(out)
 end
 
+"""
+    predicate_indices(axis::ChunkedCellVector, pred) -> Vector{Int}
+
+The indices in `axis` of the cells that satisfy `pred` at the axis's level,
+ascending — the index-space form of a predicate used as a [`Cells`](@ref DiscreteGlobalGrids.CellLookups.Cells)
+selector, on a stored axis instead of a computed one.
+
+`query` answers in ascending id order, so a chunk-backed axis touches each
+chunk the matching cells fall in once.
+"""
+function predicate_indices(axis::ChunkedCellVector, pred::QueryPredicate)
+    out = Int[]
+    for c in query(axis.grid, pred)
+        k = DGG.localindex(axis, c)
+        k === nothing || push!(out, k)
+    end
+    return issorted(out) ? out : sort!(out)
+end
+
 # Ranges where the system has sorted subtrees, explicit descendants otherwise —
 # `CellVector` makes the same distinction for the same reason.
 function _each_leaf(f, sys::AbstractHierarchicalGridSystem, set, grid, l::Int)
@@ -824,7 +843,7 @@ end
     ChunkedCellLookup(axis::ChunkedCellVector)
 
 The `DimensionalData` lookup over a STORED cell axis. Pair it with `Cells` to
-make a cube axis, exactly as [`CellLookup`](@ref) is paired:
+make a cube axis, exactly as [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup) is paired:
 
 ```julia
 axis = cellaxis(RangesEncoding(), grid, ranges)
@@ -833,7 +852,7 @@ A[Cells(DimensionalData.At(cell))]
 A[Cells(Covering(basin))]
 ```
 
-It answers the same selectors as [`CellLookup`](@ref) — `At` and `Contains` on
+It answers the same selectors as [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup) — `At` and `Contains` on
 a cell id, `Contains` on a lon/lat point, [`Covering`](@ref) on a region — and
 differs in where the answer comes from: the axis is what a store wrote, so a
 selector is resolved by the manifest first and by at most one chunk of ids
@@ -849,7 +868,7 @@ the attestation and scans.
 
 A SUBSET is no longer a stored axis — indexing or selecting materialises the
 cells it names. A sorted, unique subset becomes the package's own compressed
-[`CellLookup`](@ref), which every later operation then treats as any other cell
+[`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup), which every later operation then treats as any other cell
 axis; one that is neither becomes an `Unordered` `Categorical` lookup over the
 same cells, since a cell axis is sorted by definition and this one is not.
 `Base.reverse` is the everyday way to reach the second case.

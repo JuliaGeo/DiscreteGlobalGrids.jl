@@ -38,7 +38,7 @@ The canonical typed id of the cell at **local index** `i` in `grid`'s dense orde
 
 The returned id is of type `cellindextype(system(grid))` for a grid that has a
 system, and of the grid's own canonical id type otherwise. Together with
-[`localindex`](@ref) this is a bijection `1:ncells(grid)` ↔ the grid's cells:
+[`localindex`](@ref DiscreteGlobalGrids.localindex) this is a bijection `1:ncells(grid)` ↔ the grid's cells:
 
     localindex(grid, cellindex(grid, i)) == i   for all i in 1:ncells(grid)
 
@@ -59,7 +59,7 @@ The exact boundary ring of cell `c`, as points on the unit sphere.
 Contract:
 
   - The ring is **implicitly closed**: the first vertex is *not* repeated at the
-    end. [`cell_polygon`](@ref) is what closes it.
+    end. [`cell_polygon`](@ref) closes it.
   - Vertices are in **counter-clockwise order seen from outside the sphere**
     (right-hand rule about the outward normal), so the ring bounds the cell
     rather than its complement and spherical signed area comes out positive.
@@ -72,6 +72,20 @@ The container may be any `AbstractVector` — a `Vector`, a static vector, or a
 lazily computed one. Callers must not mutate it.
 """
 function cell_boundary end
+
+"""
+    cell_corners(grid::AbstractGrid, c::AbstractCellIndex) -> AbstractVector{<:GO.UnitSphericalPoint}
+
+The corner vertices of cell `c`, as points on the unit sphere: the ring
+[`cell_boundary`](@ref) returns with every densification vertex left out.
+
+Same contract as `cell_boundary` otherwise: implicitly closed, counter-clockwise
+seen from outside the sphere, unit-norm points. The fallback returns
+`cell_boundary` itself, which is exact for a system whose chart edges are
+great-circle arcs; a system that densifies curved edges returns its chart
+corners here. Callers must not mutate the result.
+"""
+function cell_corners end
 
 """
     cell_centroid(grid::AbstractGrid, c::AbstractCellIndex) -> GO.UnitSphericalPoint
@@ -172,7 +186,7 @@ order, or `nothing` when absent. It is the inverse of [`cellindex`](@ref).
 
 `collection` is anything that stores cells in an order of its own: a grid, a
 [`CellVector`](@ref), a [`PartialGrid`](@ref), a cell lookup. On a complete grid
-the local index and the [`globalindex`](@ref) coincide — its storage IS the
+the local index and the [`globalindex`](@ref DiscreteGlobalGrids.globalindex) coincide — its storage IS the
 level — so generic code that means "wherever this collection put it" should ask
 for the local index and be correct in both cases.
 
@@ -193,7 +207,7 @@ The local index of the cell containing a point.
   - One search where the collection can answer in one: a subset resolves
     membership while it locates, and keeps the index that produced.
 
-See also [`globalindex`](@ref), [`cellindex`](@ref).
+See also [`globalindex`](@ref DiscreteGlobalGrids.globalindex), [`cellindex`](@ref).
 """
 function localindex end
 
@@ -206,11 +220,11 @@ of the system.
 
 This is the index space a subset's own storage is carved out of. Asking a
 [`CellVector`](@ref) for a global index answers for its underlying grid, so two
-different subsets of one level agree on it where their [`localindex`](@ref)
+different subsets of one level agree on it where their [`localindex`](@ref DiscreteGlobalGrids.localindex)
 values do not. It is the numeric counterpart of [`cellid`](@ref): the way to
 carry a cell between collections without carrying a stale offset.
 
-See also [`localindex`](@ref), [`cellindex`](@ref).
+See also [`localindex`](@ref DiscreteGlobalGrids.localindex), [`cellindex`](@ref).
 """
 function globalindex end
 
@@ -232,15 +246,38 @@ localindex(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex) =
 """
     cell_polygon(grid::AbstractGrid, c::AbstractCellIndex) -> GI.Polygon
 
-Cell `c` as a GeoInterface polygon on the unit sphere: the
-[`cell_boundary`](@ref) ring, explicitly closed, wrapped in a
-`GI.LinearRing` inside a `GI.Polygon`. Neither wrapper allocates, so a system
-whose `cell_boundary` uses inline storage gets an `isbits` polygon; read the
-polygon through GeoInterface rather than depending on its container types.
+Cell `c` as a GeoInterface polygon on the unit sphere: the form the
+[`query`](@ref) predicates, [`getcell`](@ref), regridding, and GeometryOps
+operations under the `GO.Spherical()` manifold all read a cell through.
 
-Coordinates are unit-sphere `(x, y, z)`, not longitude/latitude — this polygon
-is meant for spherical predicates, spherical area, and
-`ConservativeRegridding`, all of which work in that frame.
+Contract:
+
+  - A `GI.Polygon` with one exterior `GI.LinearRing` and no holes.
+  - The ring is **explicitly closed**: the first vertex is repeated as the last.
+  - Vertices are `GO.UnitSphericalPoint`s in unit-sphere `(x, y, z)`, joined by
+    great-circle arcs.
+  - Vertices wind **counter-clockwise seen from outside the sphere**, so the
+    spherical area of the polygon is positive.
+
+[`cell_boundary`](@ref) returns the same vertices as an implicitly closed
+`AbstractVector`; `cell_polygon` closes that ring and wraps it. Systems provide
+`cell_boundary`; the generic method here builds the polygon from it.
+
+Accepted inputs:
+
+  - A grid and a typed cell index: a [`levelgrid`](@ref), a
+    [`PartialGrid`](@ref), or a standalone [`AbstractGrid`](@ref).
+  - A [`MultiOrderCellSet`](@ref) and a cell index at any of its levels.
+  - A `SubsetIndexedCell` handle from a [`mapneighbors`](@ref) sweep in the
+    cell slot, answering for its cell.
+  - A local `Int` index, through [`getcell`](@ref)`(grid, i)`.
+
+A grid is required in the first slot; a grid *system* answers through
+`levelgrid(sys, level(c))`.
+
+Longitude/latitude vertices in degrees come from a coordinate transform:
+
+    GO.transform(GO.GeographicFromUnitSphere(), cell_polygon(grid, c))
 """
 function cell_polygon end
 
@@ -416,7 +453,7 @@ the cells at *exactly* distance `k`.
 
 Given a local index, both verbs answer with **in-set local indices in the rotational
 order above**: `neighbors(grid, p, k)` is `neighbors(grid, cellindex(grid, p),
-k)` mapped through [`localindex`](@ref), element for element, with non-members
+k)` mapped through [`localindex`](@ref DiscreteGlobalGrids.localindex), element for element, with non-members
 dropped. [`adjacency`](@ref) is this form for a whole region at once.
 
 The result is therefore not sorted. An index list read only by membership does
@@ -449,7 +486,7 @@ splat, which is what stops the arity from specialising per `k`.
 
 `ring` carries [`neighbors`](@ref)' order, container, coverage and
 subset-clipping contracts unchanged — including the local-index form's, which is
-the same counter-clockwise order read through [`localindex`](@ref).
+the same counter-clockwise order read through [`localindex`](@ref DiscreteGlobalGrids.localindex).
 
 # `k` as a type
 
@@ -518,7 +555,7 @@ joins the halo.
 
 `collect` gives a `Vector` and `Set` gives a membership-queryable set — both are
 Base's contracts over an iterator, and neither is overloaded to reach some other
-product. [`sizehint`](@ref DiscreteGlobalGrids.sizehint) gives a cheap size
+product. [`sizehint`](@ref DiscreteGlobalGrids.Engine.sizehint) gives a cheap size
 estimate where one exists.
 
 The walk is serial; [`adjacency`](@ref) is the verb that threads.
@@ -563,9 +600,9 @@ The compressed [`CellVector`](@ref) a region is answered as — the container th
 four region verbs, the neighbourhood sweeps, regridding and plotting are all
 written against.
 
-On a [`CellVector`](@ref) or a [`CellLookup`](@ref) this is the identity: they
+On a [`CellVector`](@ref) or a [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup) this is the identity: they
 already are that container. On a stored axis
-([`ChunkedCellVector`](@ref), [`ChunkedCellLookup`](@ref)) it is the conversion,
+([`ChunkedCellVector`](@ref DiscreteGlobalGrids.ChunkedLookups.ChunkedCellVector), [`ChunkedCellLookup`](@ref DiscreteGlobalGrids.ChunkedLookups.ChunkedCellLookup)) it is the conversion,
 built on first call and kept, so the cost is paid once however many verbs are
 asked afterwards. What that costs depends on the encoding and is documented on
 `CellVector(::ChunkedCellVector)`.
@@ -664,7 +701,7 @@ function treeify end
 """
     subcursor(grid::AbstractGrid, inds::AbstractUnitRange) -> tree or `nothing`
 
-The [`treeify`](@ref) tree restricted to the grid indices `inds`, with leaf
+The [`treeify`](@ref ConservativeRegridding.Trees.treeify) tree restricted to the grid indices `inds`, with leaf
 indices still in `grid`'s own index space, or `nothing` (the default) when
 this grid cannot express that restriction. The result must cover exactly the
 cells at `inds`, no more.
@@ -695,7 +732,7 @@ when this grid's cells are not pixels of raster tiles.
     opaque to the caller, which only passes it back to the three hooks below, so
     a grid may carry in it whatever those need — an identifier, the rectangle's
     origin, its offset in the grid.
-  - Implemented by grids over a collection of raster tiles; [`treeify`](@ref)
+  - Implemented by grids over a collection of raster tiles; [`treeify`](@ref ConservativeRegridding.Trees.treeify)
     builds a tiled raster tree for them.
 """
 function raster_tiles end
@@ -735,21 +772,21 @@ function raster_cap end
 # ===========================================================================
 
 """
-    query(grid::AbstractGrid, pred::DE9IM.DE9IMPredicate) -> Vector{<:AbstractCellIndex}
-    query(sys::AbstractHierarchicalGridSystem, pred::DE9IM.DE9IMPredicate; level::Integer) -> Vector{<:AbstractCellIndex}
+    query(grid::AbstractGrid, pred) -> Vector{<:AbstractCellIndex}
+    query(sys::AbstractHierarchicalGridSystem, pred; level::Integer) -> Vector{<:AbstractCellIndex}
 
 Every cell satisfying the spatial predicate `pred`, as a **sorted** `Vector` of
 typed cell ids.
 
 # Predicates
 
-Predicates are re-exported DE9IM.jl wrappers such as `Intersects(target)`,
-`Covers(target)`, and `Touches(target)`. `Base.parent(pred)` returns the target.
-This package defines their spherical semantics.
+Predicates are the re-exported DE9IM.jl wrappers (`Intersects(target)`,
+`Covers(target)`, `Touches(target)`, ...) and the centroid rule
+[`CentroidCovered`](@ref)`(target)`, given spherical semantics by this package.
 
-The target may be a GeoInterface geometry, an `Extents.Extent`, or a
-`GO.UnitSpherical.SphericalCap`. Longitude/latitude targets are lifted to the
-unit sphere once, at the boundary of the call.
+The target is a GeoInterface geometry, an `Extents.Extent`, or a
+`GO.UnitSpherical.SphericalCap`; `Base.parent(pred)` returns it. Lon/lat
+targets are lifted to the unit sphere once, at the boundary of the call.
 
 # Semantics
 

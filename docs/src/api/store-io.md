@@ -4,77 +4,113 @@
 CurrentModule = DiscreteGlobalGrids
 ```
 
-A DGGS store is a Zarr group holding data variables over one cell axis, plus
-attributes saying which grid, which level and how the cell ids are laid out.
-[`dggread`](@ref) turns that into plain DimensionalData — one `Cells` dimension
-shared by every layer, lazy arrays behind it — and [`dggwrite`](@ref) turns it
-back. Neither introduces a container type: what a producer hands over is a
-`DimStack`, and what a consumer gets is a `DimStack`.
+A DGGS store is a Zarr group containing variables over one cell axis and the
+metadata needed to interpret that axis. [`dggwrite`](@ref DiscreteGlobalGrids.dggwrite) writes a
+DimensionalData `DimStack`; [`dggread`](@ref DiscreteGlobalGrids.dggread) reopens it as a `DimStack` with a
+shared `Cells` dimension and lazy arrays.
 
-Zarr.jl loads both methods through an extension. Before `using Zarr`, the two
-names are stubs that explain how to load their implementations. The reference
-below renders the stub docstrings; `?dggread` displays the longer extension
-docstring after Zarr loads.
+The methods live in the Zarr.jl extension, which `using Zarr` loads. The
+extension supplies the store-aware methods documented here.
 
-[`StoreDescription`](@ref) connects store attributes to the cube. It records the
-grid name, level, encoding, array names and grid parameters. Reading follows
-attributes → description → axis; writing follows axis → description →
-attributes.
+[`StoreDescription`](@ref) carries plain data between store attributes and the
+cube: grid name, level, encoding, array names, and grid parameters. Reading
+follows attrs → description → axis; writing follows axis → description → attrs.
+[`StoreSnapshot`](@ref) supplies metadata-only input to
+[`DGGSConvention`](@ref), while [`CellEncoding`](@ref) supplies the identifier
+layout. The grid retains id arithmetic, so encodings work across systems.
 
-Two independent abstractions support those pipelines:
+Both are registries. A downstream package can add a metadata dialect with
+[`register_convention!`](@ref) or an id layout with
+[`register_encoding!`](@ref).
 
-  - [`DGGSConvention`](@ref) interprets metadata in a [`StoreSnapshot`](@ref),
-    which contains attribute dictionaries and an array listing.
-  - [`CellEncoding`](@ref) implements cell-id storage layout while the grid
-    implements id arithmetic.
+The reader returns a [`ChunkedCellLookup`](@ref DiscreteGlobalGrids.ChunkedLookups.ChunkedCellLookup). It answers `At`, `Contains`
+and `Covering` through the [`ChunkManifest`](@ref), which describes the chunk
+grid in cells. Arithmetic and range encodings can open without coordinate
+reads; a foreign dense store reads its ids once at open to validate them.
 
-This separation lets conventions run in tests without store chunks or values,
-and lets every grid and encoding combination share the same implementation.
+A mixed-level axis — the one [`coarsen`](@ref) builds — is stored in the `compacted`
+layout instead: `cell_ids` and `cell_levels` as aligned columns under
+`refinement_level: null`, with the `refinement_levels` attribute naming the
+level column. [`dggread`](@ref) restores that axis as a
+[`MultiOrderLookup`](@ref). The layout extends v1 of `zarr-conventions/dggs`,
+which specifies `compression: "none"` when `refinement_level` is null, so this
+package supplies its reader; [`expand`](@ref) presents the same data at the one
+level every other encoding needs. The [multi-order storage
+tutorial](../tutorials/moc_storage.md) writes and reads such a store.
 
-Both are registries rather than closed sets. A downstream package that speaks a
-fourth dialect calls [`register_convention!`](@ref); one that stores its ids
-some fifth way calls [`register_encoding!`](@ref). Neither requires a change
-here.
-
-[`coarsen`](@ref) builds a mixed-level axis. [`dggwrite`](@ref) stores that
-axis in the `compacted` layout as two aligned columns, `cell_ids` and
-`cell_levels`, under `refinement_level: null`; the `refinement_levels`
-attribute names the second column. [`dggread`](@ref) restores it as a
-[`MultiOrderLookup`](@ref).
-
-This package defines `compacted` as an extension to v1 of
-`zarr-conventions/dggs`. Version 1 specifies `compression: "none"` when
-`refinement_level` is null, so this package supplies the reader for the extended
-layout. [`expand`](@ref) presents mixed-level data at the single level required
-by the other encodings.
-
-A [`ChunkedCellLookup`](@ref) resolves `At`, `Contains` and `Covering` through a
-[`ChunkManifest`](@ref), the chunk grid expressed in cells. Stores written by
-[`dggwrite`](@ref) and stores with arithmetic axes open without reading a
-coordinate chunk. Selections then fetch only the chunks they touch. Opening a
-foreign dense store scans its ids once to validate them and build the manifest.
-
-A stored axis also supports `halo`, `border`, `interior` and `adjacency` as a
-region. The first [`region`](@ref) call builds and caches a compressed
-[`CellVector`](@ref) representation:
-
-  - Ranges and implicit encodings build it with rank arithmetic.
-  - Dense encoding reads the ids once in chunk order.
-
-Both paths preserve index order, so region results align directly with the
-stored axis. Sweeping a store along its own chunk lines is
+A stored axis is also a **region** and answers `halo`,
+`border`, `interior` and `adjacency` with the same code as an in-memory axis. It
+does so through [`region`](@ref), which is the axis's compressed
+[`CellVector`](@ref) twin, built on the first call and kept. What that
+conversion costs is the encoding's and not the axis's length: a ranges or
+implicit store converts by arithmetic alone, because a stored interval is a run
+of consecutive ranks and a rank plus one is an index; a dense store reads its
+ids once, in the order that touches each chunk once. Index order is
+preserved either way, which is what lets a result computed through the twin be
+written back against the store's own axis with no permutation. Sweeping a store
+along its own chunk lines is
 [its own page](@ref "Sweeping a cube along its chunk lines").
 
-[`DGGSFormatError`](@ref) names the failed check for an unknown grid, conflicting
-conventions, an invalid cell id or a length mismatch. To read an attribute-free
-store, pass `dggread(store; description = StoreDescription(...))`; the supplied
-description asserts the grid and skips detection.
+Validation is strict. An unknown grid, conflicting metadata, invalid id, or
+inconsistent length raises [`DGGSFormatError`](@ref) with the failed check.
+Supply `description = StoreDescription(...)` to assert the metadata explicitly
+when a store has no attributes.
 
 ## Reading and writing
 
 ```@docs
 dggread
 dggwrite
+```
+
+## Writing a store for xdggs
+
+[xdggs](https://xdggs.readthedocs.io)'s default convention reads a
+one-dimensional `cell_ids` coordinate whose attributes are the fields of its
+grid-info dataclass, for a grid its registry knows. `target = :xdggs` writes
+that layout and checks the store's description against it before the group is
+created:
+
+```julia
+using DiscreteGlobalGrids, Zarr
+dggwrite("tas.zarr", cube; target = :xdggs)
+```
+
+The store then opens in Python with no arguments beyond the path:
+
+```python
+import xarray as xr, xdggs
+ds = xr.open_dataset("tas.zarr", engine="zarr").pipe(xdggs.decode)
+ds.dggs.cell_centers()
+```
+
+What the target chooses and checks, and why:
+
+| Choice | Reason |
+|---|---|
+| `encoding = :dense` | `:auto` prefers the ranges encoding, which stores `(n, 2)` intervals and no `cell_ids` array; xdggs finds nothing to decode there. |
+| the coordinate is `cell_ids` and carries a level | `xdggs.decode` looks the coordinate up by that name, and its grid info has no default level. |
+| grid in [`XDGGS_GRIDS`](@ref) | `healpix` and `h3` ship with xdggs; `igeo7` needs the `xdggs-dggrid4py` plugin from its main branch, whose grid info takes the attributes [`XdggsConvention`](@ref) writes. |
+
+Two properties every dense store from this writer already has matter to xdggs:
+the coordinate's attributes are grid keys only, because xdggs forwards every
+attribute but `grid_name` to its dataclass constructor and a stray `units` is
+a `TypeError` there; and `cell_ids` has no fill value, because xarray reads a
+Zarr v2 fill value as a mask and promotes the ids to `Float64`.
+
+Both write conventions are stamped, so `ds.dggs.decode(convention="zarr")`
+opens the same store through the `zarr-conventions/dggs` group attributes.
+`xdggs.decode` strips the grid attributes off the coordinate as it builds its
+index, so a dataset edited in Python is written back with
+`ds.dggs.encode("xdggs").to_zarr(...)`.
+
+The chunk manifest sidecar rides along as a data variable on dimensions of its
+own, which xdggs ignores.
+
+```@docs
+DiscreteGlobalGrids.require_xdggs_readable
+DiscreteGlobalGrids.XDGGS_GRIDS
+DiscreteGlobalGrids.xdggs_ellipsoid_attrs
 ```
 
 ## The stored axis
@@ -88,6 +124,21 @@ DiscreteGlobalGrids.chunkmanifest
 nchunks(::ChunkManifest)
 chunkof
 chunkbounds
+```
+
+A compacted store restores a mixed-level axis instead. `coarsen` chooses the
+levels and `aggregate` reduces values onto them; the remaining verbs query the
+mixed-level container the store holds. [Multi-order
+coverage](../tutorials/multiorder.md) is the tutorial for them.
+
+```@docs
+MultiOrderLookup
+MultiOrderVector
+coarsen
+aggregate
+covering_index
+complement
+reference_level
 ```
 
 ## Describing a store
@@ -135,13 +186,12 @@ DiscreteGlobalGrids.conventionname
 DiscreteGlobalGrids.gridname
 ```
 
-## Encodings and grid names
+## Encodings and grid references
 
-An encoding determines how cell ids reach disk. The grid reference table maps a
-stored grid name to a system this package can compute on. Both lookup tables
-require registered names. Their exported types and registration functions let a
-downstream package register an encoding or grid; implementation verbs remain
-qualified.
+An encoding maps cell ids to disk storage; a grid reference maps the store's grid
+name to a system. Both are lookup tables with registration functions and strict
+recognition rules. The exported types and tables let downstream packages add
+entries.
 
 ```@docs
 CellEncoding
@@ -157,16 +207,13 @@ register_grid!
 DiscreteGlobalGrids.gridreference
 ```
 
-An encoding implements three things here: build the axis, declare write
-eligibility, and name itself for the store's vocabulary. It asks the grid for
-everything about the ids themselves, which is the layering rule — a grid that
-answers the five id functions below works under every encoding, and an encoding
-written against them works on every grid.
+An encoding builds the axis, declares write eligibility, and supplies its store
+name. It asks the grid for id arithmetic, so one encoding works across systems
+and one system works with every encoding.
 
-The Zarr extension adds the store-specific methods. `storedaxis` chooses the
-array and read size before calling [`cellaxis`](@ref). Writable encodings also
-implement the four private write-pipeline verbs. Missing methods raise
-`DGGSFormatError(check = :unsupported_encoding)` with the encoding name.
+The Zarr extension uses `storedaxis` to open an axis and dispatches four write
+operations for encodings that support output. An incomplete registration raises
+`DGGSFormatError(check = :unsupported_encoding)`.
 
 ```@docs
 DiscreteGlobalGrids.cellaxis

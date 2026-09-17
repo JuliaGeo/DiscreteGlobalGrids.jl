@@ -2,9 +2,9 @@ module DGGSIOWriteTests
 
 using Test
 import DiscreteGlobalGrids as DGG
-using DiscreteGlobalGrids: IGeo7System, Z7Cell, CellVector, CellLookup, Cells,
-    DGGSFormatError, levelgrid, descendants, ancestor, rawid, describe_store,
-    dggread
+using DiscreteGlobalGrids: IGeo7System, HEALPixSystem, Z7Cell, CellVector, CellLookup,
+    Cells, DGGSFormatError, levelgrid, ncells, cellindex, descendants, ancestor, rawid,
+    describe_store, dggread
 import DimensionalData as DD
 
 const ZARR_LOADED = try
@@ -681,6 +681,68 @@ else
         end
         @test err isa DGGSFormatError && err.check === :duplicate_array_name
         @test occursin("time", sprint(showerror, err))
+    end
+
+    @testset "target = :xdggs is the store xdggs opens" begin
+        # xdggs reads a dense 1-D `cell_ids` whose attributes are exactly the
+        # fields of its grid-info dataclass, so the claims here are the bytes it
+        # sees: the ids, the attribute set, and no fill value. Under zarr v2,
+        # xarray reads a fill value as a mask and promotes the ids to Float64.
+        hsys = HEALPixSystem()
+        hgrid = levelgrid(hsys, 2)
+        hcells = [cellindex(hgrid, i) for i in 1:ncells(hgrid)]
+        tas = DD.DimArray(Float32.(1:length(hcells)),
+            (Cells(CellLookup(CellVector(hsys, 2, hcells))),); name=:tas)
+
+        path = DGG.dggwrite(dest("xdggs.zarr"), tas; target=:xdggs, chunks=64)
+        g = Zarr.zopen(path)
+        z = g["cell_ids"]
+        @test z[:] == 0:ncells(hgrid)-1
+        @test Dict{String,Any}(z.attrs) == Dict{String,Any}(
+            "_ARRAY_DIMENSIONS" => ["cell_ids"], "grid_name" => "healpix",
+            "level" => 2, "indexing_scheme" => "nested")
+        @test z.metadata.fill_value === nothing
+        @test g.attrs["dggs"]["compression"] == "none"
+
+        # `:auto` would have chosen ranges for this axis; the target overrules
+        # it, and an encoding that names anything else contradicts the target.
+        @test !haskey(g.arrays, "cell_id_ranges")
+        for enc in (:ranges, :implicit, DGG.RangesEncoding())
+            @test_throws ArgumentError DGG.dggwrite(dest("conflict.zarr"), tas;
+                target=:xdggs, encoding=enc)
+        end
+        @test DGG.dggwrite(dest("explicit.zarr"), tas; target=:xdggs,
+            encoding=:dense) isa String
+
+        # IGEO7 is readable through the xdggs-dggrid4py plugin, whose grid-info
+        # fields are what the xdggs convention stamps for it.
+        @test Zarr.zopen(DGG.dggwrite(dest("igeo7.zarr"), demostack();
+            target=:xdggs))["cell_ids"][:] == rawid.(CELLS)
+
+        # A grid no xdggs reader registers is refused before the group exists.
+        # Kills a target check that never runs: both shipped grids are
+        # registered, so only an unregistered one can tell.
+        plugin = pop!(DGG.XDGGS_GRIDS, "igeo7")
+        try
+            path = dest("unregistered.zarr")
+            err = try
+                DGG.dggwrite(path, demostack(); target=:xdggs)
+            catch e
+                e
+            end
+            @test err isa DGGSFormatError && err.check === :not_xdggs_readable
+            @test err.declared == "igeo7"
+            @test !isdir(path)
+        finally
+            DGG.XDGGS_GRIDS["igeo7"] = plugin
+        end
+
+        # Without the xdggs convention nothing writes the grid onto the
+        # coordinate, so the target cannot be met.
+        @test_throws ArgumentError DGG.dggwrite(dest("noconv.zarr"), tas;
+            target=:xdggs, conventions=(DGG.ZarrDGGSConvention(),))
+        @test_throws ArgumentError DGG.dggwrite(dest("other.zarr"), tas;
+            target=:pandas)
     end
 
     @testset "a remote destination is refused rather than half-written" begin

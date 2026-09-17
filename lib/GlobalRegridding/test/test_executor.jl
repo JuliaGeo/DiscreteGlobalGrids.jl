@@ -115,8 +115,10 @@ end
         for policy in (Weighted(0.5), Extensive())
             kw = (; to = space, from = space,
                 method = ToyDiagonalMethod(; scale = 3.0), missingpolicy = policy)
+            # A declaration reaches both sides, so blanked destinations come
+            # back holding the sentinel the source was read under.
             @test all(isequal.(regrid(sentinel; kw..., missingval = -9999.0),
-                regrid(nanned; kw...)))
+                replace(regrid(nanned; kw...), NaN => -9999.0)))
         end
 
         # Undeclared sentinels remain ordinary data.
@@ -170,10 +172,82 @@ end
         # Declared integer sentinels force a validity scan.
         ints = rand(1:100, 6, 3)
         ints[2, 2] = -9999
-        out = regrid(ints; to = space, from = space, method = ToyDiagonalMethod(),
-            missingpolicy = Weighted(0.5), missingval = -9999)
-        @test isnan(out[holes[1]])
+        ikw = (; to = space, from = space, method = ToyDiagonalMethod(),
+            missingpolicy = Weighted(0.5))
+        out = regrid(ints; ikw..., missingval = -9999)
+        @test out[holes[1]] == -9999.0
         @test out[setdiff(1:n, holes[1])] ≈ vec(ints)[setdiff(1:n, holes[1])]
+
+        # A plan holds the source half alone, so a caller reusing one chooses
+        # the destination's sentinel per application.
+        intplan = plan_regrid(ints; ikw..., missingval = -9999)
+        @test isnan(regrid(ints, intplan; missingval = NaN)[holes[1]])
+        @test ismissing(regrid(ints, intplan; missingval = missing)[holes[1]])
+    end
+
+    @testset "the destination's nodata convention" begin
+        field = rand(6, 3) .+ 1
+        holes = [localindex(space, 2, 2), localindex(space, 5, 1)]
+        kept = setdiff(1:n, holes)
+        holed = copy(field)
+        holed[2, 2] = NaN
+        holed[5, 1] = NaN
+        rdims = (DD.X(1:6), DD.Y(1:3))
+        kw = (; to = space, from = space,
+            method = ToyDiagonalMethod(; scale = 3.0), missingpolicy = Weighted(0.5))
+        withmissing = Array{Union{Missing,Float64}}(field)
+        withmissing[2, 2] = missing
+        withmissing[5, 1] = missing
+
+        # A raster comes back a raster: same name, and the sentinel it declared.
+        sentinel = replace(holed, NaN => -9999.0)
+        sent = regrid(Rasters.Raster(sentinel, rdims;
+            missingval = -9999.0, name = :temp); kw...)
+        @test sent isa Rasters.AbstractRaster
+        @test eltype(sent) == Float64
+        @test Rasters.missingval(sent) == -9999.0
+        @test sent[holes] == [-9999.0, -9999.0]
+        @test DD.name(sent) == :temp
+
+        # `missing` inherits the same way, element type and all.
+        miss = regrid(Rasters.Raster(withmissing, rdims; missingval = missing); kw...)
+        @test eltype(miss) == Union{Missing,Float64}
+        @test Rasters.missingval(miss) === missing
+        @test all(ismissing, miss[holes])
+
+        # A raster declaring no sentinel takes its element type's own blank.
+        none = regrid(Rasters.Raster(holed, rdims; missingval = nothing); kw...)
+        @test eltype(none) == Float64
+        @test Rasters.missingval(none) === NaN
+        @test all(isnan, none[holes])
+
+        # `missingval` picks the sentinel and with it the element type: NaN is
+        # what regrids a `missing`-holding raster into a concrete one.
+        fast = regrid(Rasters.Raster(withmissing, rdims; missingval = missing);
+            kw..., missingval = NaN)
+        @test parent(fast) isa Vector{Float64}
+        @test Rasters.missingval(fast) === NaN
+        @test all(isnan, fast[holes])
+        @test fast[kept] ≈ Vector{Float64}(miss[kept])
+
+        # Sources carrying no nodata convention keep the element type's blank
+        # and their own wrapper.
+        plain = regrid(DD.DimArray(holed, rdims); kw...)
+        @test plain isa DD.DimArray && !(plain isa Rasters.AbstractRaster)
+        @test eltype(plain) == Float64
+        @test all(isnan, plain[holes])
+        mixed = regrid(DD.DimArray(withmissing, rdims); kw...)
+        @test eltype(mixed) == Union{Missing,Float64}
+        @test all(ismissing, mixed[holes])
+
+        # `regrid!` reads the destination's convention, not the source's.
+        dest = Rasters.Raster(fill(0.0, n), (DD.Dim{:Cell}(1:n),); missingval = -1.0)
+        regrid!(dest, Rasters.Raster(withmissing, rdims; missingval = missing); kw...)
+        @test dest[holes] == [-1.0, -1.0]
+        @test dest[kept] ≈ Vector{Float64}(miss[kept])
+
+        # A destination that cannot hold the sentinel says so.
+        @test_throws ArgumentError regrid!(fill(0.0, n), holed; kw..., missingval = missing)
     end
 
     @testset "N-D pass-through" begin

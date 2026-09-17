@@ -12,22 +12,54 @@ The package centers on five abstractions:
     level.
   - [`MultiOrderCellSet`](@ref) and [`MultiOrderVector`](@ref) represent
     mixed-level regions.
-  - [`CellLookup`](@ref), [`MultiOrderLookup`](@ref), and [`Cells`](@ref)
+  - [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup),
+    [`MultiOrderLookup`](@ref), and [`Cells`](@ref DiscreteGlobalGrids.CellLookups.Cells)
     connect these collections to DimensionalData.
 
 An `Int` is a local index in `1:ncells(grid)`. An
 [`AbstractCellIndex`](@ref) is a typed cell identity that records its level.
-Geometry uses the exported `UnitSphericalPoint` type internally and converts
-longitude/latitude values at API boundaries.
 
 Region topology is available through [`neighbors`](@ref), [`ring`](@ref),
 [`halo`](@ref), [`border`](@ref), [`interior`](@ref), and
 [`adjacency`](@ref). [`member_neighbors`](@ref) provides cross-level adjacency
 for mixed-level cell sets.
 
-[`query`](@ref) uses DE9IM predicates with spherical semantics. [`regrid`](@ref),
-[`regrid!`](@ref), and [`plan_regrid`](@ref) implement GlobalRegridding's space
-contract for package grids and cell collections.
+Internal geometry uses `UnitSphericalPoint` — `GeometryOps`', re-exported here
+so the type the contract asks an implementor to return needs no module path;
+explicitly named wrappers convert longitude and latitude at API boundaries.
+
+# Layout
+
+  - `src/interface/`: abstract types and generic contracts.
+  - `src/fallbacks/`: the overridable generic defaults — identity, location,
+    geometry, the subtree walkers, and the level-grid and authalic wrappers.
+  - `src/engine/`: the machinery no system overrides — the region containers,
+    the cursor and index tree, the query planner, and the walks over them.
+  - `src/dimensionaldata.jl`: the cube face of [`CellVector`](@ref) —
+    [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup), [`Cells`](@ref DiscreteGlobalGrids.CellLookups.Cells), [`Covering`](@ref).
+  - `src/systems/`: grid-system implementations.
+  - `src/core/`: the authalic manifold pair.
+  - [`Helpers`](@ref): shared allocation-free primitives.
+  - `lib/DiscreteGlobalGridsConformanceTesting/`: the test-only package whose
+    `test_grid_interface` / `test_hierarchical_system` suites make these
+    contracts executable; a new grid or system is expected to pass them.
+
+[`query`](@ref) uses DE9IM.jl predicate types with spherical semantics defined
+here. `treeify`, `ncells`, and `getcell` extend and re-export
+`ConservativeRegridding.Trees` bindings.
+
+[`regrid`](@ref), [`regrid!`](@ref) and [`plan_regrid`](@ref) are
+`GlobalRegridding`'s own, keywords and all; `src/regridding.jl` adds the target
+resolution that lets a grid, a [`CellVector`](@ref), a [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup), a
+[`MultiOrderCellSet`](@ref), or a bare system spell a destination — a
+mixed-level container expands to its reference level. `cellat` is
+that package's binding for the same reason the `Trees` ones are. The rest of
+the space contract
+`src/regridding.jl` fills in — `nchunks`, `ownedindices`, `chunkat`,
+`cellcentroid`, `celltree`, `chunkextents`, `chunkindex`, `candidatechunks!`,
+`chunkranges`, `subtree` and `destinationdims` — is extended under
+`GlobalRegridding`'s own name rather than imported; `samplesites` is left to
+that package's own centroid vector.
 """
 module DiscreteGlobalGrids
 
@@ -57,7 +89,8 @@ import ConservativeRegridding.Trees: treeify, ncells, getcell
 import GlobalRegridding: cellat, regrid, regrid!, plan_regrid
 # Re-export regridding policies used directly in keyword arguments.
 using GlobalRegridding: Conservative, NearestCell, DirectNearest,
-    BarycentricPoint, Weighted, Extensive, PerChunk, Spilled
+    BarycentricPoint, Weighted, Extensive, PerChunk, Spilled,
+    TreeLocator, AnalyticLocator
 
 include("Helpers/Helpers.jl")
 
@@ -81,17 +114,19 @@ using .Fallbacks: HierarchicalLevelGrid, AuthalicGrid, AuthalicSystem,
     EdgeCellIterator, InnerCellIterator
 
 using .Engine: PartialGrid,
-    HierarchicalGridCursor, TiledRasterCursor,
+    HierarchicalGridCursor, TiledRasterCursor, node_cell,
     MultiOrderCoverage, MultiOrderCellSet, level_ranges,
     iscontained, coarsest_contained, cell_polygons,
     CellVector, cellset, covering, covering_indices, covering_index,
-    reference_level,
+    reference_level, predicate_indices,
+    CentroidCovered, QueryPredicate,
     grow, expand, compact, member_neighbors,
     SubtreeHaloIterator, SubsetHaloIterator, HaloIndexIterator, RegionSide,
     halo_indices, sizehint,
     AdjacencyTable, halocells, haloindices,
     SubsetIndexedCell, cellid,
     mapneighbors, foreachneighbors, StorageOrder,
+    Neighborhood, Disc, Ring,
     NeighborCallbackError,
     AbstractNeed, Cell, Index, Local, Global, Value, Centroid,
     cellfield,
@@ -105,7 +140,7 @@ using .Engine: SquareBandEngine, square_halo_engine, generic_halo_engine,
 
 using .Fallbacks: nbasefaces, systemname, idname,
     subtree_curve, subtree_orientation,
-    nside, checked_id, chart_perimeter, sampled_cap,
+    nside, checked_id, chart_perimeter, sampled_cap, corner_cap,
     morton_encode, morton_decode
 
 # The Snyder/icosahedron basis IGeo7 and ISEA4R share, before either of them.
@@ -155,6 +190,8 @@ include("io/api.jl")
 include("chunks.jl")
 
 include("regridding.jl")
+include("partitioning.jl")
+include("partitioning_backends.jl")
 include("cap_cached_tree.jl")
 
 # Point methods load after the shared regridding space they extend.
@@ -164,57 +201,39 @@ Base.include(CopernicusDEM, joinpath(@__DIR__, "systems", "CopernicusDEM", "poin
 include("sizing.jl")
 include("deprecated.jl")
 
-# Cross-system sweeps require uniform cell sizes, which CopernicusDEM lacks.
+# Package-owned raster verbs: keyword destinations cannot dispatch Rasters verbs.
+include("raster/common.jl")
+include("raster/selection.jl")
+include("raster/rasterize.jl")
+include("raster/extract.jl")
+include("raster/zonal.jl")
+
+# CopernicusDEM is deliberately absent: registering a system enrols it in every
+# cross-system sweep, whose hardcoded cases and level choices assume a globally
+# uniform cell size. Reach for it by name: `DGG.CopernicusDEMSystem(90)`.
+# (Kept ABOVE the docstring — a comment between docstring and function detaches it.)
 """
     systems() -> Tuple{Vararg{AbstractHierarchicalGridSystem}}
 
-Return the package's grid systems as a stable-order tuple of singletons.
+Return the six registered global systems in a stable-order tuple:
+`IGeo7System()`, `H3System()`, `HEALPixSystem()`, `A5System()`, `S2System()`,
+and `ISEA4RSystem()`.
 
-    julia> using DiscreteGlobalGrids
+This registry is not an exhaustive list of shipped or externally defined
+systems, and it does not control dispatch. [`CopernicusDEMSystem`](@ref) is
+also exported. Construct it directly with `CopernicusDEMSystem(30)` or `(90)`;
+its latitude-dependent raster lattice does not fit the uniform-size assumptions
+of the registry's cross-system sweeps.
 
-    julia> systems()
-    (IGeo7System(), H3System(), HEALPixSystem(), A5System(), S2System(), ISEA4RSystem())
+Use [`levelfor`](@ref) to compare physical resolutions and [`levelgrid`](@ref)
+to construct a grid. Level numbers are not comparable between systems.
+See [Choosing a grid](@ref) for the user comparison and
+[System capabilities and traversal costs](@ref) for traits and algorithm costs.
 
-The registry supports enumeration; interface dispatch remains open to external
-systems. [`CopernicusDEMSystem`](@ref) stays separate because its cells have
-nonuniform resolution.
-
-# Shipped systems
-
-The size column reports [`cellsize`](@ref) in kilometers at levels 0, 4, and 8.
-Use [`levelfor`](@ref) to select a level for a target resolution.
-
-| system | cells at level `l` | ≈ size (km) at `l` = 0 / 4 / 8 | cell shape | equal-area |
-|---|---|---|---|---|
-| [`IGeo7System`](@ref) | `10·7^l + 2` | 6520 / 146 / 3.0 | hexagons + 12 pentagons | by construction; see `IGeo7.equal_area_steradians` |
-| [`H3System`](@ref) | `120·7^l + 2` | 2026 / 42.6 / 0.87 | hexagons + 12 pentagons | no (libh3's gnomonic faces) |
-| [`HEALPixSystem`](@ref) | `12·4^l` | 6520 / 408 / 25.5 | curvilinear diamonds | yes, exactly `4π/(12·4^l)` |
-| [`A5System`](@ref) | `12`, `60`, then `60·4^(l-1)` | 6524 / 365 / 22.8 | pentagons (Cairo-style) | yes |
-| [`S2System`](@ref) | `6·4^l` | 9220 / 584 / 36.1 | geodesic quadrilaterals | no; ~2.08× within-level spread |
-| [`ISEA4RSystem`](@ref) | `10·4^l` | 7142 / 446 / 27.9 | rhombi on ten diamonds | yes, exactly `4π/(10·4^l)` |
-
-Key traits differ by system:
-
-| Trait | Contract |
-|---|---|
-| [`maxneighbors`](@ref) | Bounds the variable neighbor degree for [`Vertex`](@ref) and [`Edge`](@ref) connectivity. |
-| [`node_extent`](@ref) | S2, ISEA4R, and HEALPix provide exact subtree caps; IGeo7, H3, and A5 provide conservative inflated caps. |
-| [`has_sorted_subtrees`](@ref) | All listed systems except A5 provide contiguous [`descendant_range`](@ref)s. |
-| [`has_direct_location`](@ref) | Every listed system locates a point analytically from its coordinates. |
-| [`border`](@ref), [`interior`](@ref) | Five systems provide O(border) subtree walkers; A5 uses the O(subtree) fallback. |
-| [`halo`](@ref) | Subtree halos use resumable O(depth)-memory iterators. Square and hexagonal hierarchies provide specialized boundary walks; A5 scans the target level. |
-| [`adjacency`](@ref) | `halo = 0` clips rows, `halo = 1` addresses a `[region; halo]` buffer, and `halo = :mark` preserves slots with zero sentinels. |
-| [`member_neighbors`](@ref) | HEALPix, S2, and ISEA4R use geometric boundary sharing; IGeo7, H3, and A5 use the hierarchy relation. |
-
-# Interoperability caveats
-
-  - ISEA4R interchange requires a fixture-derived permutation because this
-    package defines its own face pairing, diamond numbering, and orientation.
-  - S2 uses the scaffold ordinal as its canonical identifier; native
-    `s2_cellid` values are outside the available [`reindex`](@ref) schemes.
-
-Use [`levels`](@ref) and [`levelgrid`](@ref) to construct queryable grids. Each
-system module documents its identifier codec and optimized operations.
+```jldoctest
+julia> systems()
+(IGeo7System(), H3System(), HEALPixSystem(), A5System(), S2System(), ISEA4RSystem())
+```
 """
 systems() = (IGeo7System(), H3System(), HEALPixSystem(),
              A5System(), S2System(), ISEA4RSystem())
@@ -229,11 +248,11 @@ export Winding, CounterClockwise, Clockwise, CustomOrder, Unordered
 export UnitSphericalPoint
 
 # --- Base grid interface ---------------------------------------------------
-export ncells, cellindex, cell_boundary, cell_centroid
+export ncells, cellindex, cell_boundary, cell_corners, cell_centroid, cell_polygon
 export localindex, globalindex
 # `cellposition` stays exported for the deprecation shim in `deprecated.jl`.
 export cellposition, rawid, reindex, cellindextypes
-export cell_polygon, cell_area, cell_extent, getcell
+export cell_area, cell_extent, getcell
 export cellat, neighbors, ring, neighborcount
 export treeify, query
 export system, level
@@ -244,11 +263,13 @@ export cellsize, levelfor
 # --- Hierarchical system interface -----------------------------------------
 export cellindextype, levels, maxlevel, levelgrid, rootcells, children
 export node_extent, maxneighbors, maxring, winding, has_sorted_subtrees
-export has_direct_location
+export has_congruent_refinement, has_direct_location
 export ancestor, descendants, descendant_range
 export subtree
 export cellid
 export mapneighbors, foreachneighbors
+export Disc, Ring
+public Neighborhood
 
 # --- The region verbs ------------------------------------------------------
 export halo, border, interior
@@ -276,6 +297,8 @@ public sizehint
 public halo_indices
 public SubsetIndexedCell
 public HierarchicalGridCursor
+# The cell a cursor node stands for; `nothing` at the synthetic root.
+public node_cell
 public TiledRasterCursor
 public StorageOrder
 public AbstractNeed, Cell, Index, Local, Global, Value, Centroid
@@ -283,10 +306,24 @@ public cellfield
 public cap_inflation
 public NeighborCallbackError
 
+# The raster verbs. Rasters.jl owns the same ten names, so callers spell them
+# qualified and neither package shadows the other on `using`.
+public rasterize
+public rasterize!
+public extract
+public zonal
+public mask
+public mask!
+public boolmask
+public boolmask!
+public missingmask
+public missingmask!
+
 # --- Query predicates (DE9IM.jl types, our semantics) ----------------------
 export DE9IMPredicate
 export Intersects, Disjoint, Contains, Within, Covers, CoveredBy
 export Touches, Crosses, Overlaps, Equals
+export CentroidCovered
 
 # --- Fallback substrate ----------------------------------------------------
 export HierarchicalLevelGrid, PartialGrid
@@ -331,6 +368,13 @@ export regrid, regrid!, plan_regrid, DGGSpace
 export Conservative, NearestCell, DirectNearest, BarycentricPoint
 export Weighted, Extensive
 export PerChunk, Spilled
+export TreeLocator, AnalyticLocator
+
+# --- Chunk partitioning ----------------------------------------------------
+export AbstractPartitioningAlgorithm, WeightedContiguous, MetisPartition, KaHyParPartition, ScotchPartition
+export PartitionProblem, ChunkPartition, PartitionBackendUnavailable
+export partitionproblem, partitionlabels, partition
+export npartitions, partindices, partchunks, partsources, partweights
 
 # --- Store IO --------------------------------------------------------------
 export dggread, dggwrite, dggwrite!
@@ -365,5 +409,16 @@ public CONVENTION_REGISTRY
 public DEFAULT_WRITE_CONVENTIONS
 public ENCODING_REGISTRY
 public GRID_REFERENCE
+public XDGGS_GRIDS, require_xdggs_readable, xdggs_ellipsoid_attrs
+
+function __init__()
+    Base.Experimental.register_error_hint(PartitionBackendUnavailable) do io, err
+        err.backend in (:Metis, :KaHyPar_jll, :Scotch) || return
+        backend = string(err.backend)
+        algorithm = nameof(typeof(err.algorithm))
+        print(io, "\nLoad `$backend` with `using $backend` to enable $algorithm. " *
+            "If it is not installed, run `import Pkg; Pkg.add(\"$backend\")`.")
+    end
+end
 
 end # module DiscreteGlobalGrids

@@ -2,7 +2,10 @@
 
 import ConservativeRegridding as CR
 import DimensionalData as DD
+import DiscreteGlobalGrids as DGG
 import GeometryOps: SpatialTreeInterface as STI
+import LinearAlgebra
+import Random
 
 """
     DensifiedCellSpace(lon, lat, n)
@@ -74,6 +77,26 @@ GR.subtree(cs::CellCountSpace, inds) =
 _countedtree(cs::CellCountSpace, inds) =
     ToyCapTree(cs, collect(Int, inds),
         [toy_cap(cellcorners(cs.space, Int(i))) for i in inds])
+
+"""
+    T5PairOnly()
+    T5SeamOnly()
+
+Methods that know nothing of locators: one supplies only the five-argument
+`pairblock`, the other only the six-argument sampling seam of `weightblock`.
+"""
+struct T5PairOnly <: AbstractRegriddingMethod end
+
+GR.pairblock(::T5PairOnly, ::RegridSpace, dst_inds, ::RegridSpace, src_inds) =
+    WeightBlock(fill(2.0, length(dst_inds), length(src_inds)), nothing)
+
+struct T5SeamOnly <: AbstractRegriddingMethod end
+
+GR.outputsampling(::T5SeamOnly) = DD.Lookups.Points()
+
+GR.weightblock(::DD.Lookups.Points, ::T5SeamOnly, ::RegridSpace, dst_inds,
+    ::RegridSpace, src_inds) =
+    WeightBlock(fill(3.0, length(dst_inds), length(src_inds)), nothing)
 
 # Helpers
 
@@ -907,5 +930,259 @@ end
         @test GR.SparseArrays.nnz(seam.weights) == 0
         @test seam.denom == zeros(2)
         @test seam.reference === seam.denom
+    end
+
+    @testset "the analytic locator builds the tree locator's block" begin
+        healpix = DGG.DGGSpace(DGG.levelgrid(DGG.HEALPixSystem(), 3))
+        igeo7 = DGG.DGGSpace(DGG.levelgrid(DGG.IGeo7System(), 2))
+        rng = Random.MersenneTwister(7)
+
+        function identical(a, b)
+            @test a.weights.colptr == b.weights.colptr
+            @test a.weights.rowval == b.weights.rowval
+            @test all(a.weights.nzval .=== b.weights.nzval)
+            @test all(a.denom .=== b.denom)
+        end
+
+        # The `(src, dst)` pairs a block holds weights for, in space indices.
+        function weightedpairs(block, dinds, sinds)
+            W = block.weights
+            return Set((sinds[col], dinds[W.rowval[t]])
+                for col in axes(W, 2) for t in GR.SparseArrays.nzrange(W, col))
+        end
+
+        for (dst, src) in ((igeo7, healpix), (healpix, igeo7))
+            ndst, nsrc = ncells(dst), ncells(src)
+            whole = 1:ndst
+            chunk = (ndst ÷ 3):(2ndst ÷ 3)
+            scattered = sort!(Random.randperm(rng, ndst)[1:ndst ÷ 4])
+            for dinds in (whole, chunk, scattered), threaded in (false, true)
+                # Tree nodes and walk caps bound cells differently, so the two
+                # candidate sets differ; both must hold every weighted pair.
+                tree = GR.overlappairs(TreeLocator(), dst, dinds, src, 1:nsrc; threaded)
+                walk = GR.overlappairs(AnalyticLocator(), dst, dinds, src, 1:nsrc; threaded)
+                weighted = weightedpairs(
+                    GR.pairblock(Conservative(), dst, dinds, src, 1:nsrc), dinds, 1:nsrc)
+                @test weighted ⊆ Set(walk)
+                @test weighted ⊆ Set(tree)
+                @test allunique(walk)
+                @test walk == GR.overlappairs(AnalyticLocator(), dst, dinds, src, 1:nsrc;
+                    threaded = false)
+
+                # `pairblock` reads the module's threading policy, so both
+                # states of it are exercised through `OUTER_PARALLEL`.
+                GR.@with GR.OUTER_PARALLEL => !threaded begin
+                    identical(GR.pairblock(Conservative(), dst, dinds, src, 1:nsrc, AnalyticLocator()),
+                        GR.pairblock(Conservative(), dst, dinds, src, 1:nsrc))
+                    coo = WeightCOO(length(dinds))
+                    buildweights!(coo, Conservative(), dst, dinds, src, 1:nsrc, AnalyticLocator())
+                    identical(WeightBlock(coo, length(dinds), nsrc),
+                        GR.pairblock(Conservative(), dst, dinds, src, 1:nsrc))
+                end
+            end
+
+            # Restricted source sets, contiguous and scattered.
+            srange = (nsrc ÷ 5):(nsrc ÷ 2)
+            sscattered = sort!(Random.randperm(rng, nsrc)[1:nsrc ÷ 3])
+            for sinds in (srange, sscattered), dinds in (whole, scattered)
+                identical(GR.pairblock(Conservative(), dst, dinds, src, sinds, AnalyticLocator()),
+                    GR.pairblock(Conservative(), dst, dinds, src, sinds))
+            end
+
+            # A prepared destination takes the locator too.
+            cache = GR.DestinationCache(dst, chunk)
+            identical(GR.pairblock(Conservative(), dst, cache, src, 1:nsrc, AnalyticLocator()),
+                GR.pairblock(Conservative(), dst, chunk, src, 1:nsrc))
+
+            # The plan carries the locator down to every block.
+            data = rand(rng, nsrc)
+            plain = plan_regrid(data; from = src, to = dst, lazy = false)
+            analytic = plan_regrid(data; from = src, to = dst, lazy = false,
+                locator = AnalyticLocator())
+            @test analytic.locator === AnalyticLocator()
+            identical(analytic.block, plain.block)
+            @test occursin("AnalyticLocator", sprint(show, analytic))
+            @test !occursin("Locator", sprint(show, plain))
+            lazyplan = plan_regrid(data; from = src, to = dst, lazy = true,
+                locator = AnalyticLocator())
+            @test lazyplan.locator === AnalyticLocator()
+            treeplan = plan_regrid(data; from = src, to = dst, lazy = true)
+            @test nchunks(dst) > 2 && nchunks(src) > 2
+            for key in ((1, 1), (nchunks(dst), 2), (2, nchunks(src)))
+                identical(GR.buildblock(lazyplan, key...), GR.buildblock(treeplan, key...))
+            end
+        end
+
+        @testset "locatecell agrees between locators" begin
+            for space in (healpix, igeo7)
+                n = ncells(space)
+                inds = (n ÷ 4):(3n ÷ 4)
+                # Both systems' chart edges are curves the polygon replaces by
+                # chords. The tree answers by chord polygon and the walk by the
+                # system's true cell, so for a point in the sliver between the
+                # two the tree names the neighbour whose chord polygon holds it.
+                points = Random.Xoshiro(11)
+                for _ in 1:400
+                    p = GO.UnitSphericalPoint(LinearAlgebra.normalize(randn(points, 3)))
+                    tree = GR.locatecell(TreeLocator(), space, 1:n, p)
+                    walk = GR.locatecell(AnalyticLocator(), space, 1:n, p)
+                    @test walk != 0
+                    @test walk == cellat(space, p)
+                    if tree != walk
+                        @test tree in GR.cellneighbors(space, walk)
+                        @test GR._cellcontains(getcell(space, tree), p) === true
+                    end
+                    restricted = GR.locatecell(TreeLocator(), space, inds, p)
+                    @test restricted == (tree in inds ? tree - first(inds) + 1 : 0)
+                    @test GR.locatecell(AnalyticLocator(), space, inds, p) ==
+                          (walk in inds ? walk - first(inds) + 1 : 0)
+                end
+                @test GR.locatecell(AnalyticLocator(), space, 1:n, cellcentroid(space, 5)) == 5
+                @test GR.locatecell(TreeLocator(), space, 1:n, cellcentroid(space, 5)) == 5
+                @test GR.locatecell(TreeLocator(), space, 6:n, cellcentroid(space, 5)) == 0
+            end
+        end
+
+        @testset "the ConservativeRegridding internals the walk assembles through" begin
+            # `_intersectionareas(::AnalyticLocator)` reaches past CR's public
+            # `intersection_areas` to its assembly, so a CR change must fail here.
+            Cache = CR.SparseMatrixAssemblyCache{Float64}
+            @test hasmethod(CR._assembly_cache, Tuple{Type{Float64},Cache})
+            @test hasmethod(CR._assemble_sparse, Tuple{CR.InPlace,Any,
+                Vector{Tuple{Int,Int}},Any,Any,GOCore.True,Int,Int,Cache})
+            @test hasmethod(CR._assemble_sparse, Tuple{CR.InPlace,Any,
+                Vector{Tuple{Int,Int}},Any,Any,GOCore.False,Int,Int,Cache})
+            @test hasmethod(CR.get_all_candidate_pairs,
+                Tuple{GOCore.True,typeof(GR.Extents.intersects),Any,Any})
+            @test hasmethod(CR.work_items, Tuple{Any,Vector{Tuple{Int,Int}}})
+        end
+
+        @testset "a method that knows no locator keeps its own build" begin
+            n = ncells(healpix)
+            for (method, value) in ((T5PairOnly(), 2.0), (T5SeamOnly(), 3.0))
+                for locator in (TreeLocator(), AnalyticLocator())
+                    block = GR.weightblock(method, healpix, 1:4, igeo7, 1:3, locator)
+                    @test Matrix(block.weights) == fill(value, 4, 3)
+                    @test Matrix(GR.wholeblock(method, healpix, igeo7, locator).weights) ==
+                          fill(value, n, ncells(igeo7))
+                end
+                @test Matrix(GR.buildblock(
+                    GR.ChunkedPlan(method, Weighted(0.5), healpix, igeo7;
+                        locator = AnalyticLocator()), 1, 1).weights) ==
+                      fill(value, length(ownedindices(healpix, 1)),
+                          length(ownedindices(igeo7, 1)))
+            end
+        end
+
+        @testset "an analytic locator walks a raster" begin
+            geographic(nx, ny; lat = (-90.0, 90.0)) = RasterGrid(DD.DimArray(zeros(nx, ny),
+                (DD.X(range(-180 + 180 / nx, 180 - 180 / nx; length = nx)),
+                    DD.Y(range(lat[1] + (lat[2] - lat[1]) / 2ny,
+                        lat[2] - (lat[2] - lat[1]) / 2ny; length = ny)))))
+            coarse = geographic(24, 12)
+            fine = geographic(48, 24)
+            @test GR.hasanalyticlocation(coarse)
+            @test GR.hasanalyticlocation(fine)
+
+            # Two rasters: the coarser is walked, the finer supplies the seeds.
+            @test GR._walksdestination(coarse, 1:ncells(coarse), fine, 1:ncells(fine))
+            @test !GR._walksdestination(fine, 1:ncells(fine), coarse, 1:ncells(coarse))
+            for (dst, src) in ((coarse, fine), (fine, coarse)), threaded in (false, true)
+                GR.@with GR.OUTER_PARALLEL => threaded begin
+                    identical(GR.pairblock(Conservative(), dst, 1:ncells(dst), src, 1:ncells(src),
+                            AnalyticLocator()),
+                        GR.pairblock(Conservative(), dst, 1:ncells(dst), src, 1:ncells(src)))
+                end
+            end
+
+            # Raster and HEALPix: the raster is walked when it is the coarser side.
+            @test ncells(coarse) < ncells(healpix) < ncells(fine)
+            @test GR._walksdestination(coarse, 1:ncells(coarse), healpix, 1:ncells(healpix))
+            @test !GR._walksdestination(fine, 1:ncells(fine), healpix, 1:ncells(healpix))
+            for (dst, src) in ((coarse, healpix), (healpix, coarse), (fine, healpix), (healpix, fine))
+                identical(GR.pairblock(Conservative(), dst, 1:ncells(dst), src, 1:ncells(src),
+                        AnalyticLocator()),
+                    GR.pairblock(Conservative(), dst, 1:ncells(dst), src, 1:ncells(src)))
+            end
+
+            # The cap over the corners covers the ring the clipper measures.
+            for space in (fine, geographic(12, 4; lat = (70.0, 90.0)),
+                    geographic(12, 4; lat = (-90.0, -70.0)))
+                @test all(1:ncells(space)) do i
+                    cap = GR.cellcap(space, i)
+                    all(GI.getpoint(getcell(space, i))) do q
+                        GR.US._contains(cap, USPoint(GI.x(q), GI.y(q), GI.z(q)))
+                    end
+                end
+                @test all(i -> length(GR.cellcorners(space, i)) == 4, 1:ncells(space))
+            end
+
+            @testset "lattice neighbours" begin
+                nx, ny = 48, 24
+                interior = GR.localindex(fine, 5, 5)
+                ring = GR.cellneighbors(fine, interior)
+                @test length(ring) == 8
+                @test Set(ring) == Set(GR.localindex(fine, 5 + dx, 5 + dy)
+                    for dx in -1:1, dy in -1:1 if (dx, dy) != (0, 0))
+                @test length(GR.cellneighbors(fine, GR.localindex(fine, 5, 1))) == 5
+                corner = GR.cellneighbors(fine, GR.localindex(fine, 1, 1))
+                @test length(corner) == 5
+                @test GR.localindex(fine, nx, 1) in corner
+                @test GR.localindex(fine, nx, 2) in corner
+                @test GR.localindex(fine, 1, 1) ∉ corner
+                # Every neighbour relation is symmetric.
+                @test all(i -> all(j -> i in GR.cellneighbors(fine, j), GR.cellneighbors(fine, i)),
+                    1:ncells(fine))
+                f(s, i) = (GR.cellneighbors(s, i); @allocated GR.cellneighbors(s, i))
+                @test f(fine, interior) == 0
+
+                open = RasterGrid(DD.DimArray(zeros(nx, ny),
+                    (DD.X(range(-175, 175; length = nx)), DD.Y(range(-85, 85; length = ny))));
+                    xperiod = nothing)
+                @test length(GR.cellneighbors(open, GR.localindex(open, 1, 1))) == 3
+                @test length(GR.cellneighbors(open, GR.localindex(open, nx, ny))) == 3
+                @test length(GR.cellneighbors(open, GR.localindex(open, 1, 5))) == 5
+            end
+
+            @testset "locatecell agrees between locators" begin
+                n = ncells(fine)
+                inds = (n ÷ 4):(3n ÷ 4)
+                # A graticule cell's parallels are curves the polygon replaces
+                # by chords, so as for the DGG systems a point in the sliver
+                # between them may be named to a neighbour by the tree.
+                points = Random.Xoshiro(13)
+                for _ in 1:400
+                    p = GO.UnitSphericalPoint(LinearAlgebra.normalize(randn(points, 3)))
+                    tree = GR.locatecell(TreeLocator(), fine, 1:n, p)
+                    walk = GR.locatecell(AnalyticLocator(), fine, 1:n, p)
+                    @test walk != 0
+                    @test walk == cellat(fine, p)
+                    if tree != walk
+                        @test tree in GR.cellneighbors(fine, walk)
+                        @test GR._cellcontains(getcell(fine, tree), p) === true
+                    end
+                    @test GR.locatecell(AnalyticLocator(), fine, inds, p) ==
+                          (walk in inds ? walk - first(inds) + 1 : 0)
+                end
+                @test GR.locatecell(AnalyticLocator(), fine, 1:n, cellcentroid(fine, 5)) == 5
+            end
+
+            @testset "a raster without an inverse chart is not walked" begin
+                blind = RasterGrid(DD.DimArray(zeros(24, 12),
+                    (DD.X(range(-172.5, 172.5; length = 24)),
+                        DD.Y(range(-82.5, 82.5; length = 12))));
+                    unit_sphere_to_native = nothing)
+                @test !GR.hasanalyticlocation(blind)
+                @test_throws ArgumentError GR.overlappairs(AnalyticLocator(),
+                    blind, 1:ncells(blind), blind, 1:ncells(blind); threaded = false)
+                @test_throws ArgumentError GR.pairblock(Conservative(),
+                    blind, 1:ncells(blind), blind, 1:ncells(blind), AnalyticLocator())
+                # Paired with a walkable side, the other side is walked.
+                @test !GR._walksdestination(blind, 1:ncells(blind), healpix, 1:ncells(healpix))
+                identical(GR.pairblock(Conservative(), blind, 1:ncells(blind), healpix,
+                        1:ncells(healpix), AnalyticLocator()),
+                    GR.pairblock(Conservative(), blind, 1:ncells(blind), healpix, 1:ncells(healpix)))
+            end
+        end
     end
 end

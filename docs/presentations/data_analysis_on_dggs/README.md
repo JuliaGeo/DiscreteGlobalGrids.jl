@@ -254,8 +254,15 @@ bundled faces).
 Package grids are passed directly from `levelgrid(...)` to
 `DiscreteGlobalGridsVisualization.dggpoly!`; the recipe reads the current
 `cell_boundary` interface and emits one mesh for the complete cell set. Only
-the non-DGGS Oceananigans comparison grids and hand-built Tissot geometry use
-Makie's generic `poly!` path.
+the non-DGGS Oceananigans comparison grids, hand-built Tissot geometry and the
+coarsened Copernicus DEM lattice use Makie's generic `poly!` path. That last
+one, `figures/11-copdem-lattice.jl`, can't be a `levelgrid`: no legal
+`CopernicusDEMSystem{N}` has pixels big enough to see, so it draws the
+package's own band rule at 2.5° rows.
+
+`11-copdem-lattice.jl` is also the one figure that isn't a slide. It exports
+a full-window page, drawn at 1920×1080 and scaled to whatever window opens
+it, and no slide embeds it.
 
 **The figure is the figure; the slide is the slide.** An exported page
 carries no title, no subtitle and no rule — the `figure` layout draws

@@ -56,7 +56,7 @@ const ANCESTOR_COORDINATE = "ancestor_cell_ids"
 
 How the values inside one column are ordered: ascending cell id, which on a
 system with sorted subtrees is ascending index within the ancestor's
-[`descendant_range`](@ref).
+[`descendant_range`](@ref DiscreteGlobalGrids.descendant_range).
 """
 const SUBZONE_ORDER = "ascending_id"
 
@@ -172,7 +172,7 @@ level-`ancestor_level` subtree at `level`.
 Measured rather than assumed, because the closed form is the grid's business and
 not this layer's: aperture 7 gives `7^d` for a hexagon and `(5*7^d + 1)/6` for a
 pentagon, a quad-face system gives `4^d` throughout, and a system yet to be
-written gives whatever [`descendant_range`](@ref) says. The pass is one O(level)
+written gives whatever [`descendant_range`](@ref DiscreteGlobalGrids.descendant_range) says. The pass is one O(level)
 range per level-`ancestor_level` cell — a fifth of a second for the 1 176 494
 columns of an IGEO7 level-6 ancestor grid, and it happens once, when a store is
 created. Every read takes the number out of the store's attributes instead.
@@ -241,7 +241,7 @@ end
     columnindices(layout, i) -> UnitRange{Int}
 
 The indices of the complete level grid that column `i` holds — the ancestor's
-[`descendant_range`](@ref), which is what makes a column one contiguous piece of
+[`descendant_range`](@ref DiscreteGlobalGrids.descendant_range), which is what makes a column one contiguous piece of
 the cell axis.
 """
 columnindices(l::SubzoneLayout, i::Integer) =
@@ -318,7 +318,7 @@ Base.:(==)(a::SubzoneRun, b::SubzoneRun) =
 The columns a cube's cell axis covers, and which slice of the cube goes into
 each.
 
-`cells` is a [`CellLookup`](@ref), a [`CellVector`](@ref), or any strictly
+`cells` is a [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup), a [`CellVector`](@ref), or any strictly
 ascending vector of level-`level` cell ids. The first two are walked through
 their INDEX WINDOWS — one step per column touched, and no id is ever
 materialized, which is what lets a land-only cube of tens of millions of cells

@@ -27,7 +27,8 @@ using DiscreteGlobalGrids: IGeo7System, levelgrid, cellindex, ncells, Cells,
     CellVector, CellLookup, dggread, dggwrite, mapneighbors, mapneighbors!,
     chunkplan, foreachchunk, chunkcube, localindices, ownedindices,
     axisindices, globalindices, chunkhalo, halowidth, nchunks, region, Values,
-    foreachneighbors, localindex, Index, Local, Value
+    foreachneighbors, localindex, Index, Local, Value, Disc, Ring, neighbors,
+    ring
 
 # Counts the chunks read from a store. Metadata keys are not chunks; every other
 # key is a chunk of the array whose name prefixes it.
@@ -80,6 +81,20 @@ end
 # lands in. This is what "follow the chunk lines" means, counted.
 readfloor(plan) =
     sum(1 + length(Set(cld(p, CHUNK) for p in chunkhalo(mc))) for mc in plan)
+
+# The selector's own definition, read back one cell at a time: `Disc(k)` is
+# `neighbors(cv, cell, k)` and `Ring(k)` is `ring(cv, cell, k)`. On the complete
+# level the local index a direct query answers with IS the axis index, so these
+# rings index `parent(A)` directly.
+oraclerings(cv, ::Disc{K}) where {K} = [neighbors(cv, p, K) for p in 1:length(cv)]
+oraclerings(cv, ::Ring{K}) where {K} = [ring(cv, p, K) for p in 1:length(cv)]
+
+# `stencil` evaluated on those rings.
+oracle(v, rs) = [v[p] + sum(q -> v[q], rs[p]; init=0.0) for p in eachindex(v)]
+
+# The halo a selector needs, spelled where the test can read it.
+_k(::Disc{K}) where {K} = K
+_k(::Ring{K}) where {K} = K
 
 @testset "chunk sweep" begin
     mktempdir() do dir
@@ -309,6 +324,231 @@ readfloor(plan) =
             end
             @test all(==(1), hits)
             @test acc == wa
+        end
+
+        # ===================================================================
+        # Wider neighbourhoods
+        #
+        # `neighborhood = Disc(k)` or `Ring(k)` widens what each visit sees,
+        # and the plan's halo has to widen with it or the cells at the chunk's
+        # edge answer from a truncated ring. Everything below is measured
+        # against the same two references: the whole-axis sweep, and a per-cell
+        # oracle built from `neighbors`/`ring` themselves — the verbs the
+        # selector is DEFINED by, so the oracle is the definition read back.
+        # ===================================================================
+
+        axiscv = region(DD.lookup(A, Cells))
+        v = parent(A)
+        nbrings = Dict(nb => oraclerings(axiscv, nb)
+                       for nb in (Ring(2), Disc(2), Disc(3)))
+        oracles = Dict(nb => oracle(v, r) for (nb, r) in nbrings)
+        wholeaxis = Dict(nb => parent(mapneighbors(stencil, A; pass=Values(),
+            neighborhood=nb, threaded=false)) for nb in keys(nbrings))
+
+        @testset "the whole-axis sweep is the two direct queries" begin
+            # If this fails nothing below means anything: the oracle and the
+            # in-memory sweep would be measuring different things.
+            for nb in (Ring(2), Disc(2), Disc(3))
+                @test wholeaxis[nb] == oracles[nb]
+            end
+            # A disc is its rings, so the two selectors are not the same sweep.
+            @test wholeaxis[Disc(2)] != wholeaxis[Ring(2)]
+            @test wholeaxis[Disc(2)] == want .+ wholeaxis[Ring(2)] .- v
+        end
+
+        @testset "a wider neighbourhood is still the whole-axis result" begin
+            B = dggread(path)[:e]
+            for nb in (Ring(2), Disc(3))
+                dest = zeros(Float64, N)
+                mapneighbors!(dest, stencil, B; neighborhood=nb, threaded=false)
+                @test dest == wholeaxis[nb]
+                @test dest == oracles[nb]
+
+                # The plan form, threading inside a chunk, and pieces of one
+                # plan each writing their own part: same cells, same answer.
+                plan = chunkplan(B; halo=_k(nb))
+                @test halowidth(plan) == _k(nb)
+                d2 = zeros(Float64, N)
+                mapneighbors!(d2, stencil, B, plan; neighborhood=nb)
+                @test d2 == wholeaxis[nb]
+                d3 = zeros(Float64, N)
+                @sync for p in Base.split(plan, 4)
+                    Threads.@spawn mapneighbors!(d3, stencil, B, p;
+                        neighborhood=nb, threaded=false)
+                end
+                @test d3 == wholeaxis[nb]
+            end
+        end
+
+        @testset "a plan narrower than the selector is refused" begin
+            B = dggread(path)[:e]
+            dest = zeros(Float64, N)
+            narrow = chunkplan(B; halo=1)
+
+            # The message names both widths and the plan that would work, so a
+            # caller can act on it without reading the source.
+            @test_throws ArgumentError mapneighbors!(dest, stencil, B, narrow;
+                neighborhood=Ring(2), threaded=false)
+            @test_throws "chunkplan(A; halo = 2)" mapneighbors!(dest, stencil, B,
+                narrow; neighborhood=Ring(2), threaded=false)
+            @test_throws "1 ring" mapneighbors!(dest, stencil, B, narrow;
+                neighborhood=Ring(2), threaded=false)
+            @test_throws "Ring(2)" mapneighbors!(dest, stencil, B, narrow;
+                neighborhood=Ring(2), threaded=false)
+            @test_throws "chunkplan(A; halo = 3)" mapneighbors!(dest, stencil, B,
+                chunkplan(B; halo=2); neighborhood=Disc(3), threaded=false)
+            # Nothing was swept before the refusal.
+            @test all(iszero, dest)
+
+            # The needs form checks the same invariant.
+            @test_throws ArgumentError mapneighbors!(
+                (zeros(Float64, N), zeros(Float64, N)),
+                (c, r) -> (0.0, 0.0), B, narrow;
+                needs=(Value(B), Index(Local())), neighborhood=Ring(2),
+                threaded=false)
+
+            # Wider is fine: the halo carries more context than the sweep asks
+            # for and the extra rings are simply not visited.
+            wide = chunkplan(B; halo=3)
+            mapneighbors!(dest, stencil, B, wide; neighborhood=Ring(2),
+                threaded=false)
+            @test dest == wholeaxis[Ring(2)]
+            # And `Disc(1)`, the default, runs under any plan at all.
+            d1 = zeros(Float64, N)
+            mapneighbors!(d1, stencil, B, wide; threaded=false)
+            @test d1 == want
+        end
+
+        @testset "the automatic route carries the selector" begin
+            B = dggread(counting(path))[:e]
+            reads = parent(B).storage.reads
+            # What the route must plan for each selector, if it plans at all.
+            twoplan = readfloor(chunkplan(B; halo=2))
+            oneplan = readfloor(chunkplan(B; halo=1))
+
+            empty!(reads)
+            out = mapneighbors(stencil, B; pass=Values(), neighborhood=Disc(2),
+                threaded=false)
+            # The route ran a plan, and the plan carried two rings: one ring
+            # would read less and the whole-axis fallback would read far more.
+            @test reads["e"] == twoplan
+            @test twoplan > oneplan
+            @test parent(out) == wholeaxis[Disc(2)]
+            @test parent(out) == oracles[Disc(2)]
+            @test DD.lookup(out, Cells) === DD.lookup(B, Cells)
+            # Threading inside a chunk changes nothing here either.
+            @test parent(mapneighbors(stencil, B; pass=Values(),
+                neighborhood=Disc(2))) == wholeaxis[Disc(2)]
+
+            # `Disc(0)` visits every cell with an empty ring, so the callback
+            # sees the cell's own value and nothing else. The plan still
+            # carries one ring — it may not carry none — and the answer must
+            # not show it.
+            empty!(reads)
+            z0 = mapneighbors(stencil, B; pass=Values(), neighborhood=Disc(0),
+                threaded=false)
+            @test parent(z0) == v
+            @test reads["e"] == oneplan
+            counts = mapneighbors((c, val, vs) -> length(vs), B; pass=Values(),
+                neighborhood=Disc(0), threaded=false)
+            @test all(iszero, parent(counts))
+
+            # An N-D cube is swept once per index of the other dimensions.
+            C = cat(B, B; dims=DD.Ti(1:2))
+            outN = mapneighbors(stencil, C; pass=Values(), neighborhood=Disc(2),
+                threaded=false)
+            @test parent(outN)[:, 1] == wholeaxis[Disc(2)]
+            @test parent(outN)[:, 2] == wholeaxis[Disc(2)]
+        end
+
+        @testset "a wider field request follows the chunk lines" begin
+            # `Index(Local())` summed over a two-ring: a chunk reporting its own
+            # numbering, or one whose halo is a single ring, fails here.
+            kern(center, rings) = (center[1] + sum(rings[1]; init=0.0),
+                Float64(center[2]) + sum(rings[2]; init=0))
+            ob = [Float64(p) + sum(r; init=0) for (p, r) in enumerate(nbrings[Ring(2)])]
+
+            B = dggread(counting(path))[:e]
+            reads = parent(B).storage.reads
+            floor2 = readfloor(chunkplan(B; halo=2))
+            needs = (Value(B), Index(Local()))
+
+            empty!(reads)
+            ga, gb = mapneighbors(kern, B; needs=needs, neighborhood=Ring(2),
+                threaded=false)
+            # Each storage chunk is decoded a bounded number of times: once for
+            # the cube's own cells, once for the request's `Value` over the same
+            # store, both over a two-ring halo.
+            @test floor2 <= reads["e"] <= 2 * floor2
+            @test parent(ga) == oracles[Ring(2)]
+            @test parent(gb) == ob
+            @test DD.lookup(ga, Cells) === DD.lookup(B, Cells)
+
+            # The side-effecting form fires once per OWNED cell: a halo cell has
+            # an incomplete ring of its own and there is no result to discard.
+            hits = zeros(Int, N)
+            acc = zeros(Float64, N)
+            accb = zeros(Float64, N)
+            foreachneighbors(B; needs=needs, neighborhood=Ring(2),
+                    threaded=false) do center, rings
+                hits[center[2]] += 1
+                acc[center[2]] = center[1] + sum(rings[1]; init=0.0)
+                accb[center[2]] = Float64(center[2]) + sum(rings[2]; init=0)
+            end
+            @test all(==(1), hits)
+            @test acc == oracles[Ring(2)]
+            @test accb == ob
+        end
+
+        @testset "a wider halo is still read once per chunk it lands in" begin
+            B = dggread(counting(path))[:e]
+            plan = chunkplan(B; halo=2)
+            onering = chunkplan(B; halo=1)
+            @test halowidth(plan) == 2
+            # Two rings reach further along the axis than one, so the floor is
+            # a different number and not a restatement of the one-ring case.
+            @test readfloor(plan) > readfloor(onering)
+
+            reads = parent(B).storage.reads
+            empty!(reads)
+            dest = zeros(Float64, N)
+            mapneighbors!(dest, stencil, B, plan; neighborhood=Ring(2),
+                threaded=false)
+            @test dest == wholeaxis[Ring(2)]
+            @test reads["e"] == readfloor(plan)
+
+            # `Disc(2)` reads the same blocks: the halo is the plan's, not the
+            # selector's, so widening the sweep within the plan costs nothing.
+            empty!(reads)
+            d2 = zeros(Float64, N)
+            mapneighbors!(d2, stencil, B, plan; neighborhood=Disc(2),
+                threaded=false)
+            @test d2 == wholeaxis[Disc(2)]
+            @test reads["e"] == readfloor(plan)
+        end
+
+        @testset "the halo defaults to the selector's reach" begin
+            B = dggread(path)[:e]
+            d0 = zeros(Float64, N)
+            mapneighbors!(d0, stencil, B; neighborhood=Disc(3), threaded=false)
+            d3 = zeros(Float64, N)
+            mapneighbors!(d3, stencil, B; neighborhood=Disc(3), halo=3,
+                threaded=false)
+            d5 = zeros(Float64, N)
+            mapneighbors!(d5, stencil, B; neighborhood=Disc(3), halo=5,
+                threaded=false)
+            @test d0 == d3 == d5 == wholeaxis[Disc(3)]
+
+            # The default is the selector's reach and not some fixed maximum:
+            # asking for less is still refused.
+            @test_throws ArgumentError mapneighbors!(d0, stencil, B;
+                neighborhood=Disc(3), halo=2, threaded=false)
+
+            # `Disc(0)` reaches nothing, and a plan may not carry a haloless
+            # chunk, so the default is one ring rather than an error.
+            z = zeros(Float64, N)
+            mapneighbors!(z, stencil, B; neighborhood=Disc(0), threaded=false)
+            @test z == v
         end
     end
 end

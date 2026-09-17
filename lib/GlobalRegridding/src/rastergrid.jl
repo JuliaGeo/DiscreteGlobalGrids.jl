@@ -66,6 +66,42 @@ _default_unit_sphere_to_native(::Any) = nothing
 _default_unit_sphere_to_native(t::US.UnitSphereFromGeographic) = inv(t)
 
 """
+    _crs_native_to_unit_sphere(A) -> transform or _UNSET_RASTER_KEYWORD
+
+Return the forward chart implied by the CRS metadata of a dimensional array or
+dimension tuple, or `_UNSET_RASTER_KEYWORD` when it carries none or names
+geographic longitude/latitude. Plain dimensional data carries no CRS. The
+Rasters extension reads `Projected` and `Mapped` lookups and calls
+[`_projected_crs_native_to_unit_sphere`](@ref) for any CRS it cannot classify
+as geographic on its own.
+"""
+_crs_native_to_unit_sphere(::Any) = _UNSET_RASTER_KEYWORD
+
+"""
+    _projected_crs_native_to_unit_sphere(crs) -> transform or _UNSET_RASTER_KEYWORD
+
+Return the forward chart for a CRS value that is not known to be geographic.
+Proj classifies the CRS and builds the transformation to geographic
+longitude/latitude, so the generic method throws: without Proj the CRS cannot
+be interpreted, and silently treating it as longitude/latitude would be wrong.
+"""
+_projected_crs_native_to_unit_sphere(crs) = throw(ArgumentError(
+    "the raster's CRS $(repr(crs)) is not EPSG:4326 or another form that " *
+    "GlobalRegridding recognizes as geographic longitude/latitude without " *
+    "Proj. Load Proj (`import Proj`) so the CRS can be classified and a " *
+    "transformation derived from it, or pass `native_to_unit_sphere` " *
+    "explicitly."))
+
+# Fill in the forward chart from CRS metadata only when the caller gave none.
+function _with_crs_transform(A, kwargs)
+    (haskey(kwargs, :native_to_unit_sphere) || haskey(kwargs, :transform)) &&
+        return kwargs
+    t = _crs_native_to_unit_sphere(A)
+    t === _UNSET_RASTER_KEYWORD && return kwargs
+    return (; kwargs..., native_to_unit_sphere = t)
+end
+
+"""
     _native_coordinate_limits(native_to_unit_sphere) -> (xperiod, ybounds)
 
 Return the first native coordinate's period and the second native coordinate's
@@ -145,20 +181,31 @@ of a spatial slice matches cell index order. Chunk numbers use the same rule.
 
   - `xdim`, `ydim`: explicit spatial dimensions.
   - `native_to_unit_sphere`: transform one native `(x, y)` coordinate to the
-    unit sphere, returning a `UnitSphericalPoint{Float64}`. The default assumes
-    geographic longitude/latitude in degrees. Projected native coordinates
-    require an explicit transformation; generic dimensional metadata cannot
-    identify them. With the Proj extension loaded, an explicit
-    `Proj.Transformation` is interpreted as native coordinates to geographic
-    longitude/latitude and composed with the unit-sphere conversion. Construct
-    raster templates with `always_xy = true`; the selected pipeline is cloned,
-    not reconstructed from CRS metadata.
+    unit sphere, returning a `UnitSphericalPoint{Float64}`. With the Proj
+    extension loaded, a `Proj.Transformation` is interpreted as native
+    coordinates to geographic longitude/latitude and composed with the
+    unit-sphere conversion; construct such templates with `always_xy = true`.
+    The selected pipeline is cloned for each task.
   - `unit_sphere_to_native`: transform one unit-sphere point back to native
     coordinates; `nothing` disables `cellat`.
   - `transform`, `inverse`: compatibility spellings for the preceding two
     keywords. A legacy two-argument forward closure is adapted at construction.
   - `xperiod`, `ybounds`: native chart limits.
   - `chunks`: `(xchunks, ychunks)` index ranges for the dimension-tuple form.
+
+# Chart resolution
+
+The forward chart is chosen in this order:
+
+ 1. An explicit `native_to_unit_sphere` (or `transform`) keyword.
+ 2. CRS metadata on the X/Y lookups. With Rasters loaded, `Projected` lookups
+    supply their `crs` and `Mapped` lookups their `mappedcrs`. A geographic CRS
+    keeps the built-in longitude/latitude chart. A projected CRS needs Proj:
+    with both loaded, the chart is
+    `Proj.Transformation(crs, "EPSG:4326"; always_xy = true)` and `cellat`
+    works through its inverse; with Rasters alone, construction throws an
+    `ArgumentError` naming the CRS.
+ 3. Geographic longitude/latitude in degrees.
 
 # Geometry
 
@@ -199,7 +246,7 @@ function RasterGrid(A::DD.AbstractDimArray;
     yd = _resolvedim(ds, ydim, DD.YDim, _YNAMES, "Y")
     xnum, ynum = _dimnums(ds, xd, yd)
     ch = chunks === nothing ? _spatialchunks(parent(A), xnum, ynum) : chunks
-    return _rastergrid(xd, yd, ch, xnum < ynum; kwargs...)
+    return _rastergrid(xd, yd, ch, xnum < ynum; _with_crs_transform(A, kwargs)...)
 end
 
 function RasterGrid(ds::Tuple{Vararg{DD.Dimension}};
@@ -207,7 +254,7 @@ function RasterGrid(ds::Tuple{Vararg{DD.Dimension}};
     xd = _resolvedim(ds, xdim, DD.XDim, _XNAMES, "X")
     yd = _resolvedim(ds, ydim, DD.YDim, _YNAMES, "Y")
     xnum, ynum = _dimnums(ds, xd, yd)
-    return _rastergrid(xd, yd, chunks, xnum < ynum; kwargs...)
+    return _rastergrid(xd, yd, chunks, xnum < ynum; _with_crs_transform(ds, kwargs)...)
 end
 
 RasterGrid(ds::DD.Dimension...; kwargs...) = RasterGrid(ds; kwargs...)
@@ -443,6 +490,86 @@ manifold(::RasterGrid) = GOCore.Spherical(; radius = 1.0)
 
 # Interpolation requires an inverse transform into the cell-centre chart.
 hascellchart(space::RasterGrid) = space.unit_sphere_to_native !== nothing
+
+# A raster locates a point through its inverse chart (`cellat`) and names its
+# neighbours by lattice arithmetic, so an `AnalyticLocator` can walk it.
+hasanalyticlocation(space::RasterGrid) = space.unit_sphere_to_native !== nothing
+
+"""
+    LatticeNeighbors
+
+The up-to-eight lattice neighbours of a raster cell, held in a tuple so
+[`cellneighbors`](@ref) allocates nothing.
+"""
+struct LatticeNeighbors
+    cells::NTuple{8,Int}
+    n::Int
+end
+
+Base.length(r::LatticeNeighbors) = r.n
+Base.eltype(::Type{LatticeNeighbors}) = Int
+@inline Base.iterate(r::LatticeNeighbors, k::Int = 1) =
+    k > r.n ? nothing : (@inbounds(r.cells[k]), k + 1)
+@inline Base.in(i::Int, r::LatticeNeighbors) = any(k -> @inbounds(r.cells[k]) == i, 1:r.n)
+
+# The X columns adjacent to `ix`: wrapped when the raster spans its period,
+# and never listing a column twice on rasters of one or two columns.
+@inline function _neighborcolumns(space::RasterGrid, ix::Int)
+    nx = _nx(space)
+    if _xwraps(space)
+        lo = mod1(ix - 1, nx)
+        hi = mod1(ix + 1, nx)
+        lo == ix && return (ix, ix, ix, 1)
+        lo == hi && return (lo, ix, ix, 2)
+        return (lo, ix, hi, 3)
+    end
+    lo, hi = ix - 1, ix + 1
+    lo < 1 && return (ix, hi, hi, hi <= nx ? 2 : 1)
+    hi > nx && return (lo, ix, ix, 2)
+    return (lo, ix, hi, 3)
+end
+
+# Whether the X edges close on themselves under `xperiod`.
+@inline function _xwraps(space::RasterGrid)
+    p = space.xperiod
+    p === nothing && return false
+    e = space.xedges
+    return isapprox(abs(e[end] - e[1]), p; rtol = 1e-9)
+end
+
+function cellneighbors(space::RasterGrid, i::Int)
+    ix, iy = cellsubscript(space, i)
+    c1, c2, c3, ncols = _neighborcolumns(space, ix)
+    cells = ntuple(_ -> 0, Val(8))
+    n = 0
+    for jy in max(iy - 1, 1):min(iy + 1, _ny(space))
+        for k in 1:ncols
+            jx = k == 1 ? c1 : k == 2 ? c2 : c3
+            jx == ix && jy == iy && continue
+            n += 1
+            cells = Base.setindex(cells, localindex(space, jx, jy), n)
+        end
+    end
+    return LatticeNeighbors(cells, n)
+end
+
+function cellcorners(space::RasterGrid, i::Int)
+    ix, iy = cellsubscript(space, i)
+    return _cellcorners(space, ix, iy)
+end
+
+# The clipper measures the densified ring `getcell` returns. A raster's ring is
+# its four corners with polar duplicates dropped, so the cap over the corners
+# bounds it; the relative margin absorbs rounding in the cap arithmetic.
+function cellcap(space::RasterGrid, i::Int)
+    c = cellcorners(space, i)
+    cap = SphericalCap(c[1], 0.0)
+    for k in 2:4
+        cap = Extents.union(cap, SphericalCap(c[k], 0.0))
+    end
+    cap.radius > Float64(pi) / 2 && return _WHOLE_SPHERE
+    return Extents.grow(cap, 5e-5)
+end
 
 """
     cellsubscript(space::RasterGrid, i::Int) -> (ix, iy)

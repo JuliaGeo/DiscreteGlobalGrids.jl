@@ -5,8 +5,8 @@ Copy each destination value from the source cell containing its sample site.
 The apply loop calls [`cellat`](@ref) directly and materializes no weights.
 
 `DirectNearest` produces the same one-cell, unit-weight stencil as
-[`NearestCell`](@ref), including missing-data results. Choose between them by
-plan use:
+[`NearestCell`](@ref), and the same results element for element, under either
+missing policy and with any nodata sentinel. Choose between them by plan use:
 
 # Selection guide
 
@@ -56,37 +56,42 @@ Base.show(io::IO, plan::NearestDirectPlan) =
         ncells(plan.src_space), " cells, no weights)")
 
 """
-    eagerplan(method, missingpolicy, dst_space, src_space, missingval, sampling)
+    eagerplan(method, missingpolicy, dst_space, src_space, missingval, sampling,
+              locator = TreeLocator())
 
 The eager plan `method` wants. The default is one whole-domain
-[`DirectPlan`](@ref) built through [`wholeblock`](@ref); a method whose apply
-needs no weights returns a plan of its own here instead.
+[`DirectPlan`](@ref) built through [`wholeblock`](@ref) with `locator`; a
+method whose apply needs no weights returns a plan of its own here instead.
 """
 eagerplan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
-    dst_space::RegridSpace, src_space::RegridSpace, missingval, sampling) =
+    dst_space::RegridSpace, src_space::RegridSpace, missingval, sampling,
+    locator::CandidateLocator = TreeLocator()) =
     DirectPlan(method, missingpolicy, dst_space, src_space,
-        wholeblock(method, dst_space, src_space), missingval, sampling)
+        wholeblock(method, dst_space, src_space, locator), missingval, sampling, locator)
 
 eagerplan(method::DirectNearest, missingpolicy::AbstractMissingPolicy,
-    dst_space::RegridSpace, src_space::RegridSpace, missingval, sampling) =
+    dst_space::RegridSpace, src_space::RegridSpace, missingval, sampling,
+    ::CandidateLocator = TreeLocator()) =
     NearestDirectPlan(method, missingpolicy, dst_space, src_space, missingval, sampling)
 
 destinationdims(plan::NearestDirectPlan) = destinationdims(plan.dst_space,
     something(plan.sampling, outputsampling(plan.method)))
 
 # What an unmapped destination, or one whose source value is invalid, becomes.
-_directblank(::Weighted, ::Type{T}) where {T} = _maskedvalue(T)
-_directblank(::Extensive, ::Type{T}) where {T} = convert(T, 0.0)
+_directblank(::Weighted, ::Type{T}, missingval) where {T} =
+    _blankvalue(T, missingval)
+_directblank(::Extensive, ::Type{T}, missingval) where {T} = convert(T, 0.0)
 
-function regrid(data, plan::NearestDirectPlan)
+function regrid(data, plan::NearestDirectPlan; missingval = outputmissingval(data))
     sd, othersizes, src = _flatten(data, plan)
     ndst = Int(ncells(plan.dst_space))
-    out = Array{outputeltype(eltype(data))}(undef, ndst, othersizes...)
-    applyplan!(reshape(out, ndst, prod(othersizes)), plan, src)
-    return wrapoutput(out, data, sd, destinationdims(plan))
+    out = Array{outputeltype(eltype(data), missingval)}(undef, ndst, othersizes...)
+    applyplan!(reshape(out, ndst, prod(othersizes)), plan, src, missingval)
+    return wrapoutput(out, data, sd, destinationdims(plan), missingval)
 end
 
-function regrid!(dest, data, plan::NearestDirectPlan)
+function regrid!(dest, data, plan::NearestDirectPlan;
+    missingval = destinationmissingval(dest))
     _, othersizes, src = _flatten(data, plan)
     ndst = Int(ncells(plan.dst_space))
     dstdims = destinationdims(plan)
@@ -96,21 +101,23 @@ function regrid!(dest, data, plan::NearestDirectPlan)
         throw(DimensionMismatch(
             "destination of size $(size(dest)) cannot hold a regrid of size $shaped"))
     raw = dest isa DD.AbstractDimArray ? parent(dest) : dest
-    applyplan!(reshape(raw, ndst, prod(othersizes)), plan, src)
+    applyplan!(reshape(raw, ndst, prod(othersizes)), plan, src, missingval)
     return dest
 end
 
 """
-    applyplan!(out, plan::NearestDirectPlan, src) -> out
+    applyplan!(out, plan::NearestDirectPlan, src, missingval = _maskedvalue(eltype(out))) -> out
 
 Sample the source directly into `out`, one destination cell at a time. Each
 iteration locates the containing source cell, copies valid values, and writes
-the policy's blank value for unmapped or invalid inputs.
+the policy's blank value — `missingval` under [`Weighted`](@ref) — for unmapped
+or invalid inputs.
 
 Independent destination rows permit threading when multiple threads are
 available.
 """
-function applyplan!(out::AbstractMatrix, plan::NearestDirectPlan, src::AbstractMatrix)
+function applyplan!(out::AbstractMatrix, plan::NearestDirectPlan, src::AbstractMatrix,
+    missingval = _maskedvalue(eltype(out)))
     dst_space, src_space = plan.dst_space, plan.src_space
     ndst = Int(ncells(dst_space))
     size(src, 1) == Int(ncells(src_space)) || throw(DimensionMismatch(
@@ -120,7 +127,7 @@ function applyplan!(out::AbstractMatrix, plan::NearestDirectPlan, src::AbstractM
     size(out, 2) == size(src, 2) || throw(DimensionMismatch(
         "$(size(src, 2)) source slices into $(size(out, 2)) output slices"))
     sites = samplesites(dst_space)
-    blank = _directblank(plan.missingpolicy, eltype(out))
+    blank = _directblank(plan.missingpolicy, eltype(out), missingval)
     mv = plan.missingval
     if Threads.nthreads() > 1 && !OUTER_PARALLEL[]
         Threads.@threads for j in 1:ndst
@@ -174,7 +181,7 @@ function _readdestination!(out::AbstractMatrix,
     plan = A.plan
     src_space, dst_space = plan.src_space, plan.dst_space
     mv = plan.missingval
-    blank = _directblank(plan.missingpolicy, T)
+    blank = _directblank(plan.missingpolicy, T, A.missingval)
     sites = samplesites(dst_space)
     groups = _slicegroups(A, others)
     strides = _slicestrides(others)

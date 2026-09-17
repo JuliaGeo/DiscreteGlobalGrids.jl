@@ -78,7 +78,7 @@ Base.show(io::IO, mc::MapChunk) = print(io, "MapChunk(", mc.index, ", ",
 What a chunk-following sweep will read, in what order — a value, not a running
 traversal.
 
-Build one with [`chunkplan`](@ref) and run it with [`foreachchunk`](@ref). It is
+Build one with [`chunkplan`](@ref DiscreteGlobalGrids.chunkplan) and run it with [`foreachchunk`](@ref). It is
 worth being a value because three separate decisions are made on it:
 
   - **order**: `plan[i]` is the `i`th chunk to visit. Reorder by rebuilding the
@@ -162,9 +162,11 @@ cells outside it its rings reach.
 makes each chunk decode once. An `Integer` fixes a uniform chunk length in cells
 instead, and an in-memory array, having no chunk grid, is one chunk.
 
-`halo = n` carries `n` rings of context, which is what a stencil reaching `n`
-rings needs; `1` is the one-ring default. `spatialdim` and `connectivity` are
-[`mapneighbors`](@ref)'s.
+`halo = n` makes `n` rings of input context available to a chunk callback.
+It does not change the neighborhood passed by [`mapneighbors!`](@ref DiscreteGlobalGrids.mapneighbors!): that
+operation selects neighbors with `neighborhood = Disc(k)` or `Ring(k)`.
+The default plan halo is `1`; a sweep requires at least its selected radius.
+`spatialdim` and `connectivity` follow [`mapneighbors`](@ref).
 
 The second form plans against a cell axis alone, with `bounds` either a chunk
 length or the chunk ranges themselves — the form to reach for when the cube is
@@ -264,7 +266,7 @@ end
     ChunkCube
 
 One chunk of a cube, read: its own cells and its halo, in memory, as an ordinary
-`DimArray` over a [`CellLookup`](@ref).
+`DimArray` over a [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup).
 
 This is what [`foreachchunk`](@ref) hands its callback, and the reason it is
 worth handing over rather than hiding: every verb in this package already works
@@ -304,7 +306,7 @@ end
 """
     chunkcube(cc::ChunkCube) -> AbstractDimArray
 
-The chunk's cells and its halo, in memory, over a [`CellLookup`](@ref).
+The chunk's cells and its halo, in memory, over a [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup).
 """
 chunkcube(cc::ChunkCube) = cc.cube
 
@@ -618,31 +620,37 @@ _restrictknown(k::Engine._SubsetKnown, ::ChunkCube) = k
 # plan. Only in storage order: a permutation names a visit order over the whole
 # axis, and a chunked sweep visits by chunk, so the two cannot both be honoured.
 CellLookups._chunkedvalues(A::DD.AbstractDimArray, dnum::Int, ::StorageOrder,
-    conn::Connectivity) =
+    conn::Connectivity, nb::Neighborhood) =
     DiskArrays.haschunks(parent(A)) isa DiskArrays.Chunked ?
     chunkplan(DD.lookup(A, dnum),
         _chunkbounds(parent(A), dnum, :auto, size(A, dnum));
-        halo=1, connectivity=conn) : nothing
+        halo=_planhalo(nb), connectivity=conn) : nothing
+
+# The rings a plan fetches for a selector. A plan carries at least one ring,
+# so `Disc(0)` over-fetches one rather than teaching the runner a haloless case.
+_planhalo(nb::Neighborhood) = max(1, Engine._steps(nb))
 
 # The results are collected in memory, as `mapneighbors` promises: what the plan
 # saves here is the READ side. `mapneighbors!` is the form that streams the
 # write side too.
 function CellLookups._map_values_chunked(f::F, A, dnum::Int,
-        plan::MapChunkPlan, threaded, conn::Connectivity) where {F}
+        plan::MapChunkPlan, threaded, conn::Connectivity,
+        nb::Neighborhood) where {F}
     cv = region(DD.lookup(A, dnum))
-    cap = Engine._capacity(system(cv), conn)
+    cap = Engine._capacity(cv.grid, nb, conn)
     H = Engine.SubsetIndexedCell{eltype(cv)}
     T = Base.promote_op(f, H, eltype(A), Engine._ringtype(cap, eltype(A)))
     sz = size(A)
     dest = T <: Tuple && isconcretetype(T) ?
            ntuple(j -> Array{fieldtype(T, j)}(undef, sz), fieldcount(T)) :
            Array{T}(undef, sz)
-    mapneighbors!(dest, f, A, plan; threaded=threaded)
+    mapneighbors!(dest, f, A, plan; threaded=threaded, neighborhood=nb)
     return dest
 end
 
 function CellLookups._map_needs_chunked(f::F, A, dnum::Int,
-        plan::MapChunkPlan, needs, threaded, conn::Connectivity) where {F}
+        plan::MapChunkPlan, needs, threaded, conn::Connectivity,
+        nb::Neighborhood) where {F}
     cv = region(DD.lookup(A, dnum))
     # What the caller wrote is checked against the collection they wrote it
     # about, before a chunk is read, so an error names the request as written.
@@ -655,14 +663,14 @@ function CellLookups._map_needs_chunked(f::F, A, dnum::Int,
     # the whole-axis sweep's. They can therefore be derived here, from the
     # whole axis, before any chunk exists.
     rn = Engine._resolveneeds(needs, cv)
-    cap = Engine._capacity(system(cv), conn)
+    cap = Engine._capacity(cv.grid, nb, conn)
     T = Base.promote_op(f, Engine._centertype(rn, cv),
         Engine._ringstype(rn, cv, cap))
     n = length(cv)
     dest = T <: Tuple && isconcretetype(T) ?
            ntuple(j -> Array{fieldtype(T, j)}(undef, n), fieldcount(T)) :
            Array{T}(undef, n)
-    _mapchunks!(needs, dest, f, A, plan, nothing, threaded)
+    _mapchunks!(needs, dest, f, A, plan, nothing, threaded, nb)
     return dest
 end
 
@@ -672,76 +680,83 @@ end
 # down as the visit filter. `mapneighbors!` needs no such filter: it drops the
 # halo rows when it stores.
 function CellLookups._foreach_needs_chunked(f::F, A, dnum::Int,
-        plan::MapChunkPlan, needs, threaded, conn::Connectivity) where {F}
+        plan::MapChunkPlan, needs, threaded, conn::Connectivity,
+        nb::Neighborhood) where {F}
     Engine._checkneeds(needs, region(DD.lookup(A, dnum)))
     foreachchunk(A, plan) do cc
         Engine._foreachneighbors(f, _chunkcv(cc), _chunkneeds(needs, cc),
-            StorageOrder(), threaded, plan.connectivity,
+            StorageOrder(), threaded, plan.connectivity, nb,
             Base.Fix2(in, localindices(cc)))
     end
     return nothing
 end
 
 """
-    mapneighbors!(dest, f, A::AbstractDimArray; halo = 1, chunks = :auto,
-                  spatialdim = nothing, connectivity = Vertex(), threaded = true)
-    mapneighbors!(dest, f, A, plan::MapChunkPlan;
+    mapneighbors!(dest, f, A::AbstractDimArray; neighborhood = Disc(1),
+                  halo = max(1, radius), chunks = :auto, spatialdim = nothing,
+                  connectivity = Vertex(), threaded = true)
+    mapneighbors!(dest, f, A, plan::MapChunkPlan; neighborhood = Disc(1),
                   needs = (Value(a), Centroid()), threaded = true)
 
-Apply `f` to each cell of `A` and its neighbours, chunk by chunk, writing one
-result per cell into `dest`.
+Apply a neighborhood kernel chunk by chunk and write results into `dest`.
+The default callback is `f(cell, value, neighbor_values)`. With `needs`, it
+is `f(center, rings)` and produces one result per cell.
 
-This is [`mapneighbors`](@ref)'s out-of-core form, and the difference is where
-the results go: `mapneighbors` collects them, which needs one array of them in
-memory, and this writes them into `dest` a chunk at a time, which does not.
-`dest` is anything indexable along the cell dimension by a range — an `Array`,
-another cube, or a lazy array being written back to a store.
+`neighborhood` accepts [`Disc`](@ref)`(k)` or [`Ring`](@ref)`(k)`.
+The default halo is `max(1, k)`. A supplied plan must carry at least `k`
+rings; a narrower plan raises `ArgumentError`. A wider halo is allowed.
 
-`f` is called as `f(cell, value, neighbor_values)`, [`Values`](@ref)' form: a
-chunked sweep is exactly the case where the values must flow through the
-traversal rather than be fetched by the callback.
+`dest` must support range writes along the cell dimension and hold the result
+shape. It can be an array, a dimensional cube, or writable stored data.
 
-`needs` names the per-neighbour fields the kernel reads instead, and the
-callback becomes `f(center, rings)` — [`mapneighbors`](@ref)'s field-request
-contract, here on the chunk route. The request is stated once, about the cube
-the caller passed, and translated onto each chunk: `Index(Local())` answers
-that cube's cell-axis index on every chunk, never a chunk-local one, and a
-[`Value`](@ref) over a stored array is read along its own storage chunks the
-way the swept data is. `dest` then holds one result per cell.
+`Index(Local())` names positions on the original cube's cell axis, not positions
+inside a temporary chunk. Results match the whole-axis sweep.
+`threaded` controls work within each chunk.
 
-The result is the whole-axis sweep's, cell for cell, in either form. Each
-chunk's halo carries every axis neighbour of every cell the chunk owns, so a
-ring computed on a chunk is the ring computed on the axis — clipped
-identically, and in the same order.
-
-`threaded` threads WITHIN each chunk. To run chunks themselves in parallel,
-`split` a [`chunkplan`](@ref) and call this on the pieces. Build the plan before
-splitting: doing so is what fills the axis's [`region`](@ref) memo, so the
-pieces share one conversion rather than each repeating it.
+To assign chunks to workers, build one [`chunkplan`](@ref DiscreteGlobalGrids.chunkplan) before splitting it.
+See [Sweeping a cube along its chunk lines](@ref) for ownership and
+[Workflow execution details](@ref) for field translation and routing details.
 """
-function mapneighbors!(dest, f::F, A::DD.AbstractDimArray; halo::Integer=1,
+function mapneighbors!(dest, f::F, A::DD.AbstractDimArray;
+        neighborhood=Disc(1), halo::Union{Integer,Nothing}=nothing,
         chunks=:auto, spatialdim=nothing, needs=nothing,
         connectivity::Connectivity=Vertex(), threaded=true) where {F}
-    plan = chunkplan(A; halo=halo, chunks=chunks, spatialdim=spatialdim,
+    nb = Engine._checkneighborhood(neighborhood)
+    width = halo === nothing ? _planhalo(nb) : halo
+    plan = chunkplan(A; halo=width, chunks=chunks, spatialdim=spatialdim,
         connectivity=connectivity)
     return mapneighbors!(dest, f, A, plan; spatialdim=spatialdim, needs=needs,
-        threaded=threaded)
+        threaded=threaded, neighborhood=nb)
 end
 
 function mapneighbors!(dest, f::F, A::DD.AbstractDimArray, plan::MapChunkPlan;
-        spatialdim=nothing, needs=nothing, threaded=true) where {F}
-    _mapchunks!(needs, dest, f, A, plan, spatialdim, threaded)
+        neighborhood=Disc(1), spatialdim=nothing, needs=nothing,
+        threaded=true) where {F}
+    nb = Engine._checkneighborhood(neighborhood)
+    _checkhalo(plan, nb)
+    _mapchunks!(needs, dest, f, A, plan, spatialdim, threaded, nb)
     return dest
 end
+
+# The clipping contract holds only when every cell the selector reaches from an
+# owned cell is in the chunk, which is what the plan's width promises.
+function _checkhalo(plan::MapChunkPlan, nb::Neighborhood)
+    halowidth(plan) >= Engine._steps(nb) || _narrowhalo(plan, nb)
+    return nothing
+end
+
+@noinline _narrowhalo(plan, nb) = throw(ArgumentError(
+    "the plan's halo carries $(halowidth(plan)) ring(s) and $nb reaches " *
+    "$(Engine._steps(nb)); build it with chunkplan(A; halo = $(Engine._steps(nb)))"))
 
 # No field request: the `Values()` form, untouched — `needs = nothing` reaches
 # it by dispatch, not by a branch.
 function _mapchunks!(::Nothing, dest, f::F, A, plan::MapChunkPlan, spatialdim,
-        threaded) where {F}
+        threaded, nb::Neighborhood) where {F}
     foreachchunk(A, plan; spatialdim=spatialdim) do cc
         cube = chunkcube(cc)
         out = mapneighbors(f, cube; pass=Values(), threaded=threaded,
-            connectivity=plan.connectivity)
+            connectivity=plan.connectivity, neighborhood=nb)
         _storechunk!(dest, out, cc)
     end
     return nothing
@@ -752,12 +767,12 @@ end
 # nothing for the cube's other dimensions to do — and the answer is one result
 # per cell, of which the owned rows are kept.
 function _mapchunks!(needs, dest, f::F, A, plan::MapChunkPlan, spatialdim,
-        threaded) where {F}
+        threaded, nb::Neighborhood) where {F}
     dnum = CellLookups._cells_dimnum(A, spatialdim)
     Engine._checkneeds(needs, region(DD.lookup(A, dnum)))
     foreachchunk(A, plan; spatialdim=spatialdim) do cc
         out = mapneighbors(f, _chunkcv(cc); needs=_chunkneeds(needs, cc),
-            threaded=threaded, connectivity=plan.connectivity)
+            threaded=threaded, connectivity=plan.connectivity, neighborhood=nb)
         _storeneeds!(dest, out, cc)
     end
     return nothing

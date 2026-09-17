@@ -1,7 +1,7 @@
 # Two levels: global 1° tiles, then each tile's raster.
 
 # Complete level grids use global ordinal order.
-const LevelGrid{N} = DGG.HierarchicalLevelGrid{CopernicusDEMSystem{N}}
+const CopernicusDEMLevelGrid{N} = DGG.HierarchicalLevelGrid{CopernicusDEMSystem{N}}
 
 # ===========================================================================
 # System interface
@@ -148,11 +148,10 @@ end
     descendants(CopernicusDEMSystem(...), c, l)
 
 Every level-`l` descendant of `c`, ascending, as a lazy vector over
-[`descendant_range`](@ref).
+[`descendant_range`](@ref DiscreteGlobalGrids.descendant_range).
 
-!!! warning "This diverges from the interface"
-    Unlike the interface default, this returns a read-only `AbstractVector`, not
-    an owned `Vector`. Call `collect` before mutation or passing it to mutating APIs.
+This implementation returns a read-only `AbstractVector` without enumerating
+the descendants. Call `collect` before passing the result to a mutating API.
 """
 function DGG.descendants(sys::CopernicusDEMSystem, c::DGG.LevelIndex, l::Integer)
     r = DGG.descendant_range(sys, c, l)     # validates `l` both ways
@@ -160,7 +159,7 @@ function DGG.descendants(sys::CopernicusDEMSystem, c::DGG.LevelIndex, l::Integer
 end
 
 # Also require the id to match the grid's level.
-@inline function _checked_index(g::LevelGrid, c::DGG.LevelIndex)
+@inline function _checked_index(g::CopernicusDEMLevelGrid, c::DGG.LevelIndex)
     DGG.level(c) == g.level || throw(ArgumentError(
         "cell $c is at level $(DGG.level(c)), not the grid's level $(g.level)"))
     return _checked_index(g.system, c)
@@ -201,6 +200,10 @@ function cell_box(sys::CopernicusDEMSystem{N}, c::DGG.LevelIndex) where {N}
     j_s == N && lat_s == -90 && (south = -90.0)
     return (west, east, south, north)
 end
+
+# Coordinates are geodetic WGS84-G1150 (EPSG:4326) throughout, so the authalic
+# wrapper has nothing to convert and refuses this system.
+DGG.Fallbacks.publishes_geodetic_geometry(::CopernicusDEMSystem) = true
 
 # Shared pole literals avoid longitude-dependent signed zeros.
 const NORTH_POLE = GO.UnitSphericalPoint(0.0, 0.0, 1.0)
@@ -258,7 +261,7 @@ end
 The exact box solid angle, `Δλ · (sin φ_N − sin φ_S)` steradians. This is not the
 published ring's area. Materialise before `sum` when accurate pairwise reduction matters.
 """
-function DGG.cell_area(g::LevelGrid, c::DGG.LevelIndex)
+function DGG.cell_area(g::CopernicusDEMLevelGrid, c::DGG.LevelIndex)
     _checked_index(g, c)
     west, east, south, north = cell_box(g.system, c)
     return deg2rad(east - west) * (sind(north) - sind(south))
@@ -269,7 +272,7 @@ end
 
 The cell's [`cell_box`](@ref), not the bowed ring's extent.
 """
-function DGG.cell_extent(g::LevelGrid, c::DGG.LevelIndex)
+function DGG.cell_extent(g::CopernicusDEMLevelGrid, c::DGG.LevelIndex)
     _checked_index(g, c)
     west, east, south, north = cell_box(g.system, c)
     return DGG.Extents.Extent(X = (west, east), Y = (south, north))
@@ -304,7 +307,7 @@ Boundary ownership is `[west, east) x [south, north)`; an interior raster-row
 boundary belongs to the southern row. At a pole, signed zeros determine the
 longitude and therefore which pole-row tile is returned.
 """
-function DGG.cellat(g::LevelGrid{N}, p::GO.UnitSphericalPoint) where {N}
+function DGG.cellat(g::CopernicusDEMLevelGrid{N}, p::GO.UnitSphericalPoint) where {N}
     sys = g.system
     g.level == 0 || g.level == 1 || throw(ArgumentError(
         "level $(g.level) is outside $(DGG.levels(sys))"))
@@ -404,7 +407,7 @@ SW, S, SE, E, NE, N` for an interior `Vertex()` cell and `N, W, S, E` for
 `Edge()`. A pole ring runs from the eastern lateral over the pole to the
 western.
 """
-function DGG.one_ring(g::LevelGrid, c::DGG.LevelIndex,
+function DGG.one_ring(g::CopernicusDEMLevelGrid, c::DGG.LevelIndex,
         connectivity::DGG.Connectivity)
     sys, level = g.system, g.level
     edge_only = connectivity isa DGG.Edge
@@ -457,7 +460,7 @@ the eastern lateral over the pole to the western. Later rings are ordered by
 azimuth about the cell centre, from the spoke through the 1-ring's first entry;
 `ring(c, k)` is the final block of `neighbors(c, k)`.
 """
-Base.@constprop :aggressive function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
+Base.@constprop :aggressive function DGG.neighbors(g::CopernicusDEMLevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     _checked_index(g, c)
@@ -472,7 +475,7 @@ end
 The cells at adjacency distance exactly `k`, on the same closed-form adjacency and the
 same rotational order [`neighbors`](@ref) documents; `k == 0` is `[c]`.
 """
-Base.@constprop :aggressive function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
+Base.@constprop :aggressive function DGG.ring(g::CopernicusDEMLevelGrid, c::DGG.LevelIndex, k::Integer;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     _checked_index(g, c)
@@ -485,7 +488,7 @@ end
 # type parameter so the declared ring bound folds to a fixed buffer capacity and
 # the shell is built and returned on the stack. See the interface `Val` methods
 # for why this is opt-in rather than generic.
-function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, ::Val{K};
+function DGG.neighbors(g::CopernicusDEMLevelGrid, c::DGG.LevelIndex, ::Val{K};
         connectivity::DGG.Connectivity = DGG.Vertex()) where {K}
     _checked_index(g, c)
     DGG.checked_steps(K)
@@ -494,7 +497,7 @@ function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, ::Val{K};
     return DGG.shell_disc(g, c, Val(K), connectivity)
 end
 
-function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, ::Val{K};
+function DGG.ring(g::CopernicusDEMLevelGrid, c::DGG.LevelIndex, ::Val{K};
         connectivity::DGG.Connectivity = DGG.Vertex()) where {K}
     _checked_index(g, c)
     DGG.checked_steps(K)

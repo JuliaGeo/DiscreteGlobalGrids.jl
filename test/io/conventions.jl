@@ -614,6 +614,76 @@ end
 end
 
 # ---------------------------------------------------------------------------
+# What xdggs itself can open
+# ---------------------------------------------------------------------------
+
+@testset "the xdggs ellipsoid spelling is the one its dataclasses take" begin
+    # xdggs's `parse_ellipsoid` dispatches on `semimajor_axis` or `radius`, and
+    # `Ellipsoid(**mapping)` takes `semimajor_axis`, `inverse_flattening` and
+    # `name` only; the schema-valid `semi_major_axis` is a ValueError there.
+    wgs84 = IO.Ellipsoid(name="WGS84", semi_major_axis=6378137.0,
+        semi_minor_axis=6356752.314245, inverse_flattening=298.257223563)
+    @test IO.xdggs_ellipsoid_attrs(wgs84) == d("name" => "WGS84",
+        "semimajor_axis" => 6378137.0, "inverse_flattening" => 298.257223563)
+    @test IO.xdggs_ellipsoid_attrs(IO.Ellipsoid(radius=6370997.0)) ==
+          d("radius" => 6370997.0)
+    @test IO.xdggs_ellipsoid_attrs(IO.Ellipsoid(name="wgs84")) == "wgs84"
+    @test IO.xdggs_ellipsoid_attrs(IO.Ellipsoid(semi_major_axis=6378137.0)) === nothing
+
+    # Stamped onto a HEALPix coordinate, the xdggs spelling decodes through
+    # the xdggs convention alone as the same axis pair, convention A keeps the
+    # schema-valid spelling in the group, and the merged description is a
+    # fixpoint. The minor axis is dropped from the coordinate on purpose:
+    # xdggs's dataclass has no field for it.
+    source = healpix_a_snapshot(scheme="nested")
+    desc = IO._with(IO.describe_store(source); ellipsoid=wgs84)
+    target = blanked(source)
+    for c in IO.DEFAULT_WRITE_CONVENTIONS
+        IO.encode!(c, target, desc)
+    end
+    coord = IO.getarray(target, "cell_ids").attrs
+    @test coord["ellipsoid"] == IO.xdggs_ellipsoid_attrs(wgs84)
+    @test haskey(target.attrs["dggs"]["ellipsoid"], "semi_major_axis")
+    @test IO.describe_store(target) == desc
+
+    b = IO.XdggsConvention()
+    fromb = IO.decode(b, target, IO.detect(b, target)).ellipsoid
+    @test fromb == IO.Ellipsoid(name="WGS84", semi_major_axis=6378137.0,
+        inverse_flattening=298.257223563)
+end
+
+@testset "require_xdggs_readable names what stops xdggs opening a store" begin
+    dense = IO.describe_store(healpix_a_snapshot())
+    @test IO.require_xdggs_readable(dense) === dense
+    @test IO.require_xdggs_readable(IO.describe_store(pori_dense_snapshot())).gridname == "igeo7"
+
+    refused(d; kw...) = try
+        IO.require_xdggs_readable(d; kw...)
+        nothing
+    catch e
+        e
+    end
+
+    err = refused(IO.describe_store(pori_ranges_snapshot()); store="s")
+    @test err isa IO.DGGSFormatError && err.check === :not_xdggs_readable
+    @test err.declared == "ranges" && err.store == "s"
+    @test occursin("encoding = :dense", sprint(showerror, err))
+
+    # `xdggs.decode` looks for `cell_ids` by name, and a grid info without a
+    # level is a TypeError in its dataclass.
+    err = refused(IO._with(dense; coordinate="zone_ids"))
+    @test err isa IO.DGGSFormatError && err.declared == "zone_ids"
+    @test occursin("cell_ids", sprint(showerror, err))
+    err = refused(IO._with(dense; level=nothing))
+    @test err isa IO.DGGSFormatError && occursin("level", sprint(showerror, err))
+
+    err = refused(IO._with(dense; gridname="s2"))
+    @test err isa IO.DGGSFormatError && err.check === :not_xdggs_readable
+    @test err.declared == "s2" && err.observed == sort!(collect(keys(IO.XDGGS_GRIDS)))
+    @test occursin("xdggs-dggrid4py", sprint(showerror, err))
+end
+
+# ---------------------------------------------------------------------------
 # The stubs
 # ---------------------------------------------------------------------------
 

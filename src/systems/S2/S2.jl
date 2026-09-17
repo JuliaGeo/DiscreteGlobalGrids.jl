@@ -30,8 +30,8 @@ S2 cell is exactly its four-corner spherical quadrilateral:
 | operation | how |
 |---|---|
 | [`cellat`](@ref) | `point_to_xyf`, the chart's analytic inverse — no tree descent, no point-in-polygon |
-| [`cellindex`](@ref) / [`globalindex`](@ref) | the identity, up to the 0-based-id / 1-based-index `± 1` |
-| [`descendant_range`](@ref) | `4^Δ`-wide shift of the scaffold ordinal: subtrees are contiguous, hence `has_sorted_subtrees` |
+| [`cellindex`](@ref) / [`globalindex`](@ref DiscreteGlobalGrids.globalindex) | the identity, up to the 0-based-id / 1-based-index `± 1` |
+| [`descendant_range`](@ref DiscreteGlobalGrids.descendant_range) | `4^Δ`-wide shift of the scaffold ordinal: subtrees are contiguous, hence `has_sorted_subtrees` |
 | [`node_extent`](@ref) | the cell's own four-corner cap, uninflated |
 | [`neighbors`](@ref) / [`ring`](@ref) | the lattice one-ring plus the cube-edge seam table, under both `Vertex()` (8, or 7 in a face corner) and `Edge()` (4) |
 | [`border`](@ref) / [`interior`](@ref) on a subtree | the subtree is an aligned square block, so the border is its perimeter: the shared aperture-4 walk under S2's Hilbert curve, `O(border)` in `O(Δ)` memory |

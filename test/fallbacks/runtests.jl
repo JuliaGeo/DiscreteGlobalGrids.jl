@@ -24,6 +24,8 @@ module TestFallbacks
 using Test
 using DiscreteGlobalGrids
 import DiscreteGlobalGrids as DGG
+# Internal since the export was dropped; the fallback is what this file tests.
+using DiscreteGlobalGrids: cell_polygon
 const FB = DGG.Fallbacks
 const EN = DGG.Engine
 import GeometryOps as GO
@@ -553,7 +555,7 @@ end
 
     # The hot path derives caps twice but retains no batch or boundary buffer.
     cap_enclosure(caps)
-    @test @allocated(cap_enclosure(caps)) == 0
+    @test @allocated(cap_enclosure(caps)) == 0 skip = VERSION < v"1.12"
     @test FB._caps_cap(i -> caps[i], 0).radius > pi
     antipodal = (US.SphericalCap(sph(0.0, 0.0), 0.0),
                  US.SphericalCap(sph(180.0, 0.0), 0.0))
@@ -1053,7 +1055,7 @@ end
     # a single answer: this is the same query with the arcs suppressed.
     target = targets["triangle"]
     prepared = GO.prepare(GO.RelateNG(; manifold=GO.Spherical()), target)
-    plain = EN.GeometryTarget(prepared, target, EN._geometry_cap(prepared, target), nothing)
+    plain = EN.GeometryTarget(prepared, EN._geometry_cap(prepared, target), nothing)
     @test EN._run_query(grid, Intersects(target), plain) == query(grid, Intersects(target))
 
     # The system-level form answers at the requested level.
@@ -1079,6 +1081,72 @@ end
     small = lonlat_ring([sph(10.0, 10.0), sph(20.0, 10.0), sph(20.0, 20.0), sph(10.0, 20.0)])
     @test query(octants, Intersects(small)) == brute_force(octants, small)
     @test length(query(octants, Intersects(small))) == 1
+end
+
+@testset "cellsize: a standalone grid measures an area of interest through its space" begin
+    # The octants share one area, so a regional median equals the global one;
+    # the space route reaches it where the grid route has no hierarchy to sample.
+    octants = OctantGrid()
+    arctic = Extents.Extent(X = (-180.0, 180.0), Y = (75.0, 90.0))
+    @test cellsize(DGG.DGGSpace(octants); over = arctic) == cellsize(octants)
+    @test_throws "belongs to a grid system" cellsize(octants; over = arctic)
+end
+
+@testset "query: CentroidCovered" begin
+    grid = levelgrid(SORTED, 3)
+    # The oracle: the point form of `brute_force`, over every centroid.
+    centroid_oracle(grid, geom) = (prepared = GO.prepare(GO.RelateNG(; manifold=GO.Spherical()), geom);
+        [c for c in all_cells(grid)
+         if GO.relate_predicate(prepared, GO.pred_intersects(), cell_centroid(grid, c))])
+    lonlat(p) = (atand(p[2], p[1]), asind(p[3]))
+
+    # The centroid rule sits strictly between `Within` and `Intersects` on a box
+    # whose edges cross cells: a border cell is kept or dropped by where its
+    # centroid falls, never by its footprint.
+    box = lonlat_ring([sph(10.0, 10.0), sph(40.0, 10.0), sph(40.0, 30.0), sph(10.0, 30.0)])
+    centred = query(grid, CentroidCovered(box))
+    @test issorted(centred)
+    @test centred == centroid_oracle(grid, box)
+    @test query(grid, Within(box)) ⊊ centred ⊊ query(grid, Intersects(box))
+    @test Base.parent(CentroidCovered(box)) === box
+
+    # The rule is boundary-inclusive: a polygon with a cell's centroid as a
+    # vertex keeps that cell, while `Within` cannot.
+    c = LevelIndex(3, 100)
+    p = cell_centroid(grid, c)
+    lon, lat = lonlat(p)
+    through = lonlat_ring([p, sph(lon + 20.0, lat), sph(lon + 20.0, lat + 10.0)])
+    @test c in query(grid, CentroidCovered(through))
+    @test c ∉ query(grid, Within(through))
+    @test query(grid, CentroidCovered(through)) == centroid_oracle(grid, through)
+
+    # A hole around a centroid drops that cell, which still meets the outer ring.
+    inner = first(query(grid, Within(box)))
+    lon, lat = lonlat(cell_centroid(grid, inner))
+    hole = GI.LinearRing([sph(lon - 1.0, lat - 1.0), sph(lon - 1.0, lat + 1.0),
+        sph(lon + 1.0, lat + 1.0), sph(lon + 1.0, lat - 1.0), sph(lon - 1.0, lat - 1.0)])
+    holed = GI.Polygon([GI.getring(box, 1), hole])
+    @test inner ∉ query(grid, CentroidCovered(holed))
+    @test inner in query(grid, Intersects(holed))
+    @test query(grid, CentroidCovered(holed)) == centroid_oracle(grid, holed)
+
+    # A region the grid's centroids never reach selects nothing.
+    far = lonlat_ring([sph(-100.0, -5.0), sph(-99.9, -5.0), sph(-99.9, -4.9)])
+    @test query(grid, CentroidCovered(far)) == centroid_oracle(grid, far)
+
+    # An `Extents.Extent` in lon/lat degrees and a spherical cap are regions too.
+    extent = Extents.Extent(X=(10.0, 40.0), Y=(10.0, 30.0))
+    in_extent(c) = (ll = lonlat(cell_centroid(grid, c));
+        10.0 <= ll[1] <= 40.0 && 10.0 <= ll[2] <= 30.0)
+    @test query(grid, CentroidCovered(extent)) == filter(in_extent, all_cells(grid))
+    cap = US.SphericalCap(sph(20.0, 20.0), deg2rad(10.0))
+    @test query(grid, CentroidCovered(cap)) == [c for c in all_cells(grid)
+        if US.spherical_distance(cell_centroid(grid, c), cap.point) <= cap.radius]
+    @test !isempty(query(grid, CentroidCovered(cap)))
+    @test query(SORTED, CentroidCovered(cap); level=3) == query(grid, CentroidCovered(cap))
+
+    # The region is required.
+    @test_throws ArgumentError query(grid, CentroidCovered())
 end
 
 @testset "query: predicate direction" begin

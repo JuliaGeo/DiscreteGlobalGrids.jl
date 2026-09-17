@@ -19,7 +19,7 @@ using DiscreteGlobalGrids: systems, levels, maxlevel, levelgrid, ncells,
     AuthalicSystem, Vertex, Edge, Connectivity
 
 include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
-using .DGGTestHelpers: syslabel, hassortedsubtrees
+using .DGGTestHelpers: syslabel, hassortedsubtrees, forsystems
 
 # The eager references: `border`/`interior` over a rooted subtree, collected.
 eager_border(sys, c, l; kw...) =
@@ -265,7 +265,8 @@ end
 
     # Authalic wrapping changes geometry but not subtree hierarchy.
     @testset "AuthalicSystem forwards both walks" begin
-        for sys in systems(), base in sweep_bases(sys)
+        # A5 publishes geodetic geometry, so the wrapper refuses it.
+        for sys in forsystems(authalic = true), base in sweep_bases(sys)
             wrapped = AuthalicSystem(sys)
             roots = sweep_roots(sys, base)
             for c in roots, d in 0:2

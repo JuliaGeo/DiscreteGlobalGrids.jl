@@ -12,7 +12,7 @@
     AbstractNeed
 
 One per-neighbour quantity a neighbourhood sweep streams: [`Cell`](@ref),
-[`Index`](@ref DiscreteGlobalGrids.Index), [`Value`](@ref) or
+[`Index`](@ref DiscreteGlobalGrids.Engine.Index), [`Value`](@ref) or
 [`Centroid`](@ref).
 
 A tuple of these is the `needs` keyword of [`mapneighbors`](@ref) and
@@ -28,7 +28,7 @@ abstract type AbstractNeed end
 
 Request each neighbour's cell identity, in the system's canonical id scheme.
 The ring's element type is the collection's own (`eltype(cv)`), and the
-center entry is the visited cell. Use [`Index`](@ref DiscreteGlobalGrids.Index)
+center entry is the visited cell. Use [`Index`](@ref DiscreteGlobalGrids.Engine.Index)
 to ask for the same cell in another scheme.
 """
 struct Cell <: AbstractNeed end
@@ -38,7 +38,7 @@ struct Cell <: AbstractNeed end
 
 The index space of the collection the sweep was called on: `1:length(cv)`,
 the same numbers `localindex` answers with. An argument of
-[`Index`](@ref DiscreteGlobalGrids.Index).
+[`Index`](@ref DiscreteGlobalGrids.Engine.Index).
 """
 struct Local end
 
@@ -47,7 +47,7 @@ struct Local end
 
 The index space of the complete grid at the collection's level: the numbers
 `globalindex` answers with. An argument of
-[`Index`](@ref DiscreteGlobalGrids.Index).
+[`Index`](@ref DiscreteGlobalGrids.Engine.Index).
 """
 struct Global end
 
@@ -294,15 +294,15 @@ _checkneeds(needs, ::CellVector) = _need_tuple(needs)
 # The `needs` half of `mapneighbors`/`foreachneighbors`; the `nothing` half is
 # in neighborhood.jl, and `needs = nothing` reaches it by dispatch.
 function _mapneighbors(f::F, cv::CellVector, needs, order, threaded,
-        connectivity::Connectivity) where {F}
+        connectivity::Connectivity, nb::Neighborhood) where {F}
     # Check what the caller wrote, then resolve it: an error names the request
     # the caller made, not the field it would have become.
     _checkneeds(needs, cv)
     rn = _resolveneeds(needs, cv)
-    cap = _capacity(system(cv), connectivity)
+    cap = _capacity(cv.grid, nb, connectivity)
     T = Base.promote_op(f, _centertype(rn, cv), _ringstype(rn, cv, cap))
     outs = _outputs(T, length(cv))
-    return _mapstore!(f, outs, cv, rn, connectivity, order,
+    return _mapstore!(f, outs, cv, rn, connectivity, nb, order,
         GOCore.booltype(threaded), cap)
 end
 
@@ -310,8 +310,9 @@ end
 # The callback is built once per task rather than once per sweep, so the
 # readers it closes over belong to that task alone.
 function _mapstore!(f::F, outs::O, cv::CellVector, needs::Tuple,
-        conn::Connectivity, order, thr, cap::CAP) where {F,O,CAP}
-    _runeach!(cv, conn, order, thr, cap) do r
+        conn::Connectivity, nb::Neighborhood, order, thr,
+        cap::CAP) where {F,O,CAP}
+    _runeach!(cv, conn, nb, order, thr, cap) do r
         tn = _taskneeds(needs, r)
         (k, c, nbrs) -> _store!(outs, k,
             f(_centers(tn, cv, k, c), _rings(tn, cv, nbrs, cap)))
@@ -331,13 +332,14 @@ struct _EveryCell end
 @inline (::_EveryCell)(::Int) = true
 
 function _foreachneighbors(f::F, cv::CellVector, needs, order, threaded,
-        connectivity::Connectivity, keep::K=_EveryCell()) where {F,K}
+        connectivity::Connectivity, nb::Neighborhood,
+        keep::K=_EveryCell()) where {F,K}
     _checkneeds(needs, cv)
     rn = _resolveneeds(needs, cv)
     # One capacity witness for the whole sweep: the clip, the rings it feeds
     # and the ring type all come from this value.
-    cap = _capacity(system(cv), connectivity)
-    _runeach!(cv, connectivity, order, GOCore.booltype(threaded), cap) do r
+    cap = _capacity(cv.grid, nb, connectivity)
+    _runeach!(cv, connectivity, nb, order, GOCore.booltype(threaded), cap) do r
         tn = _taskneeds(rn, r)
         (k, c, nbrs) -> (keep(k) && f(_centers(tn, cv, k, c),
             _rings(tn, cv, nbrs, cap)); nothing)

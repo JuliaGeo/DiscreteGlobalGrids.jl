@@ -16,11 +16,11 @@ collection.
 
 `==`, `hash` and `convert(::Type{C})` delegate to the cell, so a handle
 compares and hashes as its cell; `show` prints the wrapper and the index
-as well. [`localindex`](@ref)`(h)` returns the stored index.
+as well. [`localindex`](@ref DiscreteGlobalGrids.localindex)`(h)` returns the stored index.
 
 The read-only cell verbs — [`cell_boundary`](@ref), [`cell_centroid`](@ref),
 [`cell_polygon`](@ref), [`cell_area`](@ref), [`cell_extent`](@ref),
-[`node_extent`](@ref), [`localindex`](@ref), [`globalindex`](@ref),
+[`node_extent`](@ref), [`localindex`](@ref DiscreteGlobalGrids.localindex), [`globalindex`](@ref DiscreteGlobalGrids.globalindex),
 [`neighbors`](@ref), [`ring`](@ref), [`neighborcount`](@ref),
 [`reindex`](@ref), [`level`](@ref) and [`rawid`](@ref) — accept a handle
 wherever they accept a cell, and answer for the cell.
@@ -130,6 +130,80 @@ end
 end
 
 # ===========================================================================
+# Neighbourhood selectors
+#
+# A sweep visits every cell with one of the two direct queries: `Disc(k)` hands
+# the callback `neighbors(grid, c, k)`, `Ring(k)` hands it `ring(grid, c, k)`.
+# `K` lives in the type so `_disc_bound`/`maxring` fold to a `Val{M}` ring
+# capacity, exactly as `neighbors(grid, c, Val(k))` does.
+# ===========================================================================
+
+"""
+    Neighborhood
+
+Supertype of the sweep selectors [`Disc`](@ref) and [`Ring`](@ref). A
+[`mapneighbors`](@ref), [`foreachneighbors`](@ref), [`mapneighbors!`](@ref DiscreteGlobalGrids.mapneighbors!)
+or one-argument [`neighbors`](@ref) sweep takes one as its `neighborhood`
+keyword and hands the callback that neighbourhood of each visited cell.
+"""
+abstract type Neighborhood end
+
+"""
+    Disc(k)
+
+Sweep selector: the callback's ring argument is `neighbors(grid, cell, k)`,
+every cell within `k` adjacency steps of the centre, rings concatenated
+outward, clipped to the subset. `Disc(1)` is the default one-ring sweep and
+`Disc(0)` visits every cell with an empty ring. `k` must be non-negative.
+"""
+struct Disc{K} <: Neighborhood end
+
+"""
+    Ring(k)
+
+Sweep selector: the callback's ring argument is `ring(grid, cell, k)`, the
+cells at exactly `k` adjacency steps from the centre, clipped to the subset.
+`k` must be positive: the sweep already hands the centre to the callback
+separately, so `Ring(0)` is refused with a pointer at `Disc(0)` and `Ring(1)`.
+"""
+struct Ring{K} <: Neighborhood end
+
+Disc(k::Integer) = Disc{Fallbacks.checked_steps(k)}()
+function Ring(k::Integer)
+    steps = Fallbacks.checked_steps(k)
+    steps == 0 && throw(ArgumentError(
+        "Ring(0) is the centre alone, and the sweep hands the centre to the " *
+        "callback separately; use Disc(0) for an empty ring or Ring(1) for the one-ring"))
+    return Ring{steps}()
+end
+
+Base.show(io::IO, ::Disc{K}) where {K} = print(io, "Disc(", K, ")")
+Base.show(io::IO, ::Ring{K}) where {K} = print(io, "Ring(", K, ")")
+
+"""
+    _steps(nb::Neighborhood) -> Int
+
+The adjacency radius a selector reaches: `k` for both `Disc(k)` and `Ring(k)`.
+The chunked sweep plans its halo from it, one ring at least.
+"""
+_steps(::Disc{K}) where {K} = K::Int
+_steps(::Ring{K}) where {K} = K::Int
+
+_checkneighborhood(nb::Neighborhood) = nb
+_checkneighborhood(nb) = throw(ArgumentError(
+    "neighborhood must be Disc(k) or Ring(k), got $(typeof(nb))"))
+
+# Which cells one visit asks for. The one-ring keeps the `Integer` spelling,
+# the short-circuit every system specializes, so `Disc(1)` stays the direct
+# one-ring call.
+@inline _cells(grid, c, ::Disc{1}, conn::Connectivity) =
+    neighbors(grid, c, 1; connectivity = conn)
+@inline _cells(grid, c, ::Disc{K}, conn::Connectivity) where {K} =
+    neighbors(grid, c, Val(K); connectivity = conn)
+@inline _cells(grid, c, ::Ring{K}, conn::Connectivity) where {K} =
+    ring(grid, c, Val(K); connectivity = conn)
+
+# ===========================================================================
 # Ring buffer capacity
 #
 # `maxneighbors` is the system's static degree bound. A system that declares
@@ -143,6 +217,17 @@ end
 
 _capacity(sys, conn::Connectivity) =
     static_capacity(maxneighbors(sys, conn), cellindextype(sys))
+
+# Capacity of the selected neighbourhood. `grid` is any `AbstractGrid`;
+# `_disc_bound` recurses on `Val{K}` so the disc bound folds where
+# `maxneighbors(sys, k)`'s loop would not.
+_capacity(grid::AbstractGrid, ::Disc{1}, conn::Connectivity) =
+    _capacity(system(grid), conn)
+_capacity(grid::AbstractGrid, ::Disc{K}, conn::Connectivity) where {K} =
+    static_capacity(Fallbacks._disc_bound(grid, Val(K), conn),
+        cellindextype(system(grid)))
+_capacity(grid::AbstractGrid, ::Ring{K}, conn::Connectivity) where {K} =
+    static_capacity(maxring(grid, K, conn), cellindextype(system(grid)))
 
 _capacity(M, ::Type{T}) where {T} = static_capacity(M, T)
 
@@ -195,33 +280,42 @@ end
 # ===========================================================================
 
 """
-    neighbors(cv::CellVector; connectivity = Vertex())
-    neighbors(pg::PartialGrid; connectivity = Vertex())
+    neighbors(cv::CellVector; connectivity = Vertex(), neighborhood = Disc(1))
+    neighbors(pg::PartialGrid; connectivity = Vertex(), neighborhood = Disc(1))
 
 Iterate a subset in storage order as `(cell, nbrs)`. Both the cell and its
-one-ring, clipped to membership, are [`SubsetIndexedCell`](@ref) handles:
-`nbrs` holds the same cells `neighbors(cv, cell)` answers, in the same order.
+neighbourhood, clipped to membership, are [`SubsetIndexedCell`](@ref)
+handles. `neighborhood` selects that neighbourhood: for the default
+[`Disc`](@ref)`(1)`, `nbrs` holds the same cells `neighbors(cv, cell)`
+answers, in the same order; `Disc(k)` holds `neighbors(cv, cell, k)` and
+[`Ring`](@ref)`(k)` holds `ring(cv, cell, k)`, clipped the same way.
 
 The iterator reuses window lookups across the sweep and allocates nothing
-beyond the system's native one-ring operation. A `PartialGrid` uses its
+beyond the system's native neighbourhood operation. A `PartialGrid` uses its
 `CellVector` representation without changing indices.
 """
-neighbors(cv::CellVector; connectivity::Connectivity = Vertex()) =
-    NeighborhoodIterator(cv, connectivity)
+neighbors(cv::CellVector; connectivity::Connectivity = Vertex(),
+    neighborhood = Disc(1)) =
+    NeighborhoodIterator(cv, connectivity, _checkneighborhood(neighborhood))
 
-neighbors(pg::PartialGrid; connectivity::Connectivity = Vertex()) =
-    NeighborhoodIterator(CellVector(pg), connectivity)
+neighbors(pg::PartialGrid; connectivity::Connectivity = Vertex(),
+    neighborhood = Disc(1)) =
+    NeighborhoodIterator(CellVector(pg), connectivity,
+        _checkneighborhood(neighborhood))
 
 # `CAP` is the ring capacity witness: `Val{M}` for a declared bound, `Nothing`
 # for a system that declares none.
-struct NeighborhoodIterator{CAP,CV<:CellVector,CN<:Connectivity}
+struct NeighborhoodIterator{CAP,CV<:CellVector,CN<:Connectivity,NB<:Neighborhood}
     cv::CV
     connectivity::CN
+    neighborhood::NB
 end
 
-function NeighborhoodIterator(cv::CellVector, conn::Connectivity)
-    cap = _capacity(system(cv), conn)
-    return NeighborhoodIterator{typeof(cap),typeof(cv),typeof(conn)}(cv, conn)
+function NeighborhoodIterator(cv::CellVector, conn::Connectivity,
+        nb::Neighborhood = Disc(1))
+    cap = _capacity(cv.grid, nb, conn)
+    return NeighborhoodIterator{typeof(cap),typeof(cv),typeof(conn),typeof(nb)}(
+        cv, conn, nb)
 end
 
 Base.length(it::NeighborhoodIterator) = length(it.cv)
@@ -229,7 +323,8 @@ Base.IteratorSize(::Type{<:NeighborhoodIterator}) = Base.HasLength()
 Base.IteratorEltype(::Type{<:NeighborhoodIterator}) = Base.EltypeUnknown()
 
 Base.show(io::IO, it::NeighborhoodIterator) =
-    print(io, "neighbors(", it.cv, "; connectivity=", it.connectivity, ")")
+    print(io, "neighbors(", it.cv, "; connectivity=", it.connectivity,
+        ", neighborhood=", it.neighborhood, ")")
 Base.show(io::IO, ::MIME"text/plain", it::NeighborhoodIterator) = show(io, it)
 
 Base.iterate(it::NeighborhoodIterator) = _neighborhood_next(it, 1, 1, 1)
@@ -244,7 +339,7 @@ function _neighborhood_next(it::NeighborhoodIterator{CAP}, k::Int, wj::Int,
     wj = _advance(w, wj, k)
     c = cellindex(cv.grid, _leaf_at(w, wj, k))
     nbrs, hj = _indexed(cv, wj, hj,
-        neighbors(cv.grid, c, 1; connectivity = it.connectivity), CAP())
+        _cells(cv.grid, c, it.neighborhood, it.connectivity), CAP())
     return (SubsetIndexedCell(c, k), nbrs), (k + 1, wj, hj)
 end
 
@@ -265,8 +360,8 @@ Traverse cells in storage order. This is the default for
 struct StorageOrder end
 
 # Call `g(k, cell, nbrs)` in storage order with one cursor for the range.
-function _sweep!(g::G, cv::CellVector, conn::Connectivity, r::UnitRange{Int},
-        cap::CAP) where {G,CAP}
+function _sweep!(g::G, cv::CellVector, conn::Connectivity, nb::Neighborhood,
+        r::UnitRange{Int}, cap::CAP) where {G,CAP}
     isempty(r) && return nothing
     w = cv.windows
     wj = _window_at(w, first(r))
@@ -274,8 +369,7 @@ function _sweep!(g::G, cv::CellVector, conn::Connectivity, r::UnitRange{Int},
     for k in r
         wj = _advance(w, wj, k)
         c = cellindex(cv.grid, _leaf_at(w, wj, k))
-        nbrs, hj = _indexed(cv, wj, hj,
-            neighbors(cv.grid, c, 1; connectivity = conn), cap)
+        nbrs, hj = _indexed(cv, wj, hj, _cells(cv.grid, c, nb, conn), cap)
         g(k, SubsetIndexedCell(c, k), nbrs)
     end
     return nothing
@@ -284,15 +378,14 @@ end
 # Visit the indices selected by `perm`; each visit starts with a fresh window
 # lookup because permutations provide no locality guarantee.
 function _sweep_perm!(g::G, cv::CellVector, conn::Connectivity,
-        perm::AbstractVector{<:Integer}, r::UnitRange{Int},
+        nb::Neighborhood, perm::AbstractVector{<:Integer}, r::UnitRange{Int},
         cap::CAP) where {G,CAP}
     w = cv.windows
     for j in r
         k = Int(@inbounds perm[j])
         wj = _window_at(w, k)
         c = cellindex(cv.grid, _leaf_at(w, wj, k))
-        nbrs, _ = _indexed(cv, wj, wj,
-            neighbors(cv.grid, c, 1; connectivity = conn), cap)
+        nbrs, _ = _indexed(cv, wj, wj, _cells(cv.grid, c, nb, conn), cap)
         g(k, SubsetIndexedCell(c, k), nbrs)
     end
     return nothing
@@ -405,21 +498,23 @@ _foreach_chunk(body!::F, n::Int, ::GOCore.False) where {F} = body!(1:n)
 # buffer no two tasks may share — is built there and captured, so the sweeps
 # below stay unaware of it and a callback with no such state is built once and
 # handed to every range unchanged.
-function _runeach!(mkg::MK, cv::CellVector, conn::Connectivity, ::StorageOrder,
-        thr, cap::CAP) where {MK,CAP}
-    return _foreach_chunk(r -> _sweep!(_reporting(mkg(r), thr), cv, conn, r, cap),
+function _runeach!(mkg::MK, cv::CellVector, conn::Connectivity,
+        nb::Neighborhood, ::StorageOrder, thr, cap::CAP) where {MK,CAP}
+    return _foreach_chunk(
+        r -> _sweep!(_reporting(mkg(r), thr), cv, conn, nb, r, cap),
         length(cv), thr)
 end
 
 function _runeach!(mkg::MK, cv::CellVector, conn::Connectivity,
-        perm::AbstractVector{<:Integer}, thr, cap::CAP) where {MK,CAP}
+        nb::Neighborhood, perm::AbstractVector{<:Integer}, thr,
+        cap::CAP) where {MK,CAP}
     _check_permutation(perm, length(cv))
     return _foreach_chunk(
-        r -> _sweep_perm!(_reporting(mkg(r), thr), cv, conn, perm, r, cap),
+        r -> _sweep_perm!(_reporting(mkg(r), thr), cv, conn, nb, perm, r, cap),
         length(perm), thr)
 end
 
-@noinline _runeach!(mkg, cv::CellVector, conn, order, thr, v) =
+@noinline _runeach!(mkg, cv::CellVector, conn, nb, order, thr, v) =
     throw(ArgumentError(
         "order must be StorageOrder() or a permutation of 1:length(cv), " *
         "got $(typeof(order))"))
@@ -431,8 +526,8 @@ end
 
 @inline (h::_EveryTask)(::UnitRange{Int}) = h.g
 
-_run!(g::G, cv::CellVector, conn, order, thr, cap::CAP) where {G,CAP} =
-    _runeach!(_EveryTask(g), cv, conn, order, thr, cap)
+_run!(g::G, cv::CellVector, conn, nb, order, thr, cap::CAP) where {G,CAP} =
+    _runeach!(_EveryTask(g), cv, conn, nb, order, thr, cap)
 
 # --- output storage ---------------------------------------------------------
 
@@ -489,128 +584,123 @@ _checknodata(needs) = _needs_and_data()
 
 """
     mapneighbors(f, cv; order = StorageOrder(), threaded = true,
-                 connectivity = Vertex())
+                 connectivity = Vertex(), neighborhood = Disc(1))
     mapneighbors(f, cv, data::AbstractVector; ...)
     mapneighbors(f, cv; needs = (Value(data), Centroid()), ...)
 
-Apply `f` to each cell and its clipped one-ring. `cv` may be a
-[`CellVector`](@ref), [`PartialGrid`](@ref), or [`CellLookup`](@ref).
+Apply `f` to each cell and its clipped neighborhood. `cv` accepts a [`CellVector`](@ref),
+[`PartialGrid`](@ref), or [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup).
 
-Without `data`, `f(cell, nbrs)` receives the same indexed handles yielded
-by the one-argument [`neighbors`](@ref) iterator. With a vector laid out
-against the subset, `f(cell, value, values)` receives the cell value and its
-neighbour values in the counter-clockwise order [`neighbors`](@ref) states, so
-slot `j` of the callback's ring names a direction.
+`neighborhood = Disc(k)` selects rings `1:k`; `Ring(k)` selects ring `k`.
+The default is `Disc(1)`. `Disc(0)` gives an empty neighborhood; `Ring(0)` raises
+`ArgumentError`. Clipping removes cells outside the subset and preserves order.
+Disc results contain no ring-boundary markers. Use separate `Ring(j)` sweeps
+when a kernel needs each neighbor's distance.
 
-`needs` names the per-neighbour fields the kernel reads — a tuple of `Cell`,
-`Index`, `Value` and `Centroid` requests — and the callback becomes
-`f(center, rings)`: one entry per need for the visited cell, and one ring per
-need for its clipped neighbours. The rings are field-major, `rings[j]` being
-need `j`'s value for every neighbour, with slot `i` of every ring naming the
-same neighbour; a caller who wants one record per neighbour writes
-`zip(rings...)`. `Index(Local())` is the index in the collection passed here,
-and it stays that index however the sweep is run: [`mapneighbors!`](@ref)
-answers the same request chunk by chunk and translates each chunk's own
-numbering back to this collection's, so its result is this one's cell for
-cell. `Centroid()` is answered from a bounded working set kept per task and
-keyed by the local index, so a centroid several neighbourhoods name is
-computed once wherever the visit order keeps them close in that index — the
-default storage order does,
-and a random permutation `order` does not. A field request and a positional
-`data` vector are exclusive.
+- Without data, `f(cell, neighbors)` receives indexed cell handles.
+- With a same-order vector, `f(cell, value, neighbor_values)` receives values.
+- With `needs`, `f(center, rings)` receives one center entry and one neighbor
+  sequence per requested field. `rings[j][i]` is field `j` for neighbor `i`.
+  A positional data vector cannot be combined with `needs`.
 
-Results are stored in subset index order. A concrete tuple result produces
-a tuple of vectors, one per component. `order` accepts [`StorageOrder`](@ref)
-or a permutation of `1:length(cv)`; invalid permutations throw
-`ArgumentError`.
+Results follow collection index order. A concrete tuple return produces one
+output vector per component. Neighbor order follows [`neighbors`](@ref);
+clipping preserves order but does not preserve missing directional slots.
 
-When `threaded` is true, contiguous ranges run in separate tasks and write to
-disjoint output indices — legal exactly when `f` is order-independent, and
-the results are then identical to the sequential ones. A callback that throws
-there raises one [`NeighborCallbackError`](@ref) naming the cell and index
-it failed at, not one exception per task.
-[`foreachneighbors`](@ref) provides the side-effecting form and defaults to
-sequential execution.
+`order` is [`StorageOrder`](@ref) or a permutation of local positions.
+Invalid permutations raise `ArgumentError`. Threaded callbacks must be
+order-independent. A callback failure raises [`NeighborCallbackError`](@ref)
+with the cell and index. [`foreachneighbors`](@ref) discards return values and
+defaults to serial execution.
+
+See [Requesting neighbour fields](@ref) for field requests and
+[Workflow execution details](@ref) for caching and scheduling contracts.
 """
 function mapneighbors(f::F, cv::CellVector; needs = nothing,
         order = StorageOrder(), threaded = true,
-        connectivity::Connectivity = Vertex()) where {F}
-    return _mapneighbors(f, cv, needs, order, threaded, connectivity)
+        connectivity::Connectivity = Vertex(), neighborhood = Disc(1)) where {F}
+    return _mapneighbors(f, cv, needs, order, threaded, connectivity,
+        _checkneighborhood(neighborhood))
 end
 
 # No field request: the callback receives the indexed handles themselves. The
 # `needs` method is in needs.jl; `nothing` reaches this one by dispatch.
 function _mapneighbors(f::F, cv::CellVector, ::Nothing, order, threaded,
-        connectivity::Connectivity) where {F}
-    cap = _capacity(system(cv), connectivity)
+        connectivity::Connectivity, nb::Neighborhood) where {F}
+    cap = _capacity(cv.grid, nb, connectivity)
     H = SubsetIndexedCell{eltype(cv)}
     T = Base.promote_op(f, H, _ringtype(cap, H))
     outs = _outputs(T, length(cv))
-    return _mapstore!(f, outs, cv, connectivity, order, GOCore.booltype(threaded),
-        cap)
+    return _mapstore!(f, outs, cv, connectivity, nb, order,
+        GOCore.booltype(threaded), cap)
 end
 
 function mapneighbors(f::F, cv::CellVector, data::AbstractVector;
         needs = nothing, order = StorageOrder(), threaded = true,
-        connectivity::Connectivity = Vertex()) where {F}
+        connectivity::Connectivity = Vertex(), neighborhood = Disc(1)) where {F}
     _checknodata(needs)
     _check_data(data, length(cv))
-    cap = _capacity(system(cv), connectivity)
+    nb = _checkneighborhood(neighborhood)
+    cap = _capacity(cv.grid, nb, connectivity)
     H = SubsetIndexedCell{eltype(cv)}
     T = Base.promote_op(f, H, eltype(data), _ringtype(cap, eltype(data)))
     outs = _outputs(T, length(cv))
-    return _mapstore!(f, outs, cv, data, connectivity, order,
+    return _mapstore!(f, outs, cv, data, connectivity, nb, order,
         GOCore.booltype(threaded), cap)
 end
 
 # Build the store closure after the output container type is known.
-function _mapstore!(f::F, outs::O, cv::CellVector, conn::Connectivity, order,
-        thr, cap::CAP) where {F,O,CAP}
-    _run!((k, c, nbrs) -> _store!(outs, k, f(c, nbrs)), cv, conn, order, thr,
-        cap)
+function _mapstore!(f::F, outs::O, cv::CellVector, conn::Connectivity,
+        nb::Neighborhood, order, thr, cap::CAP) where {F,O,CAP}
+    _run!((k, c, nbrs) -> _store!(outs, k, f(c, nbrs)), cv, conn, nb, order,
+        thr, cap)
     return outs
 end
 
 function _mapstore!(f::F, outs::O, cv::CellVector, data::AbstractVector,
-        conn::Connectivity, order, thr, cap::CAP) where {F,O,CAP}
+        conn::Connectivity, nb::Neighborhood, order, thr,
+        cap::CAP) where {F,O,CAP}
     _run!((k, c, nbrs) -> _store!(outs, k,
             f(c, (@inbounds data[k]), _gather(data, nbrs))),
-        cv, conn, order, thr, cap)
+        cv, conn, nb, order, thr, cap)
     return outs
 end
 
 """
     foreachneighbors(f, cv; order = StorageOrder(), threaded = false,
-                     connectivity = Vertex())
+                     connectivity = Vertex(), neighborhood = Disc(1))
     foreachneighbors(f, cv, data::AbstractVector; ...)
     foreachneighbors(f, cv; needs = (Value(data), Centroid()), ...)
 
-Call `f` for each cell and clipped one-ring, discarding its return value. The
-calling forms, `needs` contract and `order` contract match
+Call `f` for each cell and its clipped neighbourhood, `Disc(1)` unless
+`neighborhood` says otherwise, discarding its return value. The calling
+forms, `neighborhood`, `needs` and `order` contracts match
 [`mapneighbors`](@ref). Threading is disabled by default; enabling it requires
 `f` to be order-independent.
 """
 function foreachneighbors(f::F, cv::CellVector; needs = nothing,
         order = StorageOrder(), threaded = false,
-        connectivity::Connectivity = Vertex()) where {F}
-    return _foreachneighbors(f, cv, needs, order, threaded, connectivity)
+        connectivity::Connectivity = Vertex(), neighborhood = Disc(1)) where {F}
+    return _foreachneighbors(f, cv, needs, order, threaded, connectivity,
+        _checkneighborhood(neighborhood))
 end
 
 function _foreachneighbors(f::F, cv::CellVector, ::Nothing, order, threaded,
-        connectivity::Connectivity) where {F}
-    _run!((k, c, nbrs) -> (f(c, nbrs); nothing), cv, connectivity, order,
-        GOCore.booltype(threaded), _capacity(system(cv), connectivity))
+        connectivity::Connectivity, nb::Neighborhood) where {F}
+    _run!((k, c, nbrs) -> (f(c, nbrs); nothing), cv, connectivity, nb, order,
+        GOCore.booltype(threaded), _capacity(cv.grid, nb, connectivity))
     return nothing
 end
 
 function foreachneighbors(f::F, cv::CellVector, data::AbstractVector;
         needs = nothing, order = StorageOrder(), threaded = false,
-        connectivity::Connectivity = Vertex()) where {F}
+        connectivity::Connectivity = Vertex(), neighborhood = Disc(1)) where {F}
     _checknodata(needs)
     _check_data(data, length(cv))
+    nb = _checkneighborhood(neighborhood)
     _run!((k, c, nbrs) -> (f(c, (@inbounds data[k]), _gather(data, nbrs)); nothing),
-        cv, connectivity, order, GOCore.booltype(threaded),
-        _capacity(system(cv), connectivity))
+        cv, connectivity, nb, order, GOCore.booltype(threaded),
+        _capacity(cv.grid, nb, connectivity))
     return nothing
 end
 

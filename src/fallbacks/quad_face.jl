@@ -73,6 +73,10 @@ end
 cellindextype(::AbstractQuadFaceGridSystem) = LevelIndex
 has_sorted_subtrees(::AbstractQuadFaceGridSystem) = true
 
+# Four children on the parent's own lattice block: they tile it, and
+# `descendant_range` says the same thing about the ids.
+has_congruent_refinement(::AbstractQuadFaceGridSystem) = true
+
 # The family contract obliges every subtype to supply `cellat` on its own
 # level grid, so the declaration belongs to the family rather than to each.
 has_direct_location(::AbstractQuadFaceGridSystem) = true
@@ -163,7 +167,7 @@ end
     descendants(sys::AbstractQuadFaceGridSystem, c, l)
 
 Every level-`l` descendant of `c`, ascending: the dense, subtree-contiguous
-[`descendant_range`](@ref) read off as consecutive ids, with no `children`
+[`descendant_range`](@ref DiscreteGlobalGrids.descendant_range) read off as consecutive ids, with no `children`
 recursion and no sort.
 """
 function descendants(sys::AbstractQuadFaceGridSystem, c::LevelIndex, l::Integer)
@@ -234,6 +238,22 @@ end
 # Chart-independent geometry
 # ===========================================================================
 
+# Sample `k` (0-based, of `4nseg`) of the perimeter walk `(x+,y+) → (x-,y+) →
+# (x-,y-) → (x+,y-)`; shared so boundary and cap samples are bit-identical.
+@inline function _perimeter_uv(x0::Int64, y0::Int64, n::Integer, nseg::Integer, k::Integer)
+    e, i = divrem(k, nseg)
+    t = i / nseg
+    if e == 0
+        return ((x0 + 1 - t) / n, (y0 + 1) / n)     # along y = (iy+1)/n
+    elseif e == 1
+        return (x0 / n, (y0 + 1 - t) / n)           # along x = ix/n
+    elseif e == 2
+        return ((x0 + t) / n, y0 / n)               # along y = iy/n
+    else
+        return ((x0 + 1) / n, (y0 + t) / n)         # along x = (ix+1)/n
+    end
+end
+
 """
     chart_perimeter(chart, ix, iy, face, nside, nseg) -> Vector{UnitSphericalPoint}
 
@@ -247,53 +267,74 @@ points, never its end vertex, so the next edge's start is not duplicated.
 """
 function chart_perimeter(chart, ix::Integer, iy::Integer, face::Integer,
         nside::Integer, nseg::Integer)
-    n = nside
     x0 = Int64(ix)
     y0 = Int64(iy)
     pts = Vector{USPoint}(undef, 4 * nseg)
-    k = 0
-    for i in 0:(nseg - 1)          # (x+,y+) -> (x-,y+), along y = (iy+1)/n
-        t = i / nseg
-        pts[k += 1] = chart((x0 + 1 - t) / n, (y0 + 1) / n, face)
-    end
-    for i in 0:(nseg - 1)          # (x-,y+) -> (x-,y-), along x = ix/n
-        t = i / nseg
-        pts[k += 1] = chart(x0 / n, (y0 + 1 - t) / n, face)
-    end
-    for i in 0:(nseg - 1)          # (x-,y-) -> (x+,y-), along y = iy/n
-        t = i / nseg
-        pts[k += 1] = chart((x0 + t) / n, y0 / n, face)
-    end
-    for i in 0:(nseg - 1)          # (x+,y-) -> (x+,y+), along x = (ix+1)/n
-        t = i / nseg
-        pts[k += 1] = chart((x0 + 1) / n, (y0 + t) / n, face)
+    for k in 0:(4 * nseg - 1)
+        u, v = _perimeter_uv(x0, y0, nside, nseg, k)
+        pts[k + 1] = chart(u, v, face)
     end
     return pts
 end
 
 """
-    sampled_cap(center, pts) -> SphericalCap
+    sampled_cap(center, chart, ix, iy, face, nside, nseg) -> SphericalCap
 
-A cap about `center` covering the region whose perimeter `pts` samples: the
-sampled maximum radius, plus half the largest gap between consecutive samples,
-plus one outward ULP.
+A cap about `center` covering the region the [`chart_perimeter`](@ref) samples
+trace.
 
-For a chart-square cell this bounds the whole subtree, since children tile the
-parent's square exactly and the distance from the centre is maximised on the
-perimeter — in fact at a corner, and every corner is a sample. `gap/2` is
-conservative measured slack rather than a formal Lipschitz bound, because `gap`
-is a geodesic chord rather than chart-edge arc length.
+- Radius: the sampled maximum, plus half the largest gap between consecutive
+  samples, plus one outward ULP; samples stream through running maxima, so no
+  vector is built.
+- Bounds the whole subtree of a chart-square cell: children tile the parent's
+  square and the centre's distance peaks at a corner, which is always a sample.
+- `gap/2` is measured slack, not a Lipschitz bound: `gap` is a geodesic chord,
+  not chart-edge arc length.
 """
-function sampled_cap(center, pts)
-    rmax = 0.0
+function sampled_cap(center, chart, ix::Integer, iy::Integer, face::Integer,
+        nside::Integer, nseg::Integer)
+    x0 = Int64(ix)
+    y0 = Int64(iy)
+    u, v = _perimeter_uv(x0, y0, nside, nseg, 0)
+    first = chart(u, v, face)
+    rmax = US.spherical_distance(center, first)
     gap = 0.0
-    prev = pts[end]
-    for p in pts
+    prev = first
+    for k in 1:(4 * nseg - 1)
+        u, v = _perimeter_uv(x0, y0, nside, nseg, k)
+        p = chart(u, v, face)
         rmax = max(rmax, US.spherical_distance(center, p))
         gap = max(gap, US.spherical_distance(prev, p))
         prev = p
     end
-    radius = min(Float64(π), rmax + gap / 2)
+    gap = max(gap, US.spherical_distance(prev, first))
+    return SphericalCap(center, nextfloat(min(Float64(π), rmax + gap / 2)))
+end
+
+"""
+    corner_cap(center, chart, ix, iy, face, nside, margin) -> SphericalCap
+
+A cap about `center` from the four chart corners.
+
+- Radius: the farthest corner's angle times `1 + margin`, plus one outward ULP;
+  past `π/2` the full sphere, since a vertex bound then stops containing the
+  arcs between vertices.
+- Sound when the centre's distance over the cell peaks at a corner; the calling
+  system owns that argument and its `margin`.
+- Children tile the parent's square, so the cap bounds the whole subtree, as
+  [`sampled_cap`](@ref) does.
+"""
+function corner_cap(center, chart, ix::Integer, iy::Integer, face::Integer,
+        nside::Integer, margin::Float64)
+    x0 = Int64(ix)
+    y0 = Int64(iy)
+    rmax = 0.0
+    for k in 0:3
+        u, v = _perimeter_uv(x0, y0, nside, 1, k)
+        rmax = max(rmax, US.spherical_distance(center, chart(u, v, face)))
+    end
+    radius = rmax * (1 + margin)
+    radius > Float64(π) / 2 && return full_sphere_cap()
     return SphericalCap(center, nextfloat(radius))
 end
 

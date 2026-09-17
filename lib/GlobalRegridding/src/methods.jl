@@ -42,10 +42,9 @@ refinementinvariant(::Conservative) = true
 
 Give weight 1 to the source cell containing each destination centroid.
 
-Requires [`cellcentroid`](@ref) for the destination and [`cellat`](@ref) for the
-source. A centroid outside source coverage emits an empty row for the missing
-policy to resolve. Use [`Conservative`](@ref) when integral preservation is
-required.
+Requires `cellcentroid` for the destination and [`cellat`](@ref) for the source.
+A centroid outside source coverage emits an empty row for the missing policy to
+resolve. Use [`Conservative`](@ref) when integral preservation is required.
 """
 struct NearestCell <: AbstractRegriddingMethod end
 
@@ -61,8 +60,8 @@ selects tensor Q1 coordinates on quadrilaterals and mean-value coordinates on
 convex polygons; the triangular case gives barycentric coordinates. The
 nonnegative, unit-sum weights keep results within the source-value range.
 
-The method requires [`cellcentroid`](@ref) for the destination and point queries
-on the source. Sites outside the source dual complex emit an empty row.
+The method requires `cellcentroid` for the destination and point queries on the
+source. Sites outside the source dual complex emit an empty row.
 
 `poles` handles sources whose sample rows end before a pole:
 
@@ -253,7 +252,7 @@ Return whether `status` says the row carries a stencil.
 @inline ismapped(status::WeightStatus) = status === WeightsMapped
 
 """
-    buildweights!(coo, method, dst_space, dst_inds, src_space, src_inds)
+    buildweights!(coo, method, dst_space, dst_inds, src_space, src_inds, locator = TreeLocator())
 
 Append chunk-local weights for `dst_inds` and `src_inds`, then return `coo`.
 
@@ -262,6 +261,10 @@ Builder requirements:
   - Emit weights only for cells in `src_inds`; geometry inspection may extend
     beyond that set.
   - Keep weights independent of field data and execution order.
+
+`locator` is the plan's [`CandidateLocator`](@ref). A method that discovers
+candidate cells takes it; a method that does not may define the six-argument
+form alone, which the locator form falls back to.
 
 This required method hook is also the generic fallback for [`pairblock`](@ref).
 Wrapper methods must forward `pairblock` and, for point methods,
@@ -273,6 +276,11 @@ function buildweights!(coo::WeightCOO, method::AbstractRegriddingMethod,
         "buildweights! is not implemented for $(typeof(method)) from " *
         "$(typeof(src_space)) to $(typeof(dst_space))"))
 end
+
+buildweights!(coo::WeightCOO, method::AbstractRegriddingMethod,
+    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds,
+    ::CandidateLocator) =
+    buildweights!(coo, method, dst_space, dst_inds, src_space, src_inds)
 
 """
     supportradius(method, src_space::RegridSpace) -> Float64

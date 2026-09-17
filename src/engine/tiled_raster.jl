@@ -77,16 +77,31 @@ Children of a packed tile node. The tiles are sorted by the Morton key of their
 cap centres and split into this many near-equal blocks per level, down to one
 tile per node, which is where the per-tile quadtree begins.
 
-  - Four is [`IndexTree`](@ref)'s arity, the other packed tree here.
   - The alternative, a flat root holding every tile, tests every tile on every
     query, and falls further behind as the holding grows.
 """
 const RASTER_TILE_ARITY = 4
 
+# A Morton key on the cap centre's lon/lat, 16 bits per axis. Only the ordering
+# matters: contiguous runs of the sorted keys are spatially local, which is what
+# makes a block-split tree prune at all on a holding whose own order is
+# arbitrary.
+function _morton_key(p)
+    lon, lat = lonlat(p)
+    x = UInt64(clamp(floor(Int, (lon + 180.0) / 360.0 * 65535), 0, 65535))
+    y = UInt64(clamp(floor(Int, (lat + 90.0) / 180.0 * 65535), 0, 65535))
+    key = UInt64(0)
+    for b in 0:15
+        key |= ((x >> b) & 0x1) << (2b)
+        key |= ((y >> b) & 0x1) << (2b + 1)
+    end
+    return key
+end
+
 """
     RasterTileTree(grid, inds; arity = RASTER_TILE_ARITY)
 
-The tile layer of the tree [`treeify`](@ref) builds for a grid that answers
+The tile layer of the tree [`treeify`](@ref ConservativeRegridding.Trees.treeify) builds for a grid that answers
 [`raster_tiles`](@ref): the tiles covering grid indices `inds`, sorted by the
 Morton key of their cap centres, with a cap and a pixel count stored per node.
 
@@ -134,7 +149,7 @@ function RasterTileTree(grid::AbstractGrid, inds::AbstractUnitRange{<:Integer};
     return tree
 end
 
-# Depth-first recursion records children by node index, as `IndexTree` does.
+# Depth-first recursion records children by node index.
 function _build_tile_node!(tree::RasterTileTree, lo::Int, hi::Int, arity::Int)
     index = length(tree.node_lo) + 1
     push!(tree.node_lo, lo)

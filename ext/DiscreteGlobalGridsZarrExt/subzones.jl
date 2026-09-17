@@ -36,7 +36,7 @@ import Zarr
 An open ancestor-subzone store: the Zarr group, the [`SubzoneLayout`](@ref) its
 attributes declare, and the data arrays by name.
 
-Handed back by [`subzonestore`](@ref) and filled by [`dggwrite!`](@ref). It owns
+Handed back by [`subzonestore`](@ref) and filled by [`dggwrite!`](@ref DiscreteGlobalGrids.dggwrite!). It owns
 no buffer and holds no lock: a column is a chunk is a file, so two tasks writing
 two columns share nothing, and the handle may be used from all of them.
 """
@@ -66,14 +66,14 @@ Create an ancestor-subzone store, or reopen one for writing.
 The store is a Zarr v2 group of `(ancestor, subzone)` arrays — `(capacity,
 ncolumns)` in Julia's own order, chunked `(capacity, 1)`, so one chunk is one
 level-`ancestor_level` subtree. Nothing is written into them here: the columns
-are filled afterwards by [`dggwrite!`](@ref), in any order and from any number
+are filled afterwards by [`dggwrite!`](@ref DiscreteGlobalGrids.dggwrite!), in any order and from any number
 of tasks, and a column nobody writes stays a chunk that was never stored and
 reads back as `fill_value`.
 
   - `layers` names the data variables and their element types: `"elevation" =>
     Float32`, an iterable of such pairs, or a `NamedTuple`/`Dict` of them.
   - `capacity` is the row extent, which defaults to the measured longest subtree
-    ([`subzone_capacity`](@ref)). Pass it where it is known — one pass over a
+    ([`subzone_capacity`](@ref DiscreteGlobalGrids.subzone_capacity)). Pass it where it is known — one pass over a
     level-6 ancestor grid is 1.2 million `descendant_range` calls.
   - `fill_value` is what an unwritten cell reads back as, `NaN` by default,
     which needs a floating-point layer; a layer of another element type has to
@@ -283,7 +283,7 @@ _spell(::Nothing) = nothing
     dggwrite!(store, ancestor, values; var = the store's only layer) -> store
     dggwrite!(store, cube) -> store
 
-Fill columns of an open [`SubzoneStore`](@ref).
+Fill columns of an open `SubzoneStore`.
 
 The first form writes ONE column: `ancestor` is a level-`ancestor_level` cell —
 or its column index — and `values` is its subtree in ascending cell id, exactly
@@ -414,7 +414,7 @@ end
 the cube's own system and level imply, and fill every column it covers.
 
 The layers and their element types come from the cube, so this is
-[`subzonestore`](@ref) followed by [`dggwrite!`](@ref) and nothing else — the
+[`subzonestore`](@ref) followed by [`dggwrite!`](@ref DiscreteGlobalGrids.dggwrite!) and nothing else — the
 incremental path is not a second implementation of the one-shot path, it IS the
 one-shot path.
 """
@@ -510,7 +510,7 @@ subtrees with the pentagon padding dropped. A read inside one column is one
 chunk read; a read spanning columns is one per column, in order. Nothing is
 cached.
 
-Read-only: a store is written through [`dggwrite!`](@ref), which writes whole
+Read-only: a store is written through [`dggwrite!`](@ref DiscreteGlobalGrids.dggwrite!), which writes whole
 columns and can therefore keep the padding rule.
 """
 struct SubzoneCellArray{T,L<:SubzoneLayout,I,Z} <: DiskArrays.AbstractDiskArray{T,1}
@@ -570,8 +570,8 @@ end
     assemble(group, snapshot, identifier, vars, lazy, ancestors) -> DimStack
 
 `dggread` on an ancestor-subzone store: one `Cells` dimension carrying the
-[`CellLookup`](@ref) the written columns spell, and one lazy
-[`SubzoneCellArray`](@ref) per layer over it.
+[`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup) the written columns spell, and one lazy
+`SubzoneCellArray` per layer over it.
 
 `ancestors` is `nothing` for the whole store — every column of the level, with
 the ones nobody wrote reading back as fill — or the ancestor cells (or column

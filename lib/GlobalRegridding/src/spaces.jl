@@ -208,6 +208,40 @@ building the polygon.
 function cellcentroid end
 
 """
+    hasanalyticlocation(space::RegridSpace) -> Bool
+
+Whether `space` answers both [`cellat`](@ref) and [`cellneighbors`](@ref), so
+an [`AnalyticLocator`](@ref) can walk it. Defaults to `false`.
+"""
+hasanalyticlocation(::RegridSpace) = false
+
+"""
+    cellneighbors(space::RegridSpace, i::Int)
+
+The local indices of the cells sharing at least a vertex with cell `i`, as an
+iterable collection. Required when [`hasanalyticlocation`](@ref) is `true`.
+"""
+function cellneighbors end
+
+"""
+    cellcap(space::RegridSpace, i::Int) -> SphericalCap
+
+A spherical cap bounding cell `i`. The fallback unions the polygon's vertices
+with a small margin; a space with a closed-form cap should specialize it.
+"""
+cellcap(space::RegridSpace, i::Int) = _packedcellcap(space, i)
+
+"""
+    cellcorners(space::RegridSpace, i::Int)
+
+The corner vertices of cell `i` as unit-sphere points, without the closing
+repeat and without any densification vertices. The fallback reads every
+exterior vertex of [`getcell`](@ref), which is correct and slow; a space whose
+polygons are densified should return its true corners.
+"""
+cellcorners(space::RegridSpace, i::Int) = _ringpoints(getcell(space, i))
+
+"""
     hascellchart(space::RegridSpace) -> Bool
 
 Return whether cells have a structured chart suitable for interpolation.
@@ -333,10 +367,13 @@ checksource(::Any, ::Any, ::RegridSpace) = nothing
     _asspace(space, name) -> RegridSpace
     _asspace(space, name, src_space) -> RegridSpace
 
-Resolve a `to` or `from` target into a [`RegridSpace`](@ref). Packages extend
-the two-argument form for target spellings and the three-argument form for
-destinations that depend on the resolved source. `name` identifies the keyword
-in errors.
+Resolve a `to` or `from` argument into a [`RegridSpace`](@ref). A space stands
+for itself, and a dimensional raster or a tuple of dimensions names the
+[`RasterGrid`](@ref) over its lattice — a dimension that already names cells
+([`dimsource`](@ref)) is refused rather than read as one. Packages that supply
+spaces extend the two-argument form for their own target spellings, and the
+three-argument form when the destination depends on the resolved source space.
+`name` names the keyword in error messages.
 """
 function _asspace end
 

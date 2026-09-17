@@ -56,7 +56,7 @@ Helpers.AuthalicTransform(m::GOCore.Manifold) = Helpers.AuthalicTransform{Float6
     authalic_sphere(x) -> GeometryOpsCore.Spherical
 
 Return the spherical compute manifold whose cell areas equal the corresponding
-ellipsoidal areas. `x` may be a [`GeometryOpsCore.Manifold`](@ref) or
+ellipsoidal areas. `x` may be a `GeometryOpsCore.Manifold` or
 [`Helpers.AuthalicTransform`](@ref).
 
 A `Geodesic` resolves to `Spherical(; radius=R_A)`. A `Spherical` is returned
@@ -68,7 +68,7 @@ unchanged.
     bare `Spherical()` for this result.
 
 `Planar` and `AutoManifold` throw, for the reason given in
-[`AuthalicTransform`](@ref).
+[`AuthalicTransform`](@ref DiscreteGlobalGrids.Helpers.AuthalicTransform).
 """
 function authalic_sphere end
 

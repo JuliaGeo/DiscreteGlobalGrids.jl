@@ -10,6 +10,7 @@ const EN = DGG.Engine
 import GeoInterface as GI
 import GeometryOps as GO
 import DimensionalData as DD
+import Extents
 
 include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
 using .DGGTestHelpers: syslabel, isquadface, sweepcovers
@@ -50,28 +51,33 @@ const CALIFORNIA = GI.MultiPolygon([topolygon(p) for p in PARTS])
 const BLOCK = GI.Polygon([GI.LinearRing([(-122.42, 37.77), (-122.40, 37.77),
     (-122.40, 37.79), (-122.42, 37.79), (-122.42, 37.77)])])
 
-# Two polar caps whose union is 66% of the sphere. Every root cell of every
-# system meets it, so its SEED is the whole top level and a small budget cannot
-# refine any of it — the documented over-budget return.
+# Two polar caps whose union is 66% of the sphere: every root cell meets it,
+# so the SEED is the whole top level — the documented over-budget return.
 parallel_ring(lat) = GI.Polygon([GI.LinearRing([(lon, lat) for lon in 0.0:5.0:360.0])])
 const WIDE = GI.MultiPolygon([parallel_ring(20.0), parallel_ring(-20.0)])
 
-# Somewhere no cell of anything meets: a degenerate target is not swept here,
-# but an empty answer has to stay a well-formed set, so one is built below.
+# Twenty-one specks, each its own lineage under its own root cell. A small
+# budget strands most of them pending, making the end phase the easiest place
+# to overrun the budget.
+speck(x0, y0) = GI.Polygon([GI.LinearRing([(x0, y0), (x0 + 0.05, y0),
+    (x0 + 0.05, y0 + 0.05), (x0, y0 + 0.05), (x0, y0)])])
+const SPECKS = GI.MultiPolygon([speck(-150.0 + 30.0 * ((k - 1) % 11),
+    -60.0 + 20.0 * ((k - 1) ÷ 11)) for k in 1:21])
+
+# An empty answer has to stay a well-formed set; one is built directly below.
 
 # ---------------------------------------------------------------------------
 # Systems
 #
-# CONGRUENCE — whether a cell's children exactly tile it — decides which arm two
-# of the laws take, and it is `isquadface`: the quad-face family are aperture-4
-# quadtrees on a chart and four children tile their parent; IGEO7 and H3 are
-# aperture 7 and their seven children are a rotated rosette with the parent's
-# area and not its footprint; A5's four Hilbert children do not even stay
-# inside it.
+# CONGRUENCE — whether a cell's children exactly tile it — decides which arm
+# two of the laws take, and it is `isquadface`: the quad-face family's four
+# children tile their parent; IGEO7 and H3's seven children are a rotated
+# rosette with the parent's area, not its footprint; A5's four Hilbert
+# children do not even stay inside it.
 #
-# The second column is the level the equivalence law sweeps up to. It is
-# per-system because the apertures differ and the set sizes have to stay small
-# enough to run the accuracy mode repeatedly.
+# The second column, the level the equivalence law sweeps to, is per-system:
+# apertures differ and the accuracy mode runs repeatedly, so the set sizes
+# have to stay small.
 # ---------------------------------------------------------------------------
 
 const SWEEP = [
@@ -84,8 +90,7 @@ const SWEEP = [
     (DGG.AuthalicSystem(DGG.IGeo7System()), 5),
 ]
 
-# The budgets the sampled laws run at, and the wider ladder the counting laws
-# use. 10 and 100 are the owner's own two numbers.
+# The budgets the sampled laws run at, and the wider ladder the counting laws use.
 const BUDGETS = (10, 40, 100)
 const LADDER = (1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377)
 
@@ -94,6 +99,27 @@ const UNION_BOUND = Dict("IGeo7System" => 0.02, "Authalic(IGeo7System)" => 0.03,
     "H3System" => 0.15, "A5System" => 0.30)
 const LEAF_BOUND = Dict("IGeo7System" => 0.01, "Authalic(IGeo7System)" => 0.02,
     "H3System" => 0.02, "A5System" => 0.18)
+
+# Annulus-tile bounds, in units of the tile's own area: the whole set and its
+# largest single member, measured by the testset at the bottom of this file.
+# A held claim slot is a member left unrefined, which is most of the excess
+# at a budget of ten.
+const EXCESS_BOUND = 3.5        # measured 3.06
+const MEMBER_BOUND = 1.5        # measured 1.32
+
+# The level a budget of ONE reaches on the city block below: where the chain of
+# single crossing cells first splits. A floor, so an answer at or near a root
+# fails on depth instead of passing on `length == 1`. Measured on this fixture.
+const BLOCK_DEPTH = Dict("IGeo7System" => 6, "Authalic(IGeo7System)" => 6,
+    "H3System" => 6, "HEALPixSystem" => 11, "A5System" => 11,
+    "S2System" => 4, "ISEA4RSystem" => 10)
+
+# The union reading on those same tiles: a small budget spends every cell on a
+# 1x1-degree tile's own boundary, so slivers are a larger share of it than of
+# the state-sized outline above, and the tiles get their own numbers.
+const TILE_UNION_BOUND = Dict("IGeo7System" => 0.04,   # measured 0.030
+    "H3System" => 0.03,                                # measured 0.018
+    "A5System" => 0.22)                                # measured 0.178
 
 @testset "the budget sweep covers every registered system" begin
     sweepcovers(SWEEP)
@@ -224,6 +250,8 @@ end
     (sys, toplevel) in SWEEP
 
     congruent = isquadface(sys)
+    # The laws below branch on the trait the traversal itself branches on.
+    @test DGG.has_congruent_refinement(sys) == isquadface(sys)
 
     sets = Dict(b => DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); maxcells=b)
                 for b in BUDGETS)
@@ -257,13 +285,14 @@ end
         for b in LADDER
             set = DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); maxcells=b)
             push!(sizes, length(set))
-            # The seed on this outline is one or two root cells, so the
-            # exception below cannot fire here; the over-budget case has its own
-            # testset with a target that produces it.
+            # The seed here is one or two root cells, so the over-budget
+            # exception cannot fire; that case has its own testset.
             @test length(set) <= max(b, 2)
         end
         @test issorted(sizes)                 # measurement of the schedule
-        @test sizes[end] == LADDER[end]       # and the budget is actually spent
+        # And the budget is spent: freed and settled claims recycle into the
+        # stream, and the end phase pays refused cells with what is left.
+        @test sizes[end] == LADDER[end]
     end
 
     @testset "determinism" begin
@@ -297,15 +326,12 @@ end
     end
 
     @testset "a maxlevel the refinement reaches restores the blind spot" begin
-        # Cap the descent shallow enough that the budget cannot spend itself,
-        # and the cells stranded at the cap are flagged unproven without being
-        # asked — the accuracy mode's contract, verbatim.
-        #
-        # The cap is `first + 6` and not something shallower because the second
-        # assertion needs cells that ACTUALLY fit inside California. At a cap of
-        # `first + 2` no cell of any of the seven does — level-2 cells are
-        # continent-sized — so the flag being `false` there would be a true
-        # statement rather than a blind one, and would prove nothing.
+        # A cap the budget cannot spend itself against strands cells at the
+        # cap, flagged unproven without being asked — the accuracy mode's
+        # contract, verbatim. `first + 6` because the `fits > 0` assertion
+        # needs cells that ACTUALLY fit inside California: at `first + 2`
+        # every cell is continent-sized, `false` would be a true statement,
+        # and the blind spot would prove nothing.
         cap = first(DGG.levels(sys)) + 6
         set = DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); maxcells=10_000, maxlevel=cap)
         @test set.reference_level == cap
@@ -361,6 +387,13 @@ end
             else
                 @test length(budgeted) <= length(accurate)
                 @test !isempty(budgeted)
+                # With four times the room nothing is refused and completeness
+                # becomes an equality: the budget descent reaches every cell
+                # `level` mode reaches, in the same order. Only `==` tells a
+                # complete descent from a lucky one.
+                roomy = DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND);
+                    maxcells=4 * length(accurate), maxlevel=l)
+                @test collect(roomy) == collect(accurate)
             end
         end
     end
@@ -392,11 +425,9 @@ end
 @testset "a seed bigger than the budget comes back whole: $(syslabel(sys))" for
     (sys, _) in SWEEP
 
-    # Every root cell of every system meets a target covering 66% of the sphere,
-    # so the seed IS the top level and no refinement of it can fit in three
-    # cells. Returning the seed over budget is the documented answer: it is the
-    # coarsest covering this traversal can express, and there is nothing to
-    # refine away.
+    # Every root cell meets a target covering 66% of the sphere, so the seed
+    # IS the top level and cannot fit in three cells. The seed over budget is
+    # the documented answer: there is nothing to refine away.
     set = DGG.query(sys, DGG.MultiOrderCoverage(WIDE); maxcells=3)
     roots = collect(DGG.rootcells(sys))
     @test length(set) > 3
@@ -418,6 +449,8 @@ end
     # crosses into two of.
     one = DGG.query(sys, DGG.MultiOrderCoverage(BLOCK); maxcells=1)
     @test length(one) == 1
+    # A floor on depth: the chain must actually have descended to the block.
+    @test DGG.level(one[1]) >= BLOCK_DEPTH[syslabel(sys)]
     @test !DGG.iscontained(one, 1)
     @test DGG.coarsest_contained(one) === nothing
     @test one.reference_level == DGG.level(one[1])
@@ -428,6 +461,20 @@ end
     more = DGG.query(sys, DGG.MultiOrderCoverage(BLOCK); maxcells=8)
     @test length(more) >= length(one)
     @test length(more) <= 8
+end
+
+@testset "the end phase cannot spend what it was not handed: $(syslabel(sys))" for
+    (sys, _) in SWEEP
+
+    # A hand-back rule that does not count slots overruns the budget here: far
+    # fewer slots were freed than there are specks asking for one.
+    for b in (20, 30)
+        set = DGG.query(sys, DGG.MultiOrderCoverage(SPECKS); maxcells=b)
+        @test length(set) <= b
+        @test !isempty(set)
+        # A hand-back must not be the ancestor of a member already paid for.
+        @test isempty(emitted_ancestors(sys, set))
+    end
 end
 
 @testset "an empty answer is still a set" begin
@@ -480,6 +527,89 @@ end
             end
             @test hit || error("part $k of $(syslabel(sys)) met no emitted cell")
         end
+    end
+end
+
+@testset "a refusal in one part never loses another: $label" for
+        (label, sys, bx, by, bw, sx, sy) in
+        (("IGeo7 Alps", DGG.IGeo7System(), 0.0, 40.0, 8.0, 10.05, 46.05),
+         ("IGeo7 California", DGG.IGeo7System(), -125.0, 32.0, 8.0, -119.95, 30.05),
+         ("A5 Alps", DGG.A5System(), 4.0, 40.0, 5.0, 10.05, 46.05),
+         ("A5 south", DGG.A5System(), -6.0, -58.0, 5.0, 0.05, -59.95),
+         ("H3 south", DGG.H3System(), -6.0, -28.0, 6.0, 0.05, -29.95))
+
+    # A blob big enough to spend any of these budgets, and a speck in a coarse
+    # cell's overhang annulus. The speck's covering rides on the end phase: a
+    # pend whose slot the blob can spend loses the whole component.
+    blob = topolygon([[(bx, by), (bx + bw, by), (bx + bw, by + bw),
+        (bx, by + bw), (bx, by)]])
+    target = GI.MultiPolygon([blob, speck(sx, sy)])
+    samples = vec([(sx + 0.05 * i / 6, sy + 0.05 * j / 6) for i in 0:6, j in 0:6])
+    for b in (10, 20, 50, 100, 200)
+        set = DGG.query(sys, DGG.MultiOrderCoverage(target); maxcells=b)
+        @test length(set) <= b
+        @test isempty(emitted_ancestors(sys, set))
+        @test union_misses(set, samples) == 0
+    end
+end
+
+# ---------------------------------------------------------------------------
+# Non-congruent overhang: a small target in the annulus a cell's children do
+# not retile must not leave that cell in the covering. Each 1x1-degree tile
+# fixture sits in such an annulus; two rows place the covering on a lineage
+# only phantoms reach. `EXCESS_BOUND`/`MEMBER_BOUND` are in units of the
+# tile's area (one cap-level cell where the cap is coarser); `setsphere`
+# charges a level's MEAN cell area, so both are order-of-magnitude bounds.
+# `TILE_UNION_BOUND` gates the DROP: a hole shows up as a tile point inside
+# no emitted cell.
+# ---------------------------------------------------------------------------
+
+tilearea(x0, y0) = deg2rad(1) * (sind(y0 + 1) - sind(y0)) / (4pi)
+setsphere(sys, set) =
+    sum(1.0 / DGG.ncells(DGG.levelgrid(sys, DGG.level(c))) for c in set; init=0.0)
+
+# A lon/lat box's own lattice points are already interior samples.
+tilesamples(x0, y0; n::Int=12) =
+    vec([(x0 + i / n, y0 + j / n) for i in 0:n, j in 0:n])
+
+annuluslabel(sys, x0, y0, cap) = "$(syslabel(sys)) at ($x0, $y0), " *
+                                 (cap === nothing ? "uncapped" : "maxlevel $cap")
+
+@testset "a tile in the annulus never keeps the giant: $(annuluslabel(sys, x0, y0, cap))" for
+        (sys, x0, y0, cap) in ((DGG.IGeo7System(), 10.0, 46.0, nothing),
+                               (DGG.IGeo7System(), -120.0, 30.0, nothing),
+                               (DGG.IGeo7System(), -60.0, -60.0, nothing),
+                               (DGG.H3System(), 0.0, -30.0, nothing),
+                               (DGG.A5System(), 10.0, 46.0, nothing),
+                               (DGG.A5System(), 0.0, -60.0, nothing),
+                               # A cap COARSER THAN THE TILE: `unit` swaps in
+                               # the cap cell as yardstick; phantoms stop at
+                               # the cap too, same laws as the uncapped rows.
+                               (DGG.IGeo7System(), 10.0, 46.0, 3))
+    tile = Extents.Extent(X=(x0, x0 + 1), Y=(y0, y0 + 1))
+    ta = tilearea(x0, y0)
+    # With a cap coarser than the tile, one cap-level cell is the smallest
+    # possible answer and becomes the yardstick.
+    unit = cap === nothing ? ta : max(ta, 1.0 / DGG.ncells(DGG.levelgrid(sys, cap)))
+    samples = tilesamples(x0, y0)
+    @test length(samples) > 100
+    for b in (10, 200)
+        set = DGG.query(sys, DGG.MultiOrderCoverage(tile); maxcells=b, maxlevel=cap)
+        @test length(set) <= b
+        # The drop must never take the whole covering with it.
+        @test !isempty(set)
+        @test allunique(collect(set))
+        @test isempty(emitted_ancestors(sys, set))
+        @test set.reference_level == maximum(DGG.level, collect(set))
+        @test setsphere(sys, set) <= EXCESS_BOUND * unit
+        # no single member dwarfs the target
+        @test maximum(c -> 1.0 / DGG.ncells(DGG.levelgrid(sys, DGG.level(c))),
+                      collect(set)) <= MEMBER_BOUND * unit
+        # Shrinking the answer must not open a hole in it.
+        @test union_misses(set, samples) / length(samples) <=
+              TILE_UNION_BOUND[syslabel(sys)]
+        again = DGG.query(sys, DGG.MultiOrderCoverage(tile); maxcells=b, maxlevel=cap)
+        @test collect(set) == collect(again)
     end
 end
 

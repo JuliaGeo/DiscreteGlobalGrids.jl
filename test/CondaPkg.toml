@@ -1,0 +1,4 @@
+[deps]
+xdggs = "0.6.*"
+xarray = ""
+zarr = ">=3"

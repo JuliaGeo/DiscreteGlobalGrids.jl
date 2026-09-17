@@ -7,7 +7,7 @@
 const MAX_NEIGHBORS = 6
 
 """
-    neighbors(grid::LevelGrid, c::H3Cell, k = 1; connectivity = Vertex())
+    neighbors(grid::H3LevelGrid, c::H3Cell, k = 1; connectivity = Vertex())
 
 Cells within `k` grid steps, excluding `c`, as counter-clockwise shells
 concatenated outward. [`ring`](@ref) is the final shell. Hexagons have six
@@ -19,9 +19,11 @@ azimuth order with id tie-breaking.
 `k <= 1` returns a `SmallVector{6,H3Cell}` and **allocates nothing at all**,
 including at pentagons.
 
-`k >= 2` returns a `Vector{H3Cell}`, since `3k(k+1)` outgrows any static bound.
+`k >= 2` returns a `Vector{H3Cell}`, since `3k(k+1)` outgrows any static bound;
+the `Val(k)` form answers the same cells in the same order from a stack buffer
+while `3k(k+1)` fits [`static_capacity`](@ref).
 """
-Base.@constprop :aggressive function neighbors(grid::LevelGrid, c::H3Cell, k::Integer=1;
+Base.@constprop :aggressive function neighbors(grid::H3LevelGrid, c::H3Cell, k::Integer=1;
         connectivity::Connectivity=Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return SmallVector{MAX_NEIGHBORS,H3Cell}()
@@ -35,16 +37,16 @@ Base.@constprop :aggressive function neighbors(grid::LevelGrid, c::H3Cell, k::In
 end
 
 """
-    neighborcount(grid::LevelGrid, c::H3Cell; connectivity = Vertex()) -> Int
+    neighborcount(grid::H3LevelGrid, c::H3Cell; connectivity = Vertex()) -> Int
 
 Return 5 for pentagons and 6 for other cells, for either connectivity. The
 count uses one libh3 pentagon test and does not construct the ring.
 """
-DGG.neighborcount(grid::LevelGrid, c::H3Cell;
+DGG.neighborcount(grid::H3LevelGrid, c::H3Cell;
     connectivity::Connectivity=Vertex()) = ispentagon(c) ? 5 : 6
 
 """
-    ring(grid::LevelGrid, c::H3Cell, k; connectivity = Vertex())
+    ring(grid::H3LevelGrid, c::H3Cell, k; connectivity = Vertex())
 
 The cells at grid distance **exactly** `k` from `c`, counter-clockwise seen
 from outside. `ring(grid, c, 0)` is `[c]`.
@@ -54,7 +56,7 @@ The result is the final shell returned by [`neighbors`](@ref)`(grid, c, k)`.
 Uses libh3's O(k) shell walk, or an O(k²) pentagon-safe disk fallback ordered by
 azimuth.
 """
-Base.@constprop :aggressive function ring(grid::LevelGrid, c::H3Cell, k::Integer;
+Base.@constprop :aggressive function ring(grid::H3LevelGrid, c::H3Cell, k::Integer;
         connectivity::Connectivity=Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return H3Cell[c]
@@ -77,7 +79,7 @@ at libh3's deterministic per-cell direction. Allocation-free on both paths:
 `gridRingUnsafe` where it applies, and an azimuth-sorted disk at a pentagon
 seam.
 """
-function one_ring(::LevelGrid, c::H3Cell, ::Connectivity)
+function one_ring(::H3LevelGrid, c::H3Cell, ::Connectivity)
     shell = H3Native.grid_ring_unsafe_1(c.id)
     out = SmallVector{MAX_NEIGHBORS,H3Cell}()
     if shell !== nothing
@@ -100,7 +102,71 @@ function one_ring(::LevelGrid, c::H3Cell, ::Connectivity)
     return out
 end
 
-# Rings at k >= 2, where the answer outgrows any static bound.
+# The `Val` forms: `K` is a type parameter, so the ring bound `6K` and the
+# disc bound `3K(K + 1)` are constants and libh3 writes each shell straight
+# into a stack buffer. The order is the native one the `Integer` forms above
+# answer, cell for cell; only the container changes.
+function neighbors(grid::H3LevelGrid, c::H3Cell, ::Val{K};
+        connectivity::Connectivity=Vertex()) where {K}
+    DGG.checked_steps(K)
+    K == 0 && return SmallVector{MAX_NEIGHBORS,H3Cell}()
+    K == 1 && return one_ring(grid, c, connectivity)
+    bound = DGG.static_capacity(DGG.Fallbacks._disc_bound(grid, Val(K),
+        connectivity), H3Cell)
+    bound === nothing && return neighbors(grid, c, K; connectivity)
+    out = _shellbuf(bound)
+    for x in one_ring(grid, c, connectivity)
+        push!(out, x)
+    end
+    for j in 2:K
+        _ring_into!(out, c, j, Val(K))
+    end
+    return SmallVector(out)
+end
+
+function ring(grid::H3LevelGrid, c::H3Cell, ::Val{K};
+        connectivity::Connectivity=Vertex()) where {K}
+    DGG.checked_steps(K)
+    K == 0 && return H3Cell[c]
+    K == 1 && return one_ring(grid, c, connectivity)
+    cap = DGG.static_capacity(DGG.maxring(grid, K, connectivity), H3Cell)
+    cap === nothing && return ring(grid, c, K; connectivity)
+    out = _shellbuf(cap)
+    _ring_into!(out, c, K, Val(K))
+    return SmallVector(out)
+end
+
+@inline _shellbuf(::Val{N}) where {N} = SmallCollections.MutableSmallVector{N,H3Cell}()
+
+# Append the shell at distance `k <= K` to `out`: libh3's ring walk, or at a
+# pentagon distortion the distance-bucketed disk sorted by azimuth, both into
+# buffers sized by `K` so they stay on the stack.
+@inline function _ring_into!(out, c::H3Cell, k::Int, ::Val{K}) where {K}
+    shell = H3Native.grid_ring_unsafe_static(c.id, k, Val(6K))
+    if shell !== nothing
+        for i in 1:6k
+            id = @inbounds shell[i]
+            id == 0 && continue
+            push!(out, H3Cell(id))
+        end
+        return nothing
+    end
+    cells, dists = H3Native.grid_disk_distances_static(c.id, k,
+        Val(3K * (K + 1) + 1))
+    frame = _tangent_frame(c.id)
+    keyed = SmallVector{6K,Tuple{Float64,H3Cell}}()
+    for i in eachindex(cells)
+        id = @inbounds cells[i]
+        (id == 0 || Int(@inbounds dists[i]) != k) && continue
+        keyed = _insert_sorted(keyed, (_azimuth(frame, id), H3Cell(id)))
+    end
+    for (_, cell) in keyed
+        push!(out, cell)
+    end
+    return nothing
+end
+
+# Rings at k >= 2 with a run-time `k`, where the answer outgrows any static bound.
 function _ring_vector(c::H3Cell, k::Int)
     shell = H3Native.grid_ring_unsafe(c.id, k)
     shell !== nothing && return [H3Cell(id) for id in shell if id != 0]

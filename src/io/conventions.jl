@@ -302,7 +302,7 @@ const ZARR_DGGS_COMPRESSIONS = ("none", "compacted", "ranges")
     ZarrDGGSConvention()
 
 `zarr-conventions/dggs`: a `zarr_conventions` declaration on the group naming
-[`ZARR_DGGS_UUID`](@ref), plus a `dggs` object carrying `name`,
+`ZARR_DGGS_UUID`, plus a `dggs` object carrying `name`,
 `refinement_level`, `spatial_dimension` and optionally `coordinate`,
 `compression`, `indexing_scheme` and `ellipsoid`.
 
@@ -404,6 +404,24 @@ end
 const XDGGS_LEVEL_ALIASES = ("level", "refinement_level", "nside", "order",
     "resolution", "depth")
 const XDGGS_SCHEME_ALIASES = ("indexing_scheme", "nest")
+
+"""
+    XDGGS_GRIDS
+
+Grid name → the Python package that registers it with xdggs, and so the names
+[`require_xdggs_readable`](@ref) accepts. `"healpix"` and `"h3"` ship with
+xdggs itself. `"igeo7"` ships with the `xdggs-dggrid4py` plugin from its main
+branch, whose `IGEO7Info` takes the coordinate attributes
+[`XdggsConvention`](@ref) writes field for field; the plugin's 0.1.3 release
+on PyPI predates that attribute set and needs a DGGRID binary to import. A
+downstream grid with an xdggs plugin adds itself here next to its
+[`register_grid!`](@ref) entry.
+"""
+const XDGGS_GRIDS = Dict{String,String}(
+    "healpix" => "xdggs", "h3" => "xdggs", "igeo7" => "xdggs-dggrid4py")
+
+"The coordinate name xdggs's default convention decodes without a `name` argument."
+const XDGGS_COORDINATE = "cell_ids"
 
 """
     XdggsConvention()
@@ -516,7 +534,8 @@ function encode!(c::XdggsConvention, s::StoreSnapshot, d::StoreDescription)
     d.level === nothing || (attrs["level"] = d.level)
     if d.gridname == "healpix"
         d.idscheme === nothing || (attrs["indexing_scheme"] = String(d.idscheme))
-        d.ellipsoid === nothing || (attrs["ellipsoid"] = ellipsoid_attrs(d.ellipsoid))
+        ell = d.ellipsoid === nothing ? nothing : xdggs_ellipsoid_attrs(d.ellipsoid)
+        ell === nothing || (attrs["ellipsoid"] = ell)
     elseif d.gridname == "igeo7"
         d.geodetic_conversion === nothing ||
             (attrs["igeo7_wgs84_geodetic_conversion"] = d.geodetic_conversion)
@@ -525,6 +544,71 @@ function encode!(c::XdggsConvention, s::StoreSnapshot, d::StoreDescription)
         end
     end
     return s
+end
+
+"""
+    xdggs_ellipsoid_attrs(e::Ellipsoid) -> Union{String, Dict{String,Any}, Nothing}
+
+An ellipsoid as xdggs's `parse_ellipsoid` reads it: a bare name, or an object
+spelled `radius` for a sphere and `semimajor_axis` plus `inverse_flattening`
+for an ellipsoid, with `name` alongside when there is one. This is the one
+place the package writes the `semimajor_axis` spelling, because xdggs's
+dataclasses take exactly these keys.
+
+`nothing` for an unnamed ellipsoid that has neither a radius nor the axis pair,
+which xdggs has no spelling for.
+"""
+function xdggs_ellipsoid_attrs(e::Ellipsoid)
+    sphere = e.radius !== nothing
+    ellipsoid = e.semi_major_axis !== nothing && e.inverse_flattening !== nothing
+    sphere || ellipsoid || return e.name
+    out = Dict{String,Any}()
+    e.name === nothing || (out["name"] = e.name)
+    if sphere
+        out["radius"] = e.radius
+    else
+        out["semimajor_axis"] = e.semi_major_axis
+        out["inverse_flattening"] = e.inverse_flattening
+    end
+    return out
+end
+
+"""
+    require_xdggs_readable(d::StoreDescription; store = "", conventions = String[]) -> d
+
+Check that a store described by `d` opens through `xdggs.decode(ds)`, or raise
+a [`DGGSFormatError`](@ref) with `check = :not_xdggs_readable` saying what
+stops it.
+
+xdggs's default convention reads the one-dimensional coordinate named
+`cell_ids`, one id per cell, and builds its grid info from that coordinate's
+`level` and grid name. So `d` passes when
+
+  - its encoding is dense and its coordinate is `cell_ids`,
+  - it carries a level, and
+  - its grid is in [`XDGGS_GRIDS`](@ref).
+"""
+function require_xdggs_readable(d::StoreDescription; store="", conventions=String[])
+    refuse(detail; declared=nothing, observed=nothing) = throw(DGGSFormatError(
+        check=:not_xdggs_readable, store=store, conventions=conventions,
+        declared=declared, observed=observed, detail=detail))
+
+    d.encoding !== nothing && encodingname(d.encoding) == "none" ||
+        refuse("xdggs reads one id per cell; write with `encoding = :dense`.";
+            declared=d.encoding === nothing ? nothing : encodingname(d.encoding))
+    d.coordinate == XDGGS_COORDINATE ||
+        refuse("`xdggs.decode` reads the coordinate named `$XDGGS_COORDINATE`, " *
+               "and this store's coordinate is $(repr(d.coordinate)).";
+            declared=d.coordinate, observed=XDGGS_COORDINATE)
+    d.level === nothing &&
+        refuse("xdggs's grid info needs a `level`, and this description has none.";
+            declared=d.gridname)
+    haskey(XDGGS_GRIDS, d.gridname) && return d
+    readers = join(sort!(["$name by $pkg" for (name, pkg) in XDGGS_GRIDS]), ", ")
+    refuse("no xdggs reader registers the grid name `$(d.gridname)`; the " *
+           "registered names are $readers. A plugin that reads it is declared " *
+           "with `XDGGS_GRIDS[name] = package`.";
+        declared=d.gridname, observed=sort!(collect(keys(XDGGS_GRIDS))))
 end
 
 # ===========================================================================
@@ -656,7 +740,8 @@ const CONVENTION_REGISTRY = DGGSConvention[
 """
     DEFAULT_WRITE_CONVENTIONS
 
-What [`dggwrite`](@ref) stamps by default: `zarr-conventions/dggs` for the
+What [`dggwrite`](@ref DiscreteGlobalGrids.dggwrite) stamps by default:
+`zarr-conventions/dggs` for the
 encoding vocabulary a flat coordinate cannot express, and xdggs so the store
 opens in the ecosystem's own reader. The `zarr-conventions/dggs` half is
 written schema-VALID, which the stores in the wild are not.

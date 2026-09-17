@@ -12,7 +12,7 @@ Canonical ordering makes `has_sorted_subtrees` true.
 struct H3System <: AbstractHierarchicalGridSystem end
 
 # Grid descriptor for all cells at one H3 resolution.
-const LevelGrid = HierarchicalLevelGrid{H3System}
+const H3LevelGrid = HierarchicalLevelGrid{H3System}
 
 Base.show(io::IO, ::H3System) = print(io, "H3System()")
 
@@ -107,7 +107,8 @@ has_direct_location(::H3System) = true
 
 `1.2`, the generic default.
 
-Children overhang their parents, so [`node_extent`](@ref) must be inflated. The
+Children overhang their parents, so
+[`node_extent`](@ref DiscreteGlobalGrids.node_extent) must be inflated. The
 measured maximum ratio of a descendant *boundary vertex*'s distance from an
 ancestor's cell-cap centre to that cap's radius is `1.0522`; `1.2` preserves the
 covering invariant. Descendant caps are not the quantity bounded and may exceed
@@ -208,7 +209,7 @@ Every descendant at resolution `l`, in ascending id order. `cellToChildren`
 handles any depth in one call.
 
 O(subtree) and materialising, as the contract says — reach for
-[`descendant_range`](@ref) instead wherever indices will do.
+[`descendant_range`](@ref DiscreteGlobalGrids.descendant_range) instead wherever indices will do.
 """
 function descendants(::H3System, c::H3Cell, l::Integer)
     target = Int(l)

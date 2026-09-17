@@ -189,32 +189,23 @@ end
     CellVector(grid::AbstractGrid)
     CellVector(sys, level, ids::AbstractVector)
 
-`CellVector` is an immutable, lazy vector of strictly ascending cell ids from
-one level of one hierarchical system. It stores sorted level-grid index runs
-or indices and resolves ids on demand. Memory is O(number of windows), and
-indexing is O(log(number of windows)). [`CellLookup`](@ref) provides its
-DimensionalData wrapper.
+A read-only `AbstractVector` of canonical cell IDs at one level of one system.
+`cv[i]` returns an ID; [`localindex`](@ref DiscreteGlobalGrids.localindex)`(cv, cell)` returns its position or
+`nothing`. `collect(cv)` creates an ordinary vector. `CellVector(cv)` returns
+`cv` unchanged.
 
-Construct a `CellVector` from:
+The explicit-ID form requires strictly ascending IDs and validates their level.
+The grid form accepts complete levels and [`PartialGrid`](@ref) regions.
+The mixed-level form expands hierarchy membership at the requested level;
+that membership can differ from the union of the original cell polygons.
 
-  - a [`MultiOrderCellSet`](@ref), optionally expanded to a deeper level;
-  - an [`AbstractGrid`](@ref), including a [`PartialGrid`](@ref); or
-  - an explicit strictly ascending cell-id vector with `sys` and `level`.
+Use [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup)`(cv)` for a `Cells` dimension, `PartialGrid(cv)` for
+a grid view, and [`cellset`](@ref)`(cv)` to inspect its recorded source.
+Store field values in the same order as `cv`.
 
-`CellVector(cv)` returns `cv`.
-
-```julia
-cv[k]
-localindex(cv, c)
-covering(cv, polygon)
-PartialGrid(cv)
-```
-
-Systems with [`has_sorted_subtrees`](@ref) construct windows from
-[`level_ranges`](@ref) in O(entries). Other systems enumerate, sort, and
-compress descendant indices. On A5, non-congruent refinement can make an
-expanded [`covering`](@ref) selection over-cover the target; see
-[`MultiOrderCoverage`](@ref).
+IDs are stored as compressed index windows where possible. Storage can still
+grow to one index per cell, and A5 expansion visits every descendant.
+See [Collection and traversal contracts](@ref) for costs and implementation details.
 """
 struct CellVector{ID,W<:CellWindows,G<:AbstractGrid,B} <: AbstractCellVector{ID}
     windows::W
@@ -392,10 +383,14 @@ level(cv::CellVector) = cv.level
     cellset(cv::CellVector)
     cellset(lk::CellLookup)
 
-Return the collection that constructed `cv`: a
-[`MultiOrderCellSet`](@ref), expanded [`MultiOrderVector`](@ref), or grid.
-Derived collections return their describing [`PartialGrid`](@ref).
-For [`CellLookup`](@ref), `Base.parent` returns the logical [`CellVector`](@ref).
+Return the [`MultiOrderCellSet`](@ref), [`MultiOrderVector`](@ref) or grid used
+to build the collection.
+
+A collection *derived* from another one, by indexing or by [`covering`](@ref),
+has no such origin and reports the [`PartialGrid`](@ref) describing it instead.
+
+For [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup),
+`Base.parent` returns the logical values as a [`CellVector`](@ref).
 """
 cellset(cv::CellVector) = _origin(cv, cv.backing)
 
@@ -433,8 +428,12 @@ localindex(cv::CellVector, lon::Real, lat::Real) =
     cellat(cv::CellVector, p::GO.UnitSphericalPoint) -> Union{AbstractCellIndex,Nothing}
     cellat(cv::CellVector, lon::Real, lat::Real)
 
-Return the cell in `cv` containing the point, or `nothing` when the point lies
-outside the subset. [`localindex`](@ref) returns the corresponding index.
+The cell **of `cv`** containing the point, or `nothing` when the point falls
+outside the cells the vector holds. Same contract as [`cellat`](@ref) on a
+grid, restricted to the subset: a point inside the level grid but outside this
+vector answers `nothing` rather than naming a cell that is not here.
+
+[`localindex`](@ref DiscreteGlobalGrids.localindex) is the same question answered as an index.
 """
 function cellat(cv::CellVector, p::GO.UnitSphericalPoint)
     c = cellat(cv.grid, p)
@@ -490,14 +489,18 @@ basin = covering(cv, watershed)          # a CellVector again
 data[covering_indices(cv, watershed)]    # the same selection as indices
 ```
 
-[`covering_indices`](@ref) returns the same selection in index space and backs
-the DimensionalData [`Covering`](@ref) selector.
+[`covering_indices`](@ref) is the index-space form, for indexing a data
+array laid out against `cv`. This is what the `DimensionalData` selector
+[`Covering`](@ref DiscreteGlobalGrids.CellLookups.Covering) is spelled as
+outside `DimensionalData`.
 
 Selection visits each leaf named by the coverage, even though the result is
 stored compactly. Selection at the target level limits expansion work.
 
-Non-congruent refinement can make the result over-cover `target`; see
-[`MultiOrderCoverage`](@ref).
+This operation uses fixed-level coverage at `level(cv)`. Within `cv`, its
+result includes the cells meeting `target`; noncongruent refinement can add
+extra cells. With congruent refinement the selection equals intersection.
+These are fixed-level guarantees, not guarantees for a `maxcells` query.
 """
 covering(cv::CellVector, target) =
     _derive(cv, _windows(_covering_leafindices(cv, target)))
@@ -505,14 +508,41 @@ covering(cv::CellVector, target) =
 """
     covering_indices(cv::CellVector, target) -> Vector{Int}
 
-Return the ascending indices selected by [`covering`](@ref), suitable for a
-parallel data vector. The [`Covering`](@ref) selector resolves to this form.
+The indices in `cv` of the cells [`covering`](@ref) selects, ascending — for
+indexing a data array laid out against `cv` without building the sub-vector.
+
+`covering(cv, target)` and `cv[covering_indices(cv, target)]` name the same
+cells; this form is the one a cube's `getindex` needs, and is what the
+[`Covering`](@ref DiscreteGlobalGrids.CellLookups.Covering) selector resolves
+to.
 """
 function covering_indices(cv::CellVector, target)
     out = Int[]
     w = cv.windows
     _each_leaf_index(cv, target) do p
         k = windowindex(w, p)
+        k === nothing || push!(out, k)
+    end
+    return issorted(out) ? out : sort!(out)
+end
+
+"""
+    predicate_indices(cv::CellVector, pred) -> Vector{Int}
+
+The indices in `cv` of the cells that satisfy `pred` at `cv`'s level, ascending
+— `query(system(cv), pred; level = level(cv))` intersected with `cv`, answered
+in index space so a data array laid out against `cv` can be indexed by it.
+
+`pred` is any predicate [`query`](@ref) implements, over any target it accepts;
+`cv[predicate_indices(cv, Within(cap))]` names the cells of `cv` lying wholly
+inside `cap`. This is what a predicate used as a [`Cells`](@ref DiscreteGlobalGrids.CellLookups.Cells) selector
+resolves to. Unlike [`covering_indices`](@ref), the answer is exact: it
+inherits no over-covering from a coverage.
+"""
+function predicate_indices(cv::CellVector, pred::QueryPredicate)
+    out = Int[]
+    for c in query(cv.grid, pred)
+        k = localindex(cv, c)
         k === nothing || push!(out, k)
     end
     return issorted(out) ? out : sort!(out)

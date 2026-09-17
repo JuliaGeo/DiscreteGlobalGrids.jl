@@ -182,7 +182,11 @@ end
     @testset "a sentinel is nodata" begin
         sentinel = demtiles(-32767.0f0)
         declared, _ = polarchunk(sentinel; budget = 2^20, missingval = -32767.0f0)
-        @test isequal(declared, held)
+        # The sentinel is nodata on both sides: the same cells survive, and the
+        # blanked ones come back holding it rather than NaN.
+        unsentinel(x) = isequal(x, -32767.0f0) ? oftype(x, NaN) : x
+        @test isequal(map(unsentinel, declared), held)
+        @test count(isequal(-32767.0f0), declared) == count(isnan, held)
         # And it is `missingval` that says so: undeclared, the sentinel is
         # terrain, and the cells over the ocean patches come back wrong.
         undeclared, _ = polarchunk(sentinel; budget = 2^20)

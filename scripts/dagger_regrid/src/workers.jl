@@ -64,7 +64,7 @@ function run_batch(state::WorkerState, items::Vector{WorkItem})
                     state.layout, item.chunk, state.config)
                 stage = :write
                 item.failpoint === :before_write && error("injected before-write failure")
-                DGG.dggwrite!(state.store, item.chunk, vals)
+                state.config.write && DGG.dggwrite!(state.store, item.chunk, vals)
                 stage = :report
                 item.failpoint === :after_write && error("injected after-write failure")
                 push!(reports, ChunkReport(item.destination, item.chunk, length(vals),

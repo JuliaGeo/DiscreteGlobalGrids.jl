@@ -1,6 +1,13 @@
 # `cell_boundary_cartesian` uses A5's internal Cartesian frame. The public
 # geometry methods use geographic longitude and geodetic latitude.
 
+# The projection itself is the authalic one: `A5Native._from_lonlat` converts
+# geodetic latitude to authalic before projecting, and `_to_lonlat` converts
+# back. That conversion is already inside every method here, so the geometry
+# below is geodetic and `AuthalicSystem` must refuse it rather than convert a
+# second time.
+DGG.Fallbacks.publishes_geodetic_geometry(::A5System) = true
+
 # Convert geographic longitude and latitude in degrees to a unit vector.
 function _unit_point(lon::Real, lat::Real)
     λ = deg2rad(Float64(lon))
@@ -32,6 +39,22 @@ function cell_boundary(::A5System, c::A5Cell)
 end
 
 """
+    cell_corners(::A5System, c::A5Cell) -> Vector{UnitSphericalPoint}
+
+The pentagon's (or a level-1 triangle's) own vertices, with one segment per
+edge, in the order [`cell_boundary`](@ref) visits them. The densified ring
+starts one edge in, so its first corner is its `segments`-th vertex.
+"""
+function DGG.cell_corners(::A5System, c::A5Cell)
+    ring = A5Native.cell_boundary(c.id; closed_ring=false, segments=1)
+    out = Vector{USPoint}(undef, length(ring))
+    for (i, p) in enumerate(ring)
+        @inbounds out[i] = _unit_point(p[1], p[2])
+    end
+    return out
+end
+
+"""
     cell_centroid(::A5System, c::A5Cell) -> UnitSphericalPoint
 
 The interior face-plane polygon centre, inverse-projected with A5's
@@ -48,8 +71,8 @@ end
 # ===========================================================================
 
 """
-    cellat(grid::LevelGrid, p::UnitSphericalPoint) -> A5Cell
-    cellat(grid::LevelGrid, lon::Real, lat::Real) -> A5Cell
+    cellat(grid::A5LevelGrid, p::UnitSphericalPoint) -> A5Cell
+    cellat(grid::A5LevelGrid, lon::Real, lat::Real) -> A5Cell
 
 The cell containing a point, computed by A5's O(1) `lonlat_to_cell` inverse.
 
@@ -59,11 +82,11 @@ Shared-boundary ties follow A5's deterministic inverse-projection rule.
 
 The `(lon, lat)` overload takes degrees.
 """
-function cellat(grid::LevelGrid, lon::Real, lat::Real)
+function cellat(grid::A5LevelGrid, lon::Real, lat::Real)
     return A5Cell(A5Native.lonlat_to_cell(lon, lat, grid.level))
 end
 
-function cellat(grid::LevelGrid, p::GO.UnitSphericalPoint)
+function cellat(grid::A5LevelGrid, p::GO.UnitSphericalPoint)
     lon = atand(p[2], p[1])
     lat = asind(clamp(p[3], -1.0, 1.0))
     return cellat(grid, lon, lat)

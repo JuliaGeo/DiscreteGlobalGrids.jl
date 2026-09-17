@@ -93,9 +93,14 @@ ellipsoidal area. For true ellipsoidal area, multiply the base grid's area by
 
 Wrapping an `AuthalicGrid` throws; use `parent(grid)` before changing ellipsoid.
 
-A [`PartialGrid`](@ref) is also rejected. Wrap its system instead:
+A [`PartialGrid`](@ref DiscreteGlobalGrids.Engine.PartialGrid) is also
+rejected. Wrap its system instead:
 
     PartialGrid(AuthalicSystem(sys), level, ids)
+
+A grid whose system publishes geodetic geometry already — A5, Copernicus DEM;
+see `Fallbacks.publishes_geodetic_geometry` — is rejected too, because
+warping it would convert a second time.
 
 See also [`AuthalicSystem`](@ref).
 """
@@ -114,13 +119,53 @@ AuthalicGrid(grid::AbstractGrid) = AuthalicGrid(grid, Helpers.WGS84_AUTHALIC)
 AuthalicGrid(grid::AbstractGrid, m::GOCore.Manifold) =
     AuthalicGrid(grid, Helpers.AuthalicTransform(m))
 
-_check_wrappable(::AbstractGrid) = nothing
+"""
+    Fallbacks.publishes_geodetic_geometry(sys) -> Bool
+    Fallbacks.publishes_geodetic_geometry(grid) -> Bool
+
+Whether `sys` already returns its geometry in geodetic latitude. The default is
+`false`: a DGGS is normally tessellated on the authalic sphere, which is what
+makes [`AuthalicGrid`](@ref)'s warp the right reading of its output.
+
+A system whose projection converts geodetic latitude to authalic internally —
+A5 does, in `A5Native._from_lonlat`/`_to_lonlat` — publishes geodetic latitude
+already, and must declare it here so the wrapper refuses it. Warping such a
+system converts twice, displacing its geometry by roughly the authalic shift
+again rather than removing it.
+
+The grid method reads the answer off [`system`](@ref), so a level grid inherits
+its system's frame.
+"""
+publishes_geodetic_geometry(::AbstractHierarchicalGridSystem) = false
+
+function publishes_geodetic_geometry(grid::AbstractGrid)
+    sys = system(grid)
+    sys === nothing && return false
+    return publishes_geodetic_geometry(sys)
+end
+
+function _check_wrappable(grid::AbstractGrid)
+    sys = system(grid)
+    sys === nothing && return nothing
+    return _check_wrappable_system(sys)
+end
 
 _check_wrappable(::AuthalicGrid) = throw(ArgumentError(
     "this grid is already an AuthalicGrid: its geometry is in geodetic latitude \
 already, and warping it again would read those latitudes as authalic ones. Use \
 `parent(grid)` to get the unwarped grid back if you meant to re-wrap it on a \
 different ellipsoid."))
+
+# The system-side counterpart, called by `AuthalicSystem`'s inner constructor.
+# `AuthalicSystem`'s own refusal is defined with that type, below.
+_check_wrappable_system(sys::AbstractHierarchicalGridSystem) =
+    publishes_geodetic_geometry(sys) ? _throw_already_geodetic(sys) : nothing
+
+@noinline _throw_already_geodetic(sys) = throw(ArgumentError(
+    "$sys publishes its geometry in geodetic latitude already, so there is \
+nothing for the authalic wrapper to convert: warping it would apply the \
+authalic-to-geodetic shift a second time and move every cell about 0.13° off \
+where the system puts it. Use the system directly."))
 
 # The subset refusal is `Engine`'s: it needs the subset type, which lives there.
 
@@ -160,6 +205,9 @@ cell_boundary(grid::AuthalicGrid, c::AbstractCellIndex) =
 
 cell_centroid(grid::AuthalicGrid, c::AbstractCellIndex) =
     geodetic_point(grid.transform, cell_centroid(grid.grid, c))
+
+cell_corners(grid::AuthalicGrid, c::AbstractCellIndex) =
+    map(p -> geodetic_point(grid.transform, p), cell_corners(grid.grid, c))
 
 # A closed-form base cap can stay closed-form through the latitude warp. The
 # centre is transformed exactly as the cell centroid is, while the angular
@@ -206,6 +254,15 @@ ring(grid::AuthalicGrid, c::AbstractCellIndex, k::Integer;
     connectivity::Connectivity=Vertex()) =
     ring(grid.grid, c, k; connectivity)
 
+# The `Val` forms reach the wrapped grid's own, so its stack path is kept.
+neighbors(grid::AuthalicGrid, c::AbstractCellIndex, ::Val{K};
+    connectivity::Connectivity=Vertex()) where {K} =
+    neighbors(grid.grid, c, Val(K); connectivity)
+
+ring(grid::AuthalicGrid, c::AbstractCellIndex, ::Val{K};
+    connectivity::Connectivity=Vertex()) where {K} =
+    ring(grid.grid, c, Val(K); connectivity)
+
 """
     GeometryOpsCore.best_manifold(grid::AuthalicGrid) -> GO.Spherical
 
@@ -233,8 +290,9 @@ Base.show(io::IO, ::MIME"text/plain", grid::AuthalicGrid) = show(io, grid)
 Read every level grid's geometry at geodetic latitude. Hierarchical identities,
 levels, ordering, and descendant ranges are forwarded unchanged.
 
-`ellipsoid` is read exactly as [`AuthalicGrid`](@ref)'s is, and wrapping an
-`AuthalicSystem` throws for the same reason.
+`ellipsoid` is read exactly as [`AuthalicGrid`](@ref)'s is. Wrapping an
+`AuthalicSystem` throws for the same reason, as does wrapping a system that is
+geodetic already (see `Fallbacks.publishes_geodetic_geometry`).
 
 [`node_extent`](@ref) is recomputed with the analytic
 [`authalic_stretch`](@ref) bound because the warp is not an isometry.
@@ -246,10 +304,7 @@ struct AuthalicSystem{S<:AbstractHierarchicalGridSystem,T<:AbstractFloat} <:
 
     function AuthalicSystem(sys::S, t::Helpers.AuthalicTransform{T}) where {
             S<:AbstractHierarchicalGridSystem,T}
-        sys isa AuthalicSystem && throw(ArgumentError(
-            "this system is already an AuthalicSystem; its grids are in geodetic \
-latitude already. Use `parent(sys)` to get the unwarped system back if you meant \
-to re-wrap it on a different ellipsoid."))
+        _check_wrappable_system(sys)
         return new{S,T}(sys, t)
     end
 end
@@ -259,6 +314,16 @@ AuthalicSystem(sys::AbstractHierarchicalGridSystem) =
 
 AuthalicSystem(sys::AbstractHierarchicalGridSystem, m::GOCore.Manifold) =
     AuthalicSystem(sys, Helpers.AuthalicTransform(m))
+
+_check_wrappable_system(::AuthalicSystem) = throw(ArgumentError(
+    "this system is already an AuthalicSystem; its grids are in geodetic \
+latitude already. Use `parent(sys)` to get the unwarped system back if you meant \
+to re-wrap it on a different ellipsoid."))
+
+# Both wrappers are the geodetic frame by construction, so the predicate says so
+# even though the refusals above are the ones that fire, with better messages.
+publishes_geodetic_geometry(::AuthalicSystem) = true
+publishes_geodetic_geometry(::AuthalicGrid) = true
 
 Base.parent(sys::AuthalicSystem) = sys.system
 
@@ -272,6 +337,9 @@ rootcells(sys::AuthalicSystem) = rootcells(sys.system)
 children(sys::AuthalicSystem, c::AbstractCellIndex) = children(sys.system, c)
 Base.parent(sys::AuthalicSystem, c::AbstractCellIndex) = Base.parent(sys.system, c)
 has_sorted_subtrees(sys::AuthalicSystem) = has_sorted_subtrees(sys.system)
+# The warp is a bijection of the sphere applied to shared vertices, so cells
+# that tiled their parent still do.
+has_congruent_refinement(sys::AuthalicSystem) = has_congruent_refinement(sys.system)
 # The wrapper's own `cellat` warps the point and forwards, so it locates
 # directly exactly when the system underneath does.
 has_direct_location(sys::AuthalicSystem) = has_direct_location(sys.system)

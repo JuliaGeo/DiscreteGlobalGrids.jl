@@ -1,6 +1,8 @@
 # End-to-end regridding with `RasterGrid` and real weights.
 
 import DimensionalData as DD
+# Load and test `GlobalRegriddingRastersExt`.
+import Rasters
 
 # Cell centres whose midpointed outer edges are `lo` and `hi`.
 t6_centres(lo, hi, n) =
@@ -203,6 +205,31 @@ GR.dimsource(::DD.Lookups.Lookup{T6LooseCell}) = T6Unresolved()
         @test DD.dims(regrid(src; to = yfirst)) isa Tuple{<:DD.Y,<:DD.X}
     end
 
+    @testset "a raster names its own space" begin
+        f(lon, lat) = 2.0 + sind(2 * lat) + 0.25 * cosd(lon)
+        src = t6_raster(f, t6_centres(-180, 180, 36), t6_centres(-90, 90, 18))
+        template = t6_raster(f, t6_centres(-180, 180, 9), t6_centres(-90, 90, 6))
+        reference = regrid(src; to = RasterGrid(template))
+
+        # A raster and the dimensions it carries are two spellings of the
+        # lattice `RasterGrid` reads off them, and the space they name is the
+        # one written out by hand — same values, same labels.
+        for to in (template, DD.dims(template))
+            out = regrid(src; to)
+            @test parent(out) == parent(reference)
+            @test DD.dims(out) == DD.dims(reference)
+        end
+
+        # `from` takes the same spellings, and the source raster names the
+        # space a source given no `from` would have derived from it anyway.
+        for from in (src, DD.dims(src))
+            @test parent(regrid(src; to = template, from)) == parent(reference)
+        end
+
+        # Everything else is still refused, and still says who resolves it.
+        @test_throws "must be a RegridSpace" regrid(src; to = 1)
+    end
+
     @testset "a cell axis resolves its own source" begin
         values = collect(1.0:32.0)
         data = DD.DimArray(values, (DD.Dim{:Cells}(DD.Lookups.Categorical(
@@ -228,7 +255,17 @@ GR.dimsource(::DD.Lookups.Lookup{T6LooseCell}) = T6Unresolved()
         loose = DD.DimArray(zeros(32), (DD.Dim{:Cells}(DD.Lookups.Categorical(
             [T6LooseCell(i) for i in 1:32]; order = DD.Lookups.Unordered())),))
         @test_throws ArgumentError regrid(loose; to = dst)
-        @test_throws "must be a RegridSpace, got T6Unresolved" regrid(loose; to = dst)
+        @test_throws "must be a RegridSpace" regrid(loose; to = dst)
+        @test_throws "got T6Unresolved" regrid(loose; to = dst)
+
+        # A cube handed straight to a keyword is refused by the same guard, and
+        # names the keyword that was given rather than always `from`.
+        raster = t6_raster((lon, lat) -> Float64(lat),
+            t6_centres(-180, 180, 8), t6_centres(-90, 90, 4))
+        @test_throws "`to` was given a dimensional raster" regrid(raster; to = data)
+        @test_throws "to = T6Grid()" regrid(raster; to = data)
+        @test_throws "to = T6Grid()" regrid(raster; to = DD.dims(data))
+        @test_throws "from = T6Grid()" regrid(zeros(32); to = dst, from = data)
     end
 
     @testset "cross-method agreement" begin
@@ -322,6 +359,35 @@ GR.dimsource(::DD.Lookups.Lookup{T6LooseCell}) = T6Unresolved()
         end
     end
 
+    @testset "a raster in is a raster out, lazy and eager" begin
+        # The source covers one latitude band, so the destination rows beyond it
+        # are blanked and carry whichever sentinel the raster declares.
+        f(lon, lat) = 4.0 + 0.01 * lon
+        band = t6_raster(f, t6_centres(-180, 180, 24), t6_centres(-60, 60, 8))
+        dst = t6_space(t6_centres(-180, 180, 12), t6_centres(-90, 90, 6))
+        withmissing = Rasters.Raster(
+            Array{Union{Missing,Float64}}(parent(band)), DD.dims(band);
+            missingval = missing, name = :band)
+
+        for lazy in (false, true)
+            out = regrid(withmissing; to = dst, method = Conservative(), lazy)
+            @test out isa Rasters.AbstractRaster
+            @test eltype(out) == Union{Missing,Float64}
+            @test Rasters.missingval(out) === missing
+            @test DD.name(out) == :band
+            @test any(ismissing, Array(out))
+
+            # `missingval` trades the union away for a concrete raster holding
+            # the same numbers.
+            fast = regrid(withmissing; to = dst, method = Conservative(), lazy,
+                missingval = NaN)
+            @test fast isa Rasters.AbstractRaster
+            @test eltype(fast) == Float64
+            @test Rasters.missingval(fast) === NaN
+            @test all(isequal.(coalesce.(Array(out), NaN), Array(fast)))
+        end
+    end
+
     @testset "a one-axis destination is labelled, not reshaped" begin
         # A destination whose `destinationdims` names one axis is already the
         # shape the cells were written in, so neither route may put a view
@@ -361,17 +427,20 @@ GR.dimsource(::DD.Lookups.Lookup{T6LooseCell}) = T6Unresolved()
         dst = t6_space(t6_centres(-180, 180, 6), t6_centres(-90, 90, 3))
         dest = zeros(ncells(dst))
 
-        # `plan_regrid` declares every keyword; `regrid` and `regrid!` declare
-        # a splat and nothing else, so no default can be restated on them.
+        # `plan_regrid` declares every keyword that describes a plan; `regrid`
+        # and `regrid!` declare a splat and `missingval`, the one setting that
+        # describes what a caller does with a plan rather than the plan itself.
         splat = [Symbol("kwargs...")]
         for f in (regrid, regrid!)
-            @test all(d -> isempty(d) || d == splat,
+            @test all(d -> isempty(d) || d == splat || d == [:missingval],
                 [Base.kwarg_decl(m) for m in methods(f)])
         end
+        @test any(==([:missingval]), [Base.kwarg_decl(m) for m in methods(regrid)])
+        @test any(==([:missingval]), [Base.kwarg_decl(m) for m in methods(regrid!)])
         planmethods = [m for m in methods(plan_regrid)
                        if !isempty(Base.kwarg_decl(m))]
         @test Set(Base.kwarg_decl(only(planmethods))) ==
-              Set((:to, :from, :method, :missingpolicy, :missingval, :lazy,
+              Set((:to, :from, :method, :missingpolicy, :missingval, :lazy, :locator,
             :chunks, :budget, :storage, :sampling, :dependencies, :refine,
             :narrow))
 

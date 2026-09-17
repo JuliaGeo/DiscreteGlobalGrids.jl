@@ -46,6 +46,7 @@ const FlexibleRTrees = GO.FlexibleRTrees
 
 include("shared.jl")
 include("spaces.jl")
+include("locators.jl")
 include("rastergrid.jl")
 include("methods.jl")
 include("conservative.jl")
@@ -79,7 +80,12 @@ export Conservative, NearestCell, BarycentricPoint
 export DirectNearest
 export buildweights!, supportradius
 
-# Deprecation shims require the legacy names to remain exported.
+# Candidate locators
+export CandidateLocator, TreeLocator, AnalyticLocator
+public overlappairs, locatecell
+
+# `build_weights!` and `support_radius` stay exported for the deprecation shims
+# in `methods.jl`.
 export build_weights!, support_radius
 
 export WeightCOO, addweight!, adddenom!
@@ -101,6 +107,8 @@ export LazyRegridArray
 
 # Qualified extension and observability APIs.
 public knownempty, sourcemissingval, chunkat, cellarea
+# The destination's nodata convention: what a regrid blanks with and declares.
+public outputmissingval, destinationmissingval, rebuildoutput
 public residency, LazyStats, ShapedRegridArray
 public spilledfiles, usesreference
 public outputsampling, destinationdims, dimsource
@@ -110,6 +118,7 @@ public sourcesampling, refinementinvariant
 
 # Qualified access keeps generic extension-hook names out of user namespaces.
 public subtree, expensivecellgeometry
+public hasanalyticlocation, cellneighbors, cellcap, cellcorners
 public chunkextents, chunkextent, chunkindex, candidatechunks!
 # Point sampling separates topology preparation from per-point lookup.
 public hasdualcells, dualcellat, samplerstate

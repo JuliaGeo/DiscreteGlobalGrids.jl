@@ -23,90 +23,60 @@ end
             conventions = CONVENTION_REGISTRY, description = nothing) -> DimStack
     dggread(store, var::Symbol; kwargs...) -> DimArray
 
-**Requires `using Zarr`.** Loading Zarr activates the methods and their full
-keyword reference from `DiscreteGlobalGridsZarrExt`.
+Read a DGGS store as a dimensional cube. Requires `using Zarr`.
+The stack shares a [`Cells`](@ref DiscreteGlobalGrids.CellLookups.Cells) axis backed by [`ChunkedCellLookup`](@ref DiscreteGlobalGrids.ChunkedLookups.ChunkedCellLookup),
+or by [`MultiOrderLookup`](@ref) when a `compacted` store holds mixed-level cells.
+Data stay lazy unless `lazy=false`; the single-variable form returns a `DimArray`.
 
-Read a DGGS store into plain DimensionalData with one `Cells` dimension shared
-by every layer. The dimension carries one of two lookups:
+`store` accepts a local path, URL, `Zarr.ZGroup`, or `Zarr.AbstractStore`.
+Public `gs://` URLs use HTTPS; `s3://` additionally requires `using AWSS3`.
+`vars` selects data variables. Metadata retain source attributes and the detected
+grid description for a later rewrite.
 
-  - [`ChunkedCellLookup`](@ref) resolves cells on a stored single-level axis
-    without scanning it.
-  - [`MultiOrderLookup`](@ref) represents the mixed-level cells of a
-    `compacted` store.
+`validate=:strict` validates IDs when scanning an axis. A stored chunk manifest
+can avoid that scan; `:scan` forces it. `:lazy` samples IDs instead.
+A supplied [`StoreDescription`](@ref) bypasses metadata detection, not mechanical
+validation. Invalid formats raise [`DGGSFormatError`](@ref).
 
-The lookup type identifies the grid system, and a single-level lookup's grid
-stores its level. The [`StoreDescription`](@ref) in the stack's
-`metadata["description"]` stores the orientation, ellipsoid and cell-axis
-layout.
-
-`store` accepts a `Zarr.ZGroup`, `Zarr.AbstractStore`, local path or URL
-(`gs://`, `s3://`, `https://`). The main keywords are:
-
-  - `vars = All()` reads every data variable; a collection of `Symbol`s selects
-    specific variables.
-  - `lazy = true` preserves store-backed arrays; `false` materializes them.
-  - `validate = :strict` checks every id in scanned coordinates and trusts a
-    package-written chunk manifest.
-  - `validate = :lazy` samples each scanned coordinate chunk.
-  - `validate = :scan` ignores a trusted manifest and checks every id.
-  - `description = StoreDescription(...)` supplies grid, level, encoding and
-    array names directly and skips convention detection.
-
-The stack metadata records the detected conventions, source encoding and
-original attributes needed for a value-identical rewrite. A trusted manifest
-lets the default validation open large package-written stores without scanning
-their coordinate ids. A supplied [`StoreDescription`](@ref) enables reading an
-attribute-free store while retaining the mechanical checks.
+See [Reading and writing DGGS stores](@ref) for formats and examples, and
+[Workflow execution details](@ref) for validation and metadata rules.
 """
 dggread(args...; kwargs...) = _needs_zarr("dggread")
 
 """
     dggwrite(dest, stack_or_array; encoding = :auto,
              conventions = DEFAULT_WRITE_CONVENTIONS, chunks = :auto,
-             merge = :step, chunk_target = 1_000_000) -> dest
+             merge = :step, chunk_target = 1_000_000, target = nothing) -> dest
 
-**Requires `using Zarr`.** Loading Zarr activates the methods and their full
-keyword reference from `DiscreteGlobalGridsZarrExt`.
+Write a `DimArray` or `DimStack` with a cell lookup to a Zarr v2 store.
+Requires `using Zarr`. `dest` is a local directory or writable `Zarr.ZGroup`;
+remote URL writing is not supported. An `AbstractCellLookup` axis is sorted,
+unique and single-level; a [`MultiOrderLookup`](@ref) axis is mixed-level.
 
-Write a `DimStack` or `DimArray` over a `Cells` dimension to a Zarr v2 directory
-store. A `CellLookup` or [`ChunkedCellLookup`](@ref) identifies a sorted,
-unique, single-level axis; a [`MultiOrderLookup`](@ref) identifies a mixed-level
-axis. `dest` is a local directory path or a writable `Zarr.ZGroup`. URL
-destinations are rejected; write locally and upload, or pass an already-open
-writable remote group.
+`encoding=:auto` chooses compacted for a mixed-level axis, an eligible ranges
+encoding for a single-level one, and dense IDs otherwise. `:dense` stores each
+ID; `:ranges` stores intervals; `:implicit` requires a complete level;
+`:compacted` stores the aligned ID and level columns of a mixed-level axis, and
+is the only encoding that axis accepts — the single-level ones need
+[`expand`](@ref) first. `merge=:step` joins integer-adjacent IDs. `merge=:rank`
+joins consecutive valid cells and requires a rank-aware reader.
 
-`encoding` selects the cell-axis layout:
+`target=:xdggs` writes a store the Python package xdggs opens with
+`xdggs.decode`: the dense encoding, and a grid that xdggs or one of its plugins
+registers, checked by [`require_xdggs_readable`](@ref) before writing. It
+therefore needs a single-level cube. See [Writing a store for xdggs](@ref).
 
-  - `:auto` selects compacted for a mixed-level axis, ranges for an eligible
-    single-level axis, and dense otherwise.
-  - `:dense` writes every id for broad reader compatibility.
-  - `:ranges` writes the compact single-level range representation.
-  - `:implicit` writes a complete level with no cell coordinate.
-  - `:compacted` writes the aligned id and level columns of a mixed-level axis.
+`chunks` is a cell chunk length or `:auto`. `chunk_target` counts all elements
+per chunk, including non-cell dimensions. Layer metadata become array attributes;
+group attributes come from `metadata["attrs"]`. Generated convention keys take
+precedence, and layer order is normalized alphabetically. `conventions` stamps a
+single-level store with both defaults; a compacted store carries the DGGS
+convention alone, because xdggs attributes describe a single-level coordinate.
 
-Single-level encodings require [`expand`](@ref) to present mixed-level data at
-one level. `conventions` stamps the store with both default conventions for
-single-level layouts. Compacted stores carry the compatible DGGS convention
-metadata; xdggs attributes describe only a single-level coordinate.
-
-The remaining layout controls are:
-
-  - `merge = :step` merges unit-increment ids for compatibility with structural
-    readers; `:rank` merges rank-adjacent cells for fewer rows and requires a
-    rank-aware reader.
-  - `chunks = :auto` groups complete coarse-ancestor subtree runs near the
-    `chunk_target`; an integer fixes the chunk length in cells.
-  - `chunk_target` counts all elements in a chunk, including the extents of
-    non-cell dimensions.
-
-The writer restores each layer's metadata as array attributes and
-`metadata["attrs"]` as group attributes. Convention-generated keys take
-precedence. A round trip sorts layers alphabetically and adds
-`_ARRAY_DIMENSIONS` to each layer's metadata.
-
-`layout` selects the store shape. `:cells` uses the one-dimensional cell axis
-described above. `:subzones` uses the two-dimensional [`SubzoneLayout`](@ref)
-and takes an `ancestor_level`.
+`layout=:subzones` selects the separate ancestor-subzone writer and requires
+`ancestor_level`. See [Reading and writing DGGS stores](@ref),
+[The ancestor-subzone layout](@ref), and [Workflow execution details](@ref)
+for layout-specific options and metadata rules.
 """
 dggwrite(args...; kwargs...) = _needs_zarr("dggwrite")
 
@@ -117,12 +87,14 @@ dggwrite(args...; kwargs...) = _needs_zarr("dggwrite")
 **Requires `using Zarr`.** The methods live in `DiscreteGlobalGridsZarrExt`,
 whose docstring is the full keyword reference.
 
-Create or reopen an ancestor-subzone store for incremental writing. Creation
-stamps the group, arrays and attributes once. Each later [`dggwrite!`](@ref)
-fills one column, represented by one chunk and one file. Tasks can therefore
-write disjoint columns independently.
+Create — or reopen — an ancestor-subzone store for incremental writing: the
+group, its arrays and its attributes are stamped once, and the columns are
+filled afterwards, one [`dggwrite!`](@ref DiscreteGlobalGrids.dggwrite!) at a time. A column is one chunk and
+therefore one file, and a column write rewrites nothing shared, so tasks writing
+disjoint columns need no coordination.
 
-See [`SubzoneLayout`](@ref) for the layout itself and [`dggwrite`](@ref)'s
+See [`SubzoneLayout`](@ref) for the layout itself and
+[`dggwrite`](@ref DiscreteGlobalGrids.dggwrite)'s
 `layout = :subzones` for the one-shot form.
 """
 subzonestore(args...; kwargs...) = _needs_zarr("subzonestore")

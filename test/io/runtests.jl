@@ -34,6 +34,9 @@ using .ChunkedLookups
     # Both round-trip through a real store, so both live behind the same skip.
     include("region.jl")
     include("chunk_sweep.jl")
+    # The real xdggs, from the CondaPkg environment, opening a `target = :xdggs`
+    # store.
+    include("xdggs_python.jl")
 end
 
 end # module DGGIOTests

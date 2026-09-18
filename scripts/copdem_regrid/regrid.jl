@@ -39,7 +39,7 @@ settings = (;
     chunklevel = level - 7,                         # 7^7 = 823 543 cells per chunk
     method     = DGG.Conservative(),                # or BarycentricPoint(), NearestCell()
     policy     = DGG.Weighted(0.5),                 # a cell under half covered by data is NaN; Weighted(1) for BarycentricPoint()
-    tiledir    = get(ENV, "COPDEM_TILES", joinpath(data, "glo$res")), # see "Where the tiles are"
+    tiledir    = get(ENV, "COPDEM_TILES", joinpath(data, "glo$res")), # see `locator` below
     # true: fetch missing tiles from AWS to the path `locator` gives. false: the
     # tiles on disk are complete, and a tile with no file is ocean.
     download   = get(ENV, "COPDEM_DOWNLOAD", "1") != "0",
@@ -54,57 +54,57 @@ settings = (;
 )
 
 # ---------------------------------------------------------------------------
-# Where the tiles are
-# ---------------------------------------------------------------------------
-
-# `locator(s)` returns a function from a tile's south-west corner, in whole
-# degrees, to the path of its GeoTIFF, or to `nothing` for a tile that does not
-# exist. Replace it to read any layout.
-#
-# The default reads AWS file names under `tiledir`, flat
-# (`<tiledir>/<stem>.tif`) or laid out like the bucket
-# (`<tiledir>/<stem>/<stem>.tif`), where `<stem>` is
-# `Copernicus_DSM_COG_10_N45_00_E006_00_DEM`.
-@everywhere locator(s) = TileDirectory(s.tiledir, s.res)
-
-# A custom layout: one directory per hemisphere and latitude band, such as
-# `/mnt/dem/north/45/<stem>.tif`.
-#
-# @everywhere locator(s) = (lat, lon) -> joinpath("/mnt/dem", lat < 0 ? "south" : "north",
-#     string(abs(lat)), tilestem(s.res, lat, lon) * ".tif")
-
-# ---------------------------------------------------------------------------
 # What each worker does
 # ---------------------------------------------------------------------------
 
-# The destination geometry. The store is indexed by plain IGeo7 cells.
-@everywhere igeo7() = DGG.AuthalicSystem(DGG.IGeo7System())
+# Dagger places the tasks and moves their arguments. The code a task runs has to
+# be defined on every worker already, which is what this block does.
+@everywhere begin
+    # Where the tiles are. `locator(s)` returns a function from a tile's
+    # south-west corner, in whole degrees, to the path of its GeoTIFF, or to
+    # `nothing` for a tile that does not exist. Replace it to read any layout.
+    #
+    # The default reads AWS file names under `tiledir`, flat
+    # (`<tiledir>/<stem>.tif`) or laid out like the bucket
+    # (`<tiledir>/<stem>/<stem>.tif`), where `<stem>` is
+    # `Copernicus_DSM_COG_10_N45_00_E006_00_DEM`.
+    locator(s) = TileDirectory(s.tiledir, s.res)
 
-# A worker's view of the run: the DEM as one lazy array, its grid, and the store.
-@everywhere function openworker(s, tiles)
-    # glibc otherwise keeps freed tile buffers: resident memory settles near three times the live heap.
-    Sys.islinux() && ccall(:mallopt, Cint, (Cint, Cint), -1, 32 * 2^20)
-    sys = DGG.CopernicusDEMSystem(s.res)
-    source = s.synthetic ? SyntheticTiles(sys) :
-        CopernicusTiles(sys, tiles; locate = locator(s), download = s.download)
-    dem = TiledDEM(source, tiles; slots = s.cachetiles)
-    from = DGG.DGGSpace(DGG.PartialGrid(sys, 1, dem.ids); chunklevel = 0)
-    return (; dem, from, store = DGG.subzonestore(s.store))
-end
+    # A custom layout: one directory per hemisphere and latitude band, such as
+    # `/mnt/dem/north/45/<stem>.tif`.
+    #
+    # locator(s) = (lat, lon) -> joinpath("/mnt/dem", lat < 0 ? "south" : "north",
+    #     string(abs(lat)), tilestem(s.res, lat, lon) * ".tif")
 
-# Regrid and write `chunks`; returns them with the id of the worker that ran them.
-@everywhere function regridbatch(worker, chunks, s)
-    # Dagger runs one batch per thread, so each regrid stays on its own thread.
-    with(GR.OUTER_PARALLEL => true) do
-        for chunk in chunks
-            cell = DGG.columncell(worker.store.layout, chunk)
-            to = DGG.DGGSpace(DGG.subtree(igeo7(), cell, s.level); chunklevel = s.chunklevel)
-            elevation = GR.regrid(worker.dem; to, from = worker.from, method = s.method,
-                missingpolicy = s.policy, lazy = true, budget = 2^30)
-            DGG.dggwrite!(worker.store, chunk, Float32.(vec(collect(elevation))))
-        end
+    # The destination geometry. The store is indexed by plain IGeo7 cells.
+    igeo7() = DGG.AuthalicSystem(DGG.IGeo7System())
+
+    # A worker's view of the run: the DEM as one lazy array, its grid, and the store.
+    function openworker(s, tiles)
+        # glibc otherwise keeps freed tile buffers: resident memory settles near three times the live heap.
+        Sys.islinux() && ccall(:mallopt, Cint, (Cint, Cint), -1, 32 * 2^20)
+        sys = DGG.CopernicusDEMSystem(s.res)
+        source = s.synthetic ? SyntheticTiles(sys) :
+            CopernicusTiles(sys, tiles; locate = locator(s), download = s.download)
+        dem = TiledDEM(source, tiles; slots = s.cachetiles)
+        from = DGG.DGGSpace(DGG.PartialGrid(sys, 1, dem.ids); chunklevel = 0)
+        return (; dem, from, store = DGG.subzonestore(s.store))
     end
-    return (; chunks, worker = myid())
+
+    # Regrid and write `chunks`; returns them with the id of the worker that ran them.
+    function regridbatch(worker, chunks, s)
+        # Dagger runs one batch per thread, so each regrid stays on its own thread.
+        with(GR.OUTER_PARALLEL => true) do
+            for chunk in chunks
+                cell = DGG.columncell(worker.store.layout, chunk)
+                to = DGG.DGGSpace(DGG.subtree(igeo7(), cell, s.level); chunklevel = s.chunklevel)
+                elevation = GR.regrid(worker.dem; to, from = worker.from, method = s.method,
+                    missingpolicy = s.policy, lazy = true, budget = 2^30)
+                DGG.dggwrite!(worker.store, chunk, Float32.(vec(collect(elevation))))
+            end
+        end
+        return (; chunks, worker = myid())
+    end
 end
 
 # ---------------------------------------------------------------------------

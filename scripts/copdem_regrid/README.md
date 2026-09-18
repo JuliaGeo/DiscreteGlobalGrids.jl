@@ -46,15 +46,19 @@ the mirror is complete first: GLO-30 has 26 450 tiles and GLO-90 has 26 475.
 
 `COPDEM_TILES` covers tiles named as AWS names them, flat
 (`<dir>/<stem>.tif`) or laid out like the bucket (`<dir>/<stem>/<stem>.tif`).
-For any other layout, replace `locator` in the "Where the tiles are" section of
+For any other layout, replace `locator` at the top of the worker block in
 `regrid.jl`. It returns a function from a tile's south-west corner, in whole
 degrees, to the tile's path, or to `nothing` for a tile that does not exist:
 
 ```julia
 # /mnt/dem/north/45/Copernicus_DSM_COG_10_N45_00_E006_00_DEM.tif
-@everywhere locator(s) = (lat, lon) -> joinpath("/mnt/dem", lat < 0 ? "south" : "north",
+locator(s) = (lat, lon) -> joinpath("/mnt/dem", lat < 0 ? "south" : "north",
     string(abs(lat)), tilestem(s.res, lat, lon) * ".tif")
 ```
+
+Dagger places tasks and moves their arguments; the code a task runs has to be
+defined on every worker already. `regrid.jl` has two `@everywhere` blocks for
+that: one loads the packages, and one defines what a worker does.
 
 `tilestem(res, lat, lon)` is the AWS name; a layout with its own names builds
 the file name from `lat` and `lon` directly. With `COPDEM_DOWNLOAD=1` a missing

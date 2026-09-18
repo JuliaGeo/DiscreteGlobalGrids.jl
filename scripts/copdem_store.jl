@@ -1,6 +1,5 @@
 # The store side of the run: the Zarr store, its two sidecar files, and what
-# "already done" means. Included through `dagger_regrid/copdem_helpers.jl` by
-# both CopDEM execution drivers.
+# "already done" means. Included by `copdem_common.jl`.
 #
 # A CHUNK is one level-`ancestor` IGeo7 cell together with all its
 # level-`level` descendants: one work unit, one Zarr chunk, one file on disk.
@@ -47,7 +46,7 @@ end
 function save_chunklist(path, ancestor, chunks)
     mkpath(dirname(path))
     open(path, "w") do io
-        println(io, "# level-$(ancestor) column indices covering the listed tiles")
+        println(io, "# level-$(ancestor) column indices covering the land tiles")
         for c in chunks
             println(io, c)
         end
@@ -220,10 +219,9 @@ there. One `Float32` layer, `elevation`, filled with `NaN`; one Zarr chunk per
 level-`config.ancestor` chunk, `capacity` cells wide.
 
 A new store records `config.method` as `regridding_method`, so a file says which
-semantics produced its elevations — area means, post samples, or the nearest
-post. Reopening one written under a different method is refused: one store holds
-one reading of the data. A store from before the attribute existed carries none
-and is accepted as it is.
+semantics produced its elevations. Reopening a store is refused when its level,
+chunk level, geometry or method differ from `config`: one store holds one
+reading of the data. A store with no `regridding_method` attribute is accepted.
 """
 function openstore(config, sys7, capacity;
         geometry_tag::Union{Nothing,String} = nothing)
@@ -231,6 +229,12 @@ function openstore(config, sys7, capacity;
     method_tag = String(config.method)
     if isdir(path)
         store = DGG.subzonestore(path)
+        layout = store.layout
+        (DGG.system(layout) == sys7 && DGG.level(layout) == config.level &&
+         layout.ancestor_level == config.ancestor && layout.capacity == capacity) ||
+            error("store at $path is level $(DGG.level(layout)) over level-" *
+                  "$(layout.ancestor_level) chunks of $(layout.capacity); expected level " *
+                  "$(config.level) over level-$(config.ancestor) chunks of $capacity")
         observed = get(store.group.attrs, "destination_geometry", nothing)
         observed == geometry_tag || error(
             "store destination_geometry is $(repr(observed)), expected " *

@@ -1,7 +1,7 @@
 # Focused network/integration smoke test for the lazy Copernicus GLO-90 source.
 # Downloads at most three real tiles, then regrids one IGeo7 level-5 column.
 #
-#   RASTERDATASOURCES_PATH=/path/to/bench/data \
+#   RASTERDATASOURCES_PATH=/path/to/data \
 #     nice -n 10 julia --project=benchmark --threads=8 scripts/copdem_lazy_smoke.jl
 
 include("copdem_production.jl")
@@ -10,14 +10,10 @@ check_smoke(name, condition) =
     condition ? println("PASS  ", name) : error("FAILED: $name")
 
 function smoke()
-    dataroot = get(ENV, "RASTERDATASOURCES_PATH",
-        joinpath(@__DIR__, "..", "bench", "data"))
-    listpath = joinpath(dataroot, "CopernicusDEM", "tileList-glo90.txt")
-    cache = get(ENV, "COPDEM_TILE_CACHE",
-        joinpath(@__DIR__, "..", "bench", "data", "CopernicusDEM", "tiles"))
+    config = copdem_config()
     sys = DGG.CopernicusDEMSystem(90)
-    listed = listedtiles(sys, listpath, nothing)
-    check_smoke("the production list has 26,475 unique tiles", length(listed) == 26_475)
+    land = landtiles(sys, tilelist(config.data, 90))
+    check_smoke("the production list has 26,475 unique tiles", length(land) == 26_475)
 
     stems = [
         "Copernicus_DSM_COG_30_N00_00_E006_00_DEM",
@@ -25,18 +21,18 @@ function smoke()
         "Copernicus_DSM_COG_30_S90_00_E000_00_DEM",
     ]
     ordinals = [Int(stemtile(sys, stem).index) for stem in stems]
-    listedset = Set(listed)
-    check_smoke("all three smoke tiles are listed", all(in(listedset), ordinals))
+    landset = Set(land)
+    check_smoke("all three smoke tiles are land tiles", all(in(landset), ordinals))
 
-    provider = LazyCopernicusTiles(sys, listed; cachedir = cache)
+    provider = CopernicusTiles(sys, land; cachedir = config.tilecache)
 
     # The ocean contract is checked before any network operation. `loadtile`
     # has to return nodata while the provider's successful-GET count stays put.
-    ocean = first(t for t in 0:(DGG.ncells(sys, 0) - 1) if !(t in listedset))
+    ocean = first(t for t in 0:(DGG.ncells(sys, 0) - 1) if !(t in landset))
     before_ocean = provider.ndownloads[]
     oceanvals = loadtile(provider, ocean)
-    check_smoke("unlisted ocean tile is all NaN", all(isnan, oceanvals))
-    check_smoke("unlisted ocean tile makes no network request",
+    check_smoke("ocean tile is all NaN", all(isnan, oceanvals))
+    check_smoke("ocean tile makes no network request",
         provider.ndownloads[] == before_ocean)
 
     # Four workers ask for the same uncached tile. The per-tile lock must turn
@@ -74,13 +70,8 @@ function smoke()
     # Normal regridding path: the real tile is one source chunk and the output
     # is one complete level-5 -> level-12 rooted destination column.
     tile = equatorial
-    ids = TileIds(sys, [tile])
-    builder = TileBuilder(sys, [tile], Dict{Int,String}(), provider, NOMASK)
-    tilecache = StripedLRUCache{Vector{Float32}}(k -> buildtile(builder, k);
-        slots = 4, stripes = 1)
-    dem = TiledDEM(ids, builder, tilecache)
-    srcgrid = DGG.PartialGrid(sys, 1, ids)
-    srcspace = DGG.DGGSpace(srcgrid; chunklevel = 0)
+    dem = TiledDEM(provider, [tile]; slots = 4, stripes = 1)
+    srcspace = DGG.DGGSpace(DGG.PartialGrid(sys, 1, dem.ids); chunklevel = 0)
 
     sys7 = DGG.IGeo7System()
     g5 = DGG.levelgrid(sys7, 5)

@@ -340,27 +340,6 @@ end
     @test prefetchstats(pf).failure === nothing
 end
 
-@testset "StripedLRUCache is the escape hatch, not the policy" begin
-    calls = Threads.Atomic{Int}(0)
-    cache = StripedLRUCache{Vector{Float32}}(
-        s -> (Threads.atomic_add!(calls, 1); fill(Float32(s), 4));
-        slots = 4, stripes = 1)
-    for s in 1:4
-        gettile!(cache, s)
-    end
-    @test calls[] == 4
-    @test gettile!(cache, 1) == fill(1.0f0, 4)
-    @test calls[] == 4                       # still resident
-    gettile!(cache, 5)                       # evicts the least recent
-    gettile!(cache, 2)                       # ...which was 2
-    @test calls[] == 6
-    # It answers the same protocol, and retirement is a no-op it can ignore.
-    @test retire_column!(cache, 1) === nothing
-    @test quiescent(cache)
-    @test gettile!(cache, 1; speculative = true) === nothing
-    @test cachestats(cache).policy === :lru
-end
-
 @testset "the seam holds a real chunk_dependency_graph" begin
     # Two tiny spaces, an actual graph, and the cache/order built from it exactly
     # the way the driver builds them.

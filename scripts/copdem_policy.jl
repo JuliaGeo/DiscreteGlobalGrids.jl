@@ -1,6 +1,6 @@
-# Scheduling policy for the CopDEM -> IGeo7 production and Dagger runs: the walk
-# order, tile cache, pull cursor, and prefetcher. Included through the shared
-# CopDEM helper; unit-tested by `test/scripts/copdem_policy.jl`.
+# Scheduling policy for the CopDEM -> IGeo7 runs: the walk order, the pull
+# cursor, the graph-driven tile cache, and the prefetcher. Included by
+# `copdem_common.jl`; unit-tested by `test/scripts/copdem_policy.jl`.
 #
 # Nothing here knows about Copernicus DEM, IGeo7, Zarr, or GlobalRegridding. The
 # only thing it is given about the workload is the tile <-> column adjacency,
@@ -13,10 +13,8 @@
 # a test. That is the seam: the *graph query* lives in GlobalRegridding, the
 # *policy* lives here, and neither depends on the other's types.
 #
-# The numbers this file is built to hit are measured in
-# `regrid-notes/2026-08-21-chunk-dag-sim.md`. In one line: refcount eviction
-# walked in tile-affinity order holds 1.43 GiB of tiles where a 3072-slot LRU
-# holds 16.48 GiB, reloads nothing, and costs +0.013 % makespan.
+# Refcount eviction walked in tile-affinity order holds 1.43 GiB of GLO-90 tiles
+# and reloads nothing; a 3072-slot LRU over the same walk holds 16.48 GiB.
 
 # ===========================================================================
 # The walk order
@@ -59,7 +57,7 @@ that is exactly what refcount eviction rewards: by the time a destination chunk
 runs, every source it needs was touched recently and the last of them is free to
 go the moment it finishes. Measured against the alternatives on the real
 workload: 1.43 GiB peak residency, against 11.91 GiB for a greedy
-maximum-overlap walk and 16.48 GiB for the LRU it replaces.
+maximum-overlap walk and 16.48 GiB for a 3072-slot LRU.
 
 Do **not** substitute an order by cost or degree. Descending degree with
 refcount eviction measured 85 GiB — it front-loads the polar chunks, which
@@ -204,9 +202,8 @@ chunks it touches, structurally rather than by luck.
 see [`affinity_order`](@ref) for the one that was measured, and the 85 GiB
 counterexample it warns about.
 
-One lock, not stripes. It is held only across array reads and writes — never
-across a load, a wait, or a permit acquisition — so the 64 stripes the LRU
-needed buy nothing here.
+One lock, held only across array reads and writes — never across a load, a
+wait, or a permit acquisition.
 
 # Loading
 
@@ -490,85 +487,6 @@ end
 "Source chunks loaded more than once. Empty, by construction; checked anyway."
 doubleloaded(c::RefCountCache) = lock(c.lock) do
     findall(>(1), c.attempts)
-end
-
-# ---------------------------------------------------------------------------
-# The striped LRU it replaces
-# ---------------------------------------------------------------------------
-
-"""
-    StripedLRUCache{V}(nsrc, load; slots, stripes)
-
-The pre-DAG cache, kept as the escape hatch `cachepolicy = :lru`: `stripes`
-independent LRUs of `slots / stripes` entries each, under one lock apiece,
-keyed by source chunk number.
-
-Its peak residency is a property of `slots` and not of the workload — 5.49 MiB
-times the slot count for mid-latitude tiles — so the 3072 slots the production
-run used cost 16.48 GiB to hold a working set that never exceeded 665 tiles.
-Shrinking it to match is not the answer either: at 256 slots the same walk
-reloads 12.6 % of its tiles. It is here to fall back to, not to use.
-
-Unlike [`RefCountCache`](@ref) a build happens *outside* the stripe lock and two
-racers may both build the same chunk, the loser's copy being dropped. That is
-cheap when a build is 15 ms of arithmetic and wrong when it is a paid AWS
-request, which is why `prefetch_depth` is refused in this mode.
-"""
-struct StripedLRUCache{V,F} <: TileCache
-    load::F
-    caches::Vector{Dict{Int,V}}
-    orders::Vector{Vector{Int}}
-    locks::Vector{ReentrantLock}
-    per::Int
-    loads::Threads.Atomic{Int}
-    hits::Threads.Atomic{Int}
-end
-
-function StripedLRUCache{V}(load; slots::Integer = 3072,
-        stripes::Integer = 64) where {V}
-    ns = max(1, Int(stripes))
-    return StripedLRUCache{V,typeof(load)}(load,
-        [Dict{Int,V}() for _ in 1:ns], [Int[] for _ in 1:ns],
-        [ReentrantLock() for _ in 1:ns], max(1, Int(slots) ÷ ns),
-        Threads.Atomic{Int}(0), Threads.Atomic{Int}(0))
-end
-
-function gettile!(c::StripedLRUCache, s::Integer; speculative::Bool = false)
-    speculative && return nothing
-    si = Int(s)
-    st = mod(si, length(c.locks)) + 1
-    lk, cache, order = c.locks[st], c.caches[st], c.orders[st]
-    hit = lock(lk) do
-        v = get(cache, si, nothing)
-        v === nothing && return nothing
-        push!(order, splice!(order, findfirst(==(si), order)))
-        return v
-    end
-    if hit !== nothing
-        Threads.atomic_add!(c.hits, 1)
-        return hit
-    end
-    Threads.atomic_add!(c.loads, 1)
-    v = c.load(si)
-    return lock(lk) do
-        existing = get(cache, si, nothing)
-        existing === nothing || return existing
-        length(cache) >= c.per && delete!(cache, popfirst!(order))
-        cache[si] = v
-        push!(order, si)
-        return v
-    end
-end
-
-retire_column!(::StripedLRUCache, d::Integer) = nothing
-quiescent(::StripedLRUCache) = true
-
-function cachestats(c::StripedLRUCache)
-    live = sum(length, c.caches)
-    bytes = sum(cache -> sum(_nbytes, values(cache); init = 0), c.caches)
-    return (policy = :lru, loads = c.loads[], peakbytes = -1, peaktiles = -1,
-        hits = c.hits[], waits = 0, uncredited = 0, live = live, bytes = bytes,
-        demanded = -1, uncreditedof = Int[], retired = -1, pinned = -1)
 end
 
 # ===========================================================================

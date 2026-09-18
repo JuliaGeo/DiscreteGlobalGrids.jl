@@ -10,8 +10,7 @@
 # The two runs differ ONLY in the method, the store/log names and the NUMA node
 # they are pinned to. Everything else matches the phase1 reference run
 # (scratch-stores/glo90-synthetic-authalic-phase1.log): -t 21 --gcthreads=4,
-# workers=40, budget=2^30, schedule=:affinity, cachepolicy=:refcount,
-# maskarcsec=15, resume=true, malloctrim=32MiB.
+# workers=40, budget=2^30, maskarcsec=15, resume=true.
 #
 # NEVER pass --gcthreads=N,1: the driver's `gcguard` refuses the concurrent page
 # sweeper, which segfaulted the 2026-08-21 run.
@@ -68,7 +67,7 @@ fi
 systemctl --user reset-failed "$UNIT.scope" 2>/dev/null || true
 
 cd "$REPO"
-COPDEM_METHOD="$METHOD" COPDEM_STORE="$STORE" \
+COPDEM_METHOD="$METHOD" COPDEM_STORE="$STORE" COPDEM_SOURCE=synthetic COPDEM_WORKERS=40 \
 setsid nohup systemd-run --user --scope \
     -p MemoryMax=$MEMMAX -p MemorySwapMax=0 --unit="$UNIT" \
     numactl --cpunodebind=$NODE --membind=$NODE \

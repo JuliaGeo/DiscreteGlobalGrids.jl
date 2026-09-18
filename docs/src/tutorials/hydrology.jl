@@ -277,10 +277,14 @@ DGG.holdsdata(pyramid, DGG.cellat(DGG.levelgrid(sys, 3), -70.0, -30.0))
 #
 # That descent is what an interactive plot wants on every camera change: start
 # at the twelve root cells, keep the ones in view that the store says hold
-# something, refine, and stop when refining once more would cost more cells than
-# the screen can show. One `cellvalues` call per level is one read per chunk
-# touched — and never a probe for a chunk that does not exist, because the level
-# above already said.
+# something, refine, and stop when a cell is about a pixel across. One
+# `cellvalues` call per level is one read per chunk touched — and never a probe
+# for a chunk that does not exist, because the level above already said.
+#
+# The stopping rule is about pixels rather than a cell budget on purpose. A
+# budget is wrong in both directions: over a sparsely covered earth it keeps
+# descending until the count catches up, drawing tens of thousands of sub-pixel
+# cells for a tile one pixel wide.
 #
 # The prototype lives beside the package rather than in it:
 
@@ -295,7 +299,7 @@ for (i, span) in enumerate((1.0, 0.1, 0.02))
     box = Extents.Extent(X = (10.5 - span / 2, 10.5 + span / 2),
                          Y = (46.5 - span / 2, 46.5 + span / 2))
     drawn, level, values, trace = PyramidStream.streamframe(pyramid, box;
-        maxcells = 30_000, verbose = false)
+        pixels = 320, verbose = false)
     reads = sum(t.chunks for t in trace)
     ax = Axis(fig[1, i]; aspect = shape, limits = (box.X, box.Y),
         xlabel = "longitude", ylabel = i == 1 ? "latitude" : "",

@@ -78,20 +78,27 @@ end
 Draw a pyramid store, reloading a finer level whenever the camera settles on a
 smaller view.
 """
-function streamplot(store=demostore(); maxcells::Integer=30_000,
-    colorrange=(200, 3800), colormap=:terrain, start=(10.5, 46.5), span=1.4)
+function streamplot(store=demostore(); maxcells::Integer=200_000,
+    colorrange=(200, 3800), colormap=:terrain,
+    limits=((-180.0, 180.0), (-90.0, 90.0)))
 
     pyr = DGG.dggread(store)[:elevation]
     @info "opened" store levels = DGG.levels(pyr)
 
-    fig = Figure(size=(900, 720))
+    # The whole earth to begin with: the store holds one tile, so the opening
+    # frame is a handful of coarse cells over the Alps and nothing else, which
+    # is the layout working rather than a bug. Scroll in and the levels load.
+    fig = Figure(size=(1000, 620))
     ax = Axis(fig[1, 1]; xlabel="longitude", ylabel="latitude",
-        aspect=AxisAspect(cosd(start[2])),
-        limits=((start[1] - span / 2, start[1] + span / 2),
-            (start[2] - span / 2, start[2] + span / 2)))
+        aspect=DataAspect(), limits=limits)
+
+    # How wide the axis really is, in pixels: the descent stops when a cell is
+    # about three of them across, so it has to be asked rather than assumed.
+    axpixels() = round(Int, widths(viewport(ax.scene)[])[1])
 
     e0 = viewextent(ax.finallimits[])
-    cells0, level0, values0, trace0 = PyramidStream.streamframe(pyr, e0; maxcells)
+    cells0, level0, values0, trace0 = PyramidStream.streamframe(pyr, e0;
+        pixels=axpixels(), maxcells)
     # `dggpoly` draws a cell SET: the cells plus what to ask for their
     # boundaries, which for a bare vector of ids is the system.
     plot = dggpoly!(ax, cellset(SYS, cells0); color=Float32.(values0),
@@ -107,7 +114,8 @@ function streamplot(store=demostore(); maxcells::Integer=30_000,
         @printf("\nview %.4f deg across at (%.3f, %.3f)\n",
             e.X[2] - e.X[1], sum(e.X) / 2, sum(e.Y) / 2)
         t0 = time()
-        new, level, values, trace = PyramidStream.streamframe(pyr, e; maxcells)
+        new, level, values, trace = PyramidStream.streamframe(pyr, e;
+            pixels=axpixels(), maxcells)
         isempty(new) && return nothing
         elapsed = time() - t0
         # Cells and colours in ONE update. Setting them as two observables lets

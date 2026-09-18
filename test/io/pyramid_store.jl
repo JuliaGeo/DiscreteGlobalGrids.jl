@@ -264,6 +264,33 @@ end
     @test keys(dggread(d; vars=(:slope,))) == (:slope,)
 end
 
+@testset "the chunk cache" begin
+    d = dest("whole")
+    dggwrite(d, wholeearth(); layout=:pyramid, chunks=49)
+    plain = dggread(d)[:elevation]
+    cached = dggread(d; cache=true)[:elevation]
+    budget = dggread(d; cache=8)[:elevation]
+
+    # The cache changes what a read costs, never what it answers.
+    for p in (cached, budget)
+        @test collect(p[LEVEL][:elevation]) == collect(plain[LEVEL][:elevation])
+        @test cellvalues(p, 2, [cellindex(levelgrid(SYS, 2), 3)]) ==
+              cellvalues(plain, 2, [cellindex(levelgrid(SYS, 2), 3)])
+    end
+    @test parent(cached[LEVEL][:elevation]) isa DiskArrays.CachedDiskArray
+    @test !(parent(plain[LEVEL][:elevation]) isa DiskArrays.CachedDiskArray)
+    # Reading the same run twice is the access pattern the cache is for.
+    @test cached[LEVEL][:elevation][1:100] == plain[LEVEL][:elevation][1:100]
+    @test cached[LEVEL][:elevation][1:100] == plain[LEVEL][:elevation][1:100]
+
+    @test_throws ArgumentError dggread(d; cache=0)
+    @test_throws ArgumentError dggread(d; cache=:yes)
+    # And it is a pyramid keyword: a flat store says so rather than ignoring it.
+    flat = dest("flat")
+    dggwrite(flat, wholeearth())
+    @test_throws ArgumentError dggread(flat; cache=true)
+end
+
 @testset "materialized" begin
     d = dest("whole")
     dggwrite(d, wholeearth(); layout=:pyramid, chunks=49)

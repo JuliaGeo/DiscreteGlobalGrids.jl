@@ -40,7 +40,10 @@ grid description for a later rewrite.
 A store in [The pyramid layout](@ref) is recognized by its own attributes and
 read as a [`StorePyramid`](@ref DiscreteGlobalGrids.StorePyramid) — every level,
 lazily — rather than as a cube: its levels share no cell axis, and the coarse
-ones are how a reader finds out which chunks of the fine ones exist.
+ones are how a reader finds out which chunks of the fine ones exist. `cache`
+wraps each of its levels in a `DiskArrays` chunk cache, as `true` or a budget in
+megabytes; a region read run by run visits one chunk many times over, and
+without it each visit decompresses that chunk again.
 
 `validate=:strict` validates IDs when scanning an axis. A stored chunk manifest
 can avoid that scan; `:scan` forces it. `:lazy` samples IDs instead.

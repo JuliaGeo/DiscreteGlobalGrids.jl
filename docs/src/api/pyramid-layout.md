@@ -73,6 +73,29 @@ a region's coarse levels stay usable right up to its boundary. A cell on that
 boundary is a mean over three of seven children with nothing recording it; where
 that matters, store the count as a second variable.
 
+## Reading a region back
+
+A pyramid level is the COMPLETE level — at level 13 that is 968 890 104 072
+cells — so nothing reads one whole. A region comes back by asking for the parts
+of it you want, and how you ask matters more here than in a flat layout, because
+a region is many runs over few chunks. The hydrology tutorial's tile is 9887
+runs living in 76 chunks:
+
+| reading its 16.17 M cells back | |
+| --- | --- |
+| run by run, no cache | 2.09 s |
+| run by run, `cache = true` | 0.01 s |
+| walking the runs, holding the current chunk | 0.04 s |
+
+Each run visits a chunk, and without a cache each visit decompresses it again —
+about 130 times per chunk here. Either fix works: pass `cache` to
+[`dggread`](@ref DiscreteGlobalGrids.dggread), or walk the runs in order and keep
+the chunk you are in. `cache` is off by default so that a level array shared
+between tasks stays stateless.
+
+[`cellvalues`](@ref DiscreteGlobalGrids.cellvalues) needs neither: it groups its
+cells by chunk itself, which is why a frame costs one read per chunk touched.
+
 ## Compared with the other layouts
 
 |  | `:cells` | `:subzones` | `:pyramid` |
@@ -82,6 +105,28 @@ that matters, store the count as a second variable.
 | chunk | an element target | one ancestor subtree | one subtree, `a^k` slots |
 | partial chunks | yes | refused | yes |
 | xdggs can read it | yes | partly | no |
+
+On the hydrology tutorial's tile — 16 172 725 cells at level 13, 64.7 MB of
+`Float32` before compression — the three come out like this:
+
+| | write | on disk | of which index | files |
+| --- | --- | --- | --- | --- |
+| `:cells`, `encoding = :dense` | 1.02 s | 48.0 MB | 0.87 MB | 35 |
+| `:cells`, `encoding = :ranges` | 1.05 s | 47.4 MB | 0.27 MB | 19 |
+| `:pyramid` | 0.74 s | 55.7 MB | none | 227 |
+| `:subzones` | — | refused: the coverage is not snapped to subtrees | | |
+
+Two things worth reading off that table. **The explicit coordinate is cheap**:
+16.17 million `UInt64` ids are 129 MB raw and 0.87 MB stored, because a cell axis
+ascends and the compressor is very good at that — dropping it saves under two
+per cent. **The overviews are not free**: the thirteen of them add 8.4 MB to the
+leaf level's 47.3 MB, eighteen per cent, which is the `1/6` the aperture implies.
+
+So the pyramid is not the small option. What it buys for that eighteen per cent
+is every level of the hierarchy and an index that needs no probing — and the
+ability to store this cube at all where `:subzones` cannot, because a
+`MultiOrderCoverage` of a lon/lat box refines at its boundary and leaves ancestor
+subtrees partly covered.
 
 The pyramid layout writes no `zarr_conventions` declaration and no array of ids,
 so nothing generic can fingerprint it; it is read by a reader that knows the

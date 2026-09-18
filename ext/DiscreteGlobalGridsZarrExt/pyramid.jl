@@ -526,7 +526,7 @@ end
 # ===========================================================================
 
 """
-    assemble(group, snapshot, identifier, vars, lazy) -> StorePyramid
+    assemble(group, snapshot, identifier, vars, lazy, cache) -> StorePyramid
 
 `dggread` on a pyramid store: one lazy cube per level per variable, over that
 level's complete cell axis, collected into a [`StorePyramid`](@ref DiscreteGlobalGrids.StorePyramid).
@@ -535,8 +535,12 @@ The whole pyramid is opened, not one level of it: the coarse levels ARE the
 index to the fine ones, so a reader that wanted level 13 would have to read
 level 7 to find out which of its chunks exist. They cost a sixth of the store
 between them.
+
+`cache` wraps each level in `DiskArrays.cache` — see
+[`dggread`](@ref DiscreteGlobalGrids.dggread) for what that is worth and what
+it costs.
 """
-function assemble(group, snap, identifier, vars, lazy::Bool)
+function assemble(group, snap, identifier, vars, lazy::Bool, cache)
     layout = pyramid_layout(snap.attrs; store=identifier)
     available = sort!(String[name for name in keys(group.groups)])
     isempty(available) && throw(DGGSFormatError(check=:no_data_variables,
@@ -557,7 +561,8 @@ function assemble(group, snap, identifier, vars, lazy::Bool)
         layers = map(selected) do name
             z = arrays[name][J]
             A = PyramidLevelArray(z, layout, J)
-            DD.DimArray(lazy ? A : Array(A), (Cells(lookup),);
+            data = lazy ? _cached(A, cache) : Array(A)
+            DD.DimArray(data, (Cells(lookup),);
                 name=Symbol(name), metadata=Dict{String,Any}(z.attrs))
         end
         stacks[k] = DD.DimStack(
@@ -570,6 +575,23 @@ function assemble(group, snap, identifier, vars, lazy::Bool)
     return StorePyramid(layout, [s for s in stacks],
         NamedTuple{names}(Tuple(fills[n] for n in names)), String(identifier))
 end
+
+# A cell axis read run by run visits one chunk many times over -- the tile in
+# the hydrology tutorial is 9887 runs living in 76 chunks -- and without a cache
+# each visit decompresses it again. The budget is in megabytes, and `false`
+# leaves the array stateless, which is what a reader sharing it between tasks
+# wants.
+_cached(A, cache::Bool) = cache ? DiskArrays.cache(A) : A
+
+function _cached(A, cache::Real)
+    cache > 0 || throw(ArgumentError(
+        "`cache` is a budget in megabytes and is positive, or `false` for none; " *
+        "$cache is neither."))
+    return DiskArrays.cache(A; maxsize=Int(cache))
+end
+
+@noinline _cached(A, cache) = throw(ArgumentError(
+    "`cache` is `false`, `true`, or a budget in megabytes, not $(repr(cache))."))
 
 function _variablelevels(vargroup, layout::PyramidLayout, name, identifier)
     out = Dict{Int,Zarr.ZArray}()

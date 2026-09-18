@@ -159,6 +159,77 @@ ability to store this cube at all where `:subzones` cannot, because a
 `MultiOrderCoverage` of a lon/lat box refines at its boundary and leaves ancestor
 subtrees partly covered.
 
+## Which systems can be laid out this way
+
+The layout needs a **complete `a`-ary tree addressed in digit order**, which is
+three separate demands:
+
+ 1. a constant aperture — `slotcount(sys, J) == slotcount(sys, root) · a^(J-root)`
+    for every level the store holds, which `PyramidLayout` checks on construction;
+ 2. [`has_sorted_subtrees`](@ref), so a run of the canonical order is a subtree;
+ 3. that the canonical order agree with the slot order, so the subtree of a
+    level-`J-k` cell is exactly the `a^k` slots at `(slot-1)·a^k + 1`.
+
+Cells the refinement deletes are fine — they become fill — but they cost their
+share of the address space. That is the whole of the requirement, and it is why
+[`slotindex`](@ref DiscreteGlobalGrids.slotindex) is a system hook rather than
+something derived from the id: a system whose canonical order is a Hilbert curve
+within each face satisfies (3) by numbering its slots along that curve, not by
+its raw id.
+
+| system | tree | aperture | slots | cells | wasted | pyramid |
+| --- | --- | --- | --- | --- | --- | --- |
+| `IGeo7System` | yes | 7 | `12·7^l` | `10·7^l + 2` | 16.7% | **implemented** |
+| `H3System` | yes | 7 | `122·7^l` | `120·7^l + 2` | **1.6%** | needs the three hooks |
+| `HEALPixSystem` | yes | 4 | `12·4^l` | `12·4^l` | none | needs the three hooks |
+| `S2System` | yes | 4 | `6·4^l` | `6·4^l` | none | needs the three hooks |
+| `ISEA4RSystem` | yes | 4 | `10·4^l` | `10·4^l` | none | needs the three hooks |
+| `A5System` | **no** | 5 then 4 | — | `12`, then `60·4^(l-1)` | — | **impossible** |
+
+The quad-face family is the easy case and the one this layout is cheapest on:
+no cell is ever deleted, so `slotcount == ncells`, the slot index IS the dense
+index, and the three hooks are a line each. IGEO7 is the expensive case —
+twelve pentagon chains delete `2·7^l - 2` addresses out of only twelve base
+cells. H3 deletes exactly the same number of addresses but spreads them over a
+hundred and twenty-two base cells, so the same layout wastes a sixth on IGEO7
+and a sixtieth on H3.
+
+`A5System` cannot have it at all, for two independent reasons: it declares
+[`has_sorted_subtrees`](@ref)` == false`, and its levels are not a constant
+aperture — twelve root cells become sixty at level 1 and quadruple only after
+that, so no power of one number divides every level's address space.
+
+### The same question for the other encodings
+
+The three layouts want quite different things, and they nest:
+
+| | needs | works on |
+| --- | --- | --- |
+| `:cells`, dense | ids, and [`idvalid`](@ref DiscreteGlobalGrids.Encodings.idvalid) to check them | any system with ids |
+| `:cells`, ranges | canonical order == ascending id, and closed-form rank/select over the level ([`idrank`](@ref DiscreteGlobalGrids.Encodings.idrank), [`idselect`](@ref DiscreteGlobalGrids.Encodings.idselect), [`idcount_between`](@ref DiscreteGlobalGrids.Encodings.idcount_between)) | any system with a computable total order — **no tree needed** |
+| `:pyramid` | the complete digit tree above | tree systems only |
+
+The middle row is the interesting one. Ranges needs to count the real cells
+inside an arbitrary id interval, which means rank must be **total on the integer
+type** — defined on ids that name nothing, because an interval's endpoints need
+not be cells. That is a genuine piece of arithmetic per system, and it is why
+only IGEO7 and HEALPix have it today: HEALPix nested ids are the dense index, so
+rank is the identity, and IGEO7's is a digit walk carrying the pentagon
+correction. H3's would be the same walk over a prefix sum of its base cells.
+
+So `A5System` is the case that separates the two requirements: it can never have
+the pyramid layout, but there is nothing stopping it having the ranges encoding,
+because ascending id order is its canonical order whether or not its subtrees are
+contiguous.
+
+!!! note "One gate before any of this"
+    Every layout resolves a store's grid through
+    [`GRID_REFERENCE`](@ref DiscreteGlobalGrids.GRID_REFERENCE), and only
+    `"igeo7"` and `"healpix"` are registered. A system with no canonical store
+    name cannot be written in ANY layout until
+    [`register_grid!`](@ref DiscreteGlobalGrids.register_grid!) gives it one —
+    a name pins the id packing, so it is refused rather than invented.
+
 ## Where it degenerates
 
 Every one of these layouts assumes some spatial coherence, and each loses it

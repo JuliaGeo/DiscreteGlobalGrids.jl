@@ -11,7 +11,7 @@ import Distributed
 import Printf: @sprintf
 using Base.ScopedValues: @with
 
-include(joinpath(@__DIR__, "..", "copdem_helpers.jl"))
+include(joinpath(@__DIR__, "..", "..", "copdem_common.jl"))
 
 export DaggerRegridConfig, DaggerRegridReport, dagger_smoke
 

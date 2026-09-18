@@ -1,7 +1,7 @@
 # Focused network/integration smoke test for the lazy Copernicus GLO-90 source.
 # Downloads at most three real tiles, then regrids one IGeo7 level-5 column.
 #
-#   RASTERDATASOURCES_PATH=/path/to/bench/data \
+#   RASTERDATASOURCES_PATH=/path/to/data \
 #     nice -n 10 julia --project=benchmark --threads=8 scripts/copdem_lazy_smoke.jl
 
 include("copdem_production.jl")
@@ -10,13 +10,9 @@ check_smoke(name, condition) =
     condition ? println("PASS  ", name) : error("FAILED: $name")
 
 function smoke()
-    dataroot = get(ENV, "RASTERDATASOURCES_PATH",
-        joinpath(@__DIR__, "..", "bench", "data"))
-    listpath = joinpath(dataroot, "CopernicusDEM", "tileList-glo90.txt")
-    cache = get(ENV, "COPDEM_TILE_CACHE",
-        joinpath(@__DIR__, "..", "bench", "data", "CopernicusDEM", "tiles"))
+    config = copdem_config()
     sys = DGG.CopernicusDEMSystem(90)
-    listed = listedtiles(sys, listpath, nothing)
+    listed = listedtiles(sys, tilelist(config.data, 90))
     check_smoke("the production list has 26,475 unique tiles", length(listed) == 26_475)
 
     stems = [
@@ -28,7 +24,7 @@ function smoke()
     listedset = Set(listed)
     check_smoke("all three smoke tiles are listed", all(in(listedset), ordinals))
 
-    provider = LazyCopernicusTiles(sys, listed; cachedir = cache)
+    provider = CopernicusTiles(sys, listed; cachedir = config.tilecache)
 
     # The ocean contract is checked before any network operation. `loadtile`
     # has to return nodata while the provider's successful-GET count stays put.
@@ -74,13 +70,8 @@ function smoke()
     # Normal regridding path: the real tile is one source chunk and the output
     # is one complete level-5 -> level-12 rooted destination column.
     tile = equatorial
-    ids = TileIds(sys, [tile])
-    builder = TileBuilder(sys, [tile], Dict{Int,String}(), provider, NOMASK)
-    tilecache = StripedLRUCache{Vector{Float32}}(k -> buildtile(builder, k);
-        slots = 4, stripes = 1)
-    dem = TiledDEM(ids, builder, tilecache)
-    srcgrid = DGG.PartialGrid(sys, 1, ids)
-    srcspace = DGG.DGGSpace(srcgrid; chunklevel = 0)
+    dem = TiledDEM(provider, [tile]; slots = 4, stripes = 1)
+    srcspace = DGG.DGGSpace(DGG.PartialGrid(sys, 1, dem.ids); chunklevel = 0)
 
     sys7 = DGG.IGeo7System()
     g5 = DGG.levelgrid(sys7, 5)

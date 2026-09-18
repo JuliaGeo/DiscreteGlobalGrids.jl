@@ -51,7 +51,7 @@ if mode === :smoke
 end
 
 validate_config(config)
-gcguard(config.production)
+gcguard()
 
 # The coordinator owns the graph, affinity order, store metadata, and ledger.
 prepared = prepare_coordinator(config)
@@ -73,7 +73,7 @@ state = Dagger.shard(
 nslots = length(config.processes) * config.inflight_per_process
 schedule = GuidedSchedule(
     length(prepared.order),
-    config.production.taper ? nslots : 1,
+    nslots,
     config.batch,
 )
 slotpids = repeat(config.processes; inner = config.inflight_per_process)

@@ -15,33 +15,18 @@ end
 
 function make_worker_state(settings)
     config = settings.production
-    gcguard(config)
-    config.malloctrim > 0 && tunemalloc(config.malloctrim)
-    geometry = _source_geometry(config)
-    tiledir = joinpath(config.data, "CopernicusDEM", "$(config.res)m")
-    landshp = joinpath(config.data, "naturalearth", "ne_10m_land.shp")
-    # Real tiles carry their own ocean nodata; only a synthetic source masks.
-    mask = config.source === :synthetic ? landmask(landshp, config.maskarcsec) : NOMASK
-    real = realtiles(geometry.sys, tiledir,
-        effective_realspec(config.source, config.real))
-    tileset = Set(geometry.tiles)
-    filter!(p -> p.first in tileset, real)
-    provider = if config.source === :real
-        root = something(settings.tilecache_root, config.tilecache * ".dagger")
-        cachedir = joinpath(root, "worker-$(Distributed.myid())")
-        LazyCopernicusTiles(geometry.sys, geometry.tiles;
-            cachedir, baseurl = config.tilebaseurl, retries = config.retries,
-            backoff = config.backoff, timeout = config.timeout)
-    else
-        nothing
-    end
-    builder = TileBuilder(geometry.sys, geometry.tiles, real, provider, mask;
-        delay = config.fetchdelay)
-    cache = StripedLRUCache{Vector{Float32}}(k -> buildtile(builder, k);
+    gcguard()
+    tunemalloc()
+    # Each process keeps its own GeoTIFF directory, so no two processes race on
+    # one `.part` file.
+    root = something(settings.tilecache_root, config.tilecache * ".dagger")
+    config = merge(config, (; tilecache = joinpath(root, "worker-$(Distributed.myid())")))
+    src = opensource(config)
+    cache = StripedLRUCache{Vector{Float32}}(k -> loadtile(src.tilesource, src.tiles[k]);
         slots = settings.cache_slots, stripes = settings.cache_stripes)
-    dem = TiledDEM(geometry.ids, builder, cache)
+    dem = TiledDEM(src.ids, cache)
     store = DGG.subzonestore(config.store)
-    return WorkerState(dem, geometry.srcspace, geometry.sys7, store, store.layout, config)
+    return WorkerState(dem, cache, src.srcspace, src.sys7, store, store.layout, config)
 end
 
 function _error_string(err, bt)
@@ -52,8 +37,7 @@ end
 function run_batch(state::WorkerState, items::Vector{WorkItem})
     reports = ChunkReport[]
     batch_started = time()
-    outer = state.config.shape === :outer
-    @with GR.OUTER_PARALLEL => outer begin
+    @with GR.OUTER_PARALLEL => true begin
         for item in items
             started = time()
             stage = :compute
@@ -82,8 +66,6 @@ function run_batch(state::WorkerState, items::Vector{WorkItem})
 end
 
 function worker_stats(state::WorkerState)
-    stats = cachestats(state.dem.cache)
-    builder = state.dem.builder
-    return WorkerStats(Distributed.myid(), stats.loads, stats.hits, stats.live,
-        stats.bytes, builder.nreal[], builder.nsynthetic[], builder.npixels[])
+    stats = CopernicusUtils.cachestats(state.cache)
+    return WorkerStats(Distributed.myid(), stats.loads, stats.hits, stats.live, stats.bytes)
 end

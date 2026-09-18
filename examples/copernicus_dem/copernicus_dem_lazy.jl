@@ -2,11 +2,11 @@
 #
 # Run in the docs environment for ArchGDAL and DiskArrays:
 #
-#     julia -t auto --project=docs examples/copernicus_dem_lazy.jl
+#     julia -t auto --project=docs examples/copernicus_dem/copernicus_dem_lazy.jl
 #
 # One chunk per 1°x1° tile, backed by that tile's COG on AWS and fetched on
-# first touch; tiles absent from the bucket manifest read as `0.0f0` (ocean
-# sits at 0 on the EGM2008 geoid) with no network. Tiles cache in `tempdir()`.
+# first touch; tiles absent from the bucket's tile list read as `NaN32` with no
+# network. The tile list and tiles cache under `tempdir()/copdem90`.
 
 import DiscreteGlobalGrids as DGG
 import ConservativeRegridding as CR
@@ -15,8 +15,8 @@ import GeoInterface as GI
 import DimensionalData as DD
 import DiskArrays
 import ArchGDAL
-import Downloads
 import Extents
+using CopernicusUtils
 
 const CD = DGG.CopernicusDEM
 
@@ -38,92 +38,29 @@ println("="^78)
 
 # --- 1. The lazy vector: one chunk per tile. -----------------------------
 
-const BUCKET = "https://copernicus-dem-90m.s3.amazonaws.com"
+const DATADIR = joinpath(tempdir(), "copdem90")
 const CACHE_TILES = 16
 
-"Download `url` to `path` once; atomic rename never caches a partial file."
-function fetched(url, path)
-    if !isfile(path)
-        part = "$path.part-$(getpid())"
-        Downloads.download(url, part)
-        mv(part, path; force=true)
-    end
-    return path
-end
-
-"The AWS object stem of `tile`, e.g. `Copernicus_DSM_COG_30_N50_00_E006_00_DEM`."
-function tilestem(sys, tile)
-    lat, lon = CD.tilecorner(sys, tile)
-    return string("Copernicus_DSM_COG_30_", lat < 0 ? "S" : "N", lpad(abs(lat), 2, '0'),
-        "_00_", lon < 0 ? "W" : "E", lpad(abs(lon), 3, '0'), "_00_DEM")
-end
-
 """
-Every GLO-90 pixel as one `Float32` vector in level-1 cell order. Chunk `k` is
-tile `k`'s `descendant_range`, so reads are tile-aligned: a touched tile's COG
-is downloaded once, decoded, and held in a `CACHE_TILES`-tile LRU. A tile
-absent from the bucket manifest reads as `0.0f0` without touching the network.
-`loaded` records every tile ordinal actually decoded, in decode order.
+Every GLO-90 pixel as one `TiledDEM` over all 64 800 tiles, so its index order
+is the complete level-1 grid's. `loaded` records each listed tile decoded, in
+decode order.
 """
-struct GLO90Vector{S<:DGG.CopernicusDEMSystem,C} <: DiskArrays.AbstractDiskArray{Float32,1}
-    sys::S
-    chunks::C
-    present::Set{String}                # manifest stems
-    cache::Dict{Int,Vector{Float32}}    # decoded tiles by ordinal
-    order::Vector{Int}                  # LRU order, oldest first
-    loaded::Vector{Int}
-end
-
-function GLO90Vector(sys::DGG.CopernicusDEMSystem)
-    widths = [length(DGG.descendant_range(sys, t, 1)) for t in DGG.rootcells(sys)]
-    chunks = DiskArrays.GridChunks(DiskArrays.IrregularChunks(; chunksizes=widths))
-    manifest = fetched("$BUCKET/tileList.txt", joinpath(tempdir(), "copdem90-tileList.txt"))
-    present = Set{String}(split(read(manifest, String)))
-    return GLO90Vector(sys, chunks, present, Dict{Int,Vector{Float32}}(), Int[], Int[])
-end
-
-Base.size(A::GLO90Vector) = (DGG.ncells(A.sys, 1),)
-DiskArrays.eachchunk(A::GLO90Vector) = A.chunks
-DiskArrays.haschunks(::GLO90Vector) = DiskArrays.Chunked()
-
-"The decoded raster of the tile at `ordinal`, as `vec` of the COG's band 1."
-function tilevec!(A::GLO90Vector, ordinal::Int, stem::String)
-    if haskey(A.cache, ordinal)
-        push!(A.order, splice!(A.order, findfirst(==(ordinal), A.order)))
-        return A.cache[ordinal]
+function glo90(sys, source)
+    loaded = Int[]
+    cache = StripedLRUCache{Vector{Float32}}(; slots=CACHE_TILES, stripes=1) do k
+        (k - 1) in source.listed && push!(loaded, k - 1)
+        loadtile(source, k - 1)
     end
-    tif = fetched("$BUCKET/$stem/$stem.tif", joinpath(tempdir(), "$stem.tif"))
-    v = vec(ArchGDAL.read(ds -> ArchGDAL.read(ds, 1), tif))
-    push!(A.loaded, ordinal)
-    length(A.cache) >= CACHE_TILES && delete!(A.cache, popfirst!(A.order))
-    A.cache[ordinal] = v
-    push!(A.order, ordinal)
-    return v
-end
-
-function DiskArrays.readblock!(A::GLO90Vector, out, r::AbstractUnitRange)
-    p = first(r)
-    while p <= last(r)
-        tile = Base.parent(A.sys, DGG.LevelIndex(1, p - 1))
-        window = DGG.descendant_range(A.sys, tile, 1)
-        stop = min(last(r), last(window))
-        seg = (p - first(r) + 1):(stop - first(r) + 1)
-        stem = tilestem(A.sys, tile)
-        if stem in A.present
-            v = tilevec!(A, Int(tile.index), stem)
-            out[seg] .= view(v, (p - first(window) + 1):(stop - first(window) + 1))
-        else
-            fill!(view(out, seg), 0.0f0)
-        end
-        p = stop + 1
-    end
-    return out
+    return TiledDEM(TileIds(sys, 0:64_799), cache), loaded
 end
 
 # --- 2. Structure: chunks are exactly the tiles' descendant ranges. ------
 
 sys = DGG.CopernicusDEMSystem(90)
-lazy = GLO90Vector(sys)
+listed = listedtiles(sys, tilelist(DATADIR, 90))
+source = CopernicusTiles(sys, listed; cachedir=joinpath(DATADIR, "tiles"))
+lazy, loaded = glo90(sys, source)
 ec = DiskArrays.eachchunk(lazy)
 
 check("length is ncells(sys, 1)",
@@ -147,30 +84,29 @@ check("chunk widths step with the band table",
 
 ocean = CD.tilecell(sys, 0, -30)                   # mid-Atlantic
 andes = CD.tilecell(sys, -34, -71)                 # land, exercises the S/W labels
-check("manifest separates land from ocean",
-    length(lazy.present) >= 26_000 &&
-    tilestem(sys, t50) in lazy.present && tilestem(sys, andes) in lazy.present &&
-    !(tilestem(sys, ocean) in lazy.present);
-    detail="$(length(lazy.present)) stems listed, incl. $(tilestem(sys, andes))")
+check("the tile list separates land from ocean",
+    length(listed) >= 26_000 &&
+    Int(t50.index) in source.listed && Int(andes.index) in source.listed &&
+    !(Int(ocean.index) in source.listed);
+    detail="$(length(listed)) tiles listed, incl. $(tilestem(sys, andes))")
 oceanvals = lazy[DGG.descendant_range(sys, ocean, 1)]
-check("an ocean chunk is all zeros with zero loads",
-    all(iszero, oceanvals) && isempty(lazy.loaded);
+check("an ocean chunk is all NaN with zero loads",
+    all(isnan, oceanvals) && isempty(loaded);
     detail="$(length(oceanvals)) pixels of $(tilestem(sys, ocean))")
 
 # --- 4. A land chunk equals the COG read directly. -----------------------
 
 directvec(t) = vec(ArchGDAL.read(ds -> ArchGDAL.read(ds, 1),
-    fetched("$BUCKET/$(tilestem(sys, t))/$(tilestem(sys, t)).tif",
-        joinpath(tempdir(), "$(tilestem(sys, t)).tif"))))
+    tilepath!(source, Int(t.index))))
 
 check("the N50_00_E006_00 chunk equals its COG",
     lazy[DGG.descendant_range(sys, t50, 1)] == directvec(t50) &&
-    lazy.loaded == [Int(t50.index)];
+    loaded == [Int(t50.index)];
     detail="960000 pixels, 1 tile loaded")
 
 # --- 5. The cube: Covering selection loads only the tiles it touches. ----
 
-fresh = GLO90Vector(sys)                           # its own load record
+fresh, freshloaded = glo90(sys, source)            # its own load record
 dem = DD.DimArray(fresh, DGG.Cells(DGG.CellLookup(DGG.levelgrid(sys, 1))))
 window = Extents.Extent(X=(6.4, 6.6), Y=(49.9, 50.1))   # crosses the 50° band edge
 sub = dem[DGG.Cells(DGG.Covering(window))]
@@ -185,9 +121,9 @@ check("selected values match the direct per-tile reads",
     all(sub[k] == direct[t][Int(subids[k].index) + 2 - first(ranges[t])]
         for k in eachindex(subids) for t in (Base.parent(sys, subids[k]),)))
 check("the selection loaded exactly the touched tiles",
-    Set(fresh.loaded) == Set(Int(t.index) for t in touched) &&
-    length(fresh.loaded) == length(touched);
-    detail="loaded $(length(fresh.loaded)) of 64800 chunks")
+    Set(freshloaded) == Set(Int(t.index) for t in touched) &&
+    length(freshloaded) == length(touched);
+    detail="loaded $(length(freshloaded)) of 64800 chunks")
 
 # --- 6. Conservative regrid of the window onto IGEO7, fed through the cube. ---
 

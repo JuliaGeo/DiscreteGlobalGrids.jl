@@ -62,8 +62,8 @@ using DiscreteGlobalGrids
     # The production driver's scheduling policy. It is a script rather than a
     # package, but the tile cache and the pull cursor are concurrent state with
     # an invariant, and an invariant is what a test is for.
-    include("scripts/copdem_source_mode.jl")
     include("scripts/copdem_policy.jl")
+    include("scripts/copdem_store.jl")
     include("raster_rasters_ext.jl")
     include("raster_api_regressions.jl")
 end

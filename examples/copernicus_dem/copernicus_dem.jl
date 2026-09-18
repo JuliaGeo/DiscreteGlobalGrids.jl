@@ -2,9 +2,9 @@
 #
 # Run in the docs environment for ArchGDAL:
 #
-#     julia -t auto --project=docs examples/copernicus_dem.jl
+#     julia -t auto --project=docs examples/copernicus_dem/copernicus_dem.jl
 #
-# Downloads one GLO-90 tile to `tempdir()` over HTTPS and reuses it when cached.
+# Downloads one GLO-90 tile to `tempdir()/copdem90` over HTTPS and reuses it when cached.
 #
 # `COPDEM_ROWS=n` limits regridding to the northernmost `n` raster rows.
 
@@ -14,8 +14,8 @@ import GeometryOps as GO
 import GeoInterface as GI
 import DimensionalData as DD
 import ArchGDAL
-import Downloads
 import Extents
+using CopernicusUtils
 
 const CD = DGG.CopernicusDEM
 const US = GO.UnitSpherical
@@ -46,23 +46,17 @@ println("="^78)
 # --------------------------------------------------------------------------
 
 const TILE_LAT, TILE_LON = 50, 6          # N50_00_E006_00 — band [50,60), 1.5x
-const STEM = "Copernicus_DSM_COG_30_N50_00_E006_00_DEM"
-const URL = "https://copernicus-dem-90m.s3.amazonaws.com/$STEM/$STEM.tif"
-const TIF = joinpath(tempdir(), "$STEM.tif")
-
-if !isfile(TIF)
-    println("  downloading $URL")
-    # Atomic replacement prevents caching a partial download.
-    part = "$TIF.part-$(getpid())"
-    Downloads.download(URL, part)
-    mv(part, TIF; force=true)
-end
-note("tile file: $TIF ($(round(filesize(TIF) / 2^20; digits=2)) MiB)")
 
 sys = DGG.CopernicusDEMSystem(90)
 tile = CD.tilecell(sys, TILE_LAT, TILE_LON)
 g0 = DGG.levelgrid(sys, 0)
 g1 = DGG.levelgrid(sys, 1)
+
+const DATADIR = joinpath(tempdir(), "copdem90")
+const TIF = tilepath!(CopernicusTiles(sys, [Int(tile.index)];
+    cachedir=joinpath(DATADIR, "tiles")), Int(tile.index))
+note("tile file: $TIF ($(round(filesize(TIF) / 2^20; digits=2)) MiB)")
+
 const TILE_W, TILE_E, TILE_S, TILE_N = CD.cell_box(sys, tile)
 const NCOLS = Int(CD.ncols_at(sys, TILE_LAT))
 const NROWS = Int(CD.lat_intervals(sys))
@@ -374,9 +368,10 @@ chunk, chunkvalues = row_band(ROWS)
 println()
 println("  matched-resolution regrids over $ROWS of $NROWS raster rows " *
         "($(DGG.ncells(chunk)) pixels)")
-check("the chunk gets the block cursor", DGG.treeify(chunk) isa CD.BlockCursor;
+check("the chunk gets the tiled raster cursor",
+    DGG.treeify(chunk) isa DGG.Engine.TiledRasterCursor;
     detail="$(nameof(typeof(DGG.treeify(chunk)))) from " *
-           "src/systems/CopernicusDEM/cursor.jl, chosen by `treeify` with nothing " *
+           "src/engine/tiled_raster.jl, chosen by `treeify` with nothing " *
            "named here")
 builds = Dict(name => regrid_onto(name, dstsys, LEVELS[name], chunk, chunkvalues)
               for (name, dstsys) in DESTINATIONS)

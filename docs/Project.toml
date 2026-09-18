@@ -2,6 +2,7 @@
 ArchGDAL = "c9ce4bd3-c3d5-55b8-8973-c0e20141b8c3"
 Bonito = "824d6782-a2ef-11e9-3a09-e5662e0c26f8"
 Chairmarks = "0ca39b1e-fe0b-4e98-acfc-b1656634c4de"
+CopernicusUtils = "2ce93296-2e59-4100-9c60-11a4bf28edcb"
 ConservativeRegridding = "8e50ac2c-eb48-49bc-a402-07c87b949343"
 DataStructures = "864edb3b-99cc-5e75-8d2d-829cb0a9cfe8"
 DimensionalData = "0703355e-b756-11e9-17c0-8b28908087d0"
@@ -39,6 +40,7 @@ WGLMakie = "276b4fcb-3e11-5398-bf8b-a0c2d153d008"
 Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
 
 [sources]
+CopernicusUtils = {path = "../lib/CopernicusUtils"}
 DiscreteGlobalGrids = {path = ".."}
 DiscreteGlobalGridsConformanceTesting = {path = "../lib/DiscreteGlobalGridsConformanceTesting"}
 DiscreteGlobalGridsVisualization = {path = "../lib/DiscreteGlobalGridsVisualization"}

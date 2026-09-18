@@ -1,54 +1,18 @@
 # Graph preparation, bounded admission, completion, and ledger ownership.
 
-function _source_geometry(config)
-    sys = DGG.CopernicusDEMSystem(config.res)
-    storesys7 = DGG.IGeo7System()
-    sys7 = config.authalic ? DGG.AuthalicSystem(storesys7) : storesys7
-    tilelist = copdem_tilelist(config)
-    tiles = listedtiles(sys, tilelist, config.region)
-    isempty(tiles) && error("the tile list and region select no tiles")
-    ids = TileIds(sys, tiles)
-    srcgrid = DGG.PartialGrid(sys, 1, ids)
-    srcspace = DGG.DGGSpace(srcgrid; chunklevel = 0)
-    return (; sys, storesys7, sys7, tiles, ids, srcspace)
-end
-
-function _destination_chunks(config, geometry)
-    !isempty(config.chunks) && return sort!(unique(copy(config.chunks)))
-    path = chunklistpath(config.store)
-    chunks = load_chunklist(path)
-    if chunks === nothing
-        chunks = covering_chunks(geometry.sys7, geometry.sys, geometry.tiles,
-            config.ancestor; nthreads = max(1, Threads.nthreads() - 1))
-        save_chunklist(path, config.ancestor, chunks)
-    end
-    if 0 < config.maxchunks < length(chunks)
-        chunks = chunks[round.(Int, range(1, length(chunks); length = config.maxchunks))]
-    end
-    return chunks
-end
-
 function prepare_coordinator(config)
     prod = config.production
-    geometry = _source_geometry(prod)
-    chunks = _destination_chunks(prod, geometry)
+    src = opensource(prod)
+    chunks = destination_chunks(prod, src)
     capacity = 7^(prod.level - prod.ancestor)
-    geometry_tag = prod.authalic ? sprint(show, geometry.sys7) : nothing
-    store = openstore(prod, geometry.storesys7, capacity; geometry_tag)
-    layout = store.layout
+    geometry_tag = prod.authalic ? sprint(show, src.sys7) : nothing
+    store = openstore(prod, src.storesys7, capacity; geometry_tag)
     donepath = donelogpath(prod.store)
     done = prod.resume ? donechunks(donepath, prod.store, "elevation") : Set{Int}()
-    plan = dagplan(geometry.sys, geometry.sys7, geometry.tiles, chunks,
-        geometry.srcspace, prod)
-    GR.ndestinationchunks(plan.graph) == length(chunks) ||
-        error("dependency graph destination count does not match the work list")
-    GR.nsourcechunks(plan.graph) == length(geometry.tiles) ||
-        error("dependency graph source count does not match the tile list")
-    length(plan.order) == length(chunks) && isperm(plan.order) ||
-        error("dependency order is not a permutation of the work list")
+    plan = dagplan(src, chunks, prod)
     order = filter(d -> !(chunks[d] in done), plan.order)
-    return (; geometry..., chunks, order, graph = plan.graph, store, layout,
-        donepath, skipped = length(plan.order) - length(order))
+    return (; src, chunks, order, graph = plan.graph, store, donepath,
+        skipped = length(plan.order) - length(order))
 end
 
 

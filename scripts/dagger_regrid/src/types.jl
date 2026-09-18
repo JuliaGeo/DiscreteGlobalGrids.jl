@@ -57,9 +57,6 @@ struct WorkerStats
     hits::Int
     live::Int
     bytes::Int
-    real_tiles::Int
-    synthetic_tiles::Int
-    pixels::Int
 end
 
 """A compact, coordinator-side result; destination arrays never appear here."""
@@ -77,8 +74,9 @@ struct DaggerRegridReport
     workers::Vector{WorkerStats}
 end
 
-struct WorkerState{D,S,Y,O,L,C}
+struct WorkerState{D,K,S,Y,O,L,C}
     dem::D
+    cache::K
     srcspace::S
     sys7::Y
     store::O

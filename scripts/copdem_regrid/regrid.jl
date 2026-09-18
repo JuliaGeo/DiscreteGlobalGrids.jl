@@ -28,7 +28,7 @@ end
 # Settings
 # ---------------------------------------------------------------------------
 
-res = parse(Int, get(ENV, "COPDEM_RES", "90"))      # 90 for GLO-90, 30 for GLO-30
+res = parse(Int, get(ENV, "COPDEM_RES", "30"))      # 30 for GLO-30, 90 for GLO-90
 level = res == 30 ? 13 : 12                         # first IGeo7 level finer than the DEM's posts
 data = get(ENV, "COPDEM_DATA", joinpath(homedir(), "copdem"))
 synthetic = get(ENV, "COPDEM_SYNTHETIC", "0") != "0"
@@ -39,10 +39,9 @@ settings = (;
     chunklevel = level - 7,                         # 7^7 = 823 543 cells per chunk
     method     = DGG.Conservative(),                # or BarycentricPoint(), NearestCell()
     policy     = DGG.Weighted(0.5),                 # a cell under half covered by data is NaN; Weighted(1) for BarycentricPoint()
-    # Directory of tile GeoTIFFs, flat or laid out like the AWS bucket.
-    tiledir    = get(ENV, "COPDEM_TILES", joinpath(data, "glo$res")),
-    # true: fetch missing tiles from AWS. false: `tiledir` is complete, and a
-    # tile with no file there is ocean.
+    tiledir    = get(ENV, "COPDEM_TILES", joinpath(data, "glo$res")), # see "Where the tiles are"
+    # true: fetch missing tiles from AWS to the path `locator` gives. false: the
+    # tiles on disk are complete, and a tile with no file is ocean.
     download   = get(ENV, "COPDEM_DOWNLOAD", "1") != "0",
     store      = get(ENV, "COPDEM_STORE",
                      joinpath(data, "glo$res$(synthetic ? "-synthetic" : "")-igeo7-l$level.zarr")),
@@ -53,6 +52,26 @@ settings = (;
     batch      = parse(Int, get(ENV, "COPDEM_BATCH", "8")), # chunks per Dagger task
     cachetiles = res == 30 ? 32 : 256,              # decoded tiles each worker keeps: 52 MB each at 30 m, 6 MB at 90 m
 )
+
+# ---------------------------------------------------------------------------
+# Where the tiles are
+# ---------------------------------------------------------------------------
+
+# `locator(s)` returns a function from a tile's south-west corner, in whole
+# degrees, to the path of its GeoTIFF, or to `nothing` for a tile that does not
+# exist. Replace it to read any layout.
+#
+# The default reads AWS file names under `tiledir`, flat
+# (`<tiledir>/<stem>.tif`) or laid out like the bucket
+# (`<tiledir>/<stem>/<stem>.tif`), where `<stem>` is
+# `Copernicus_DSM_COG_10_N45_00_E006_00_DEM`.
+@everywhere locator(s) = TileDirectory(s.tiledir, s.res)
+
+# A custom layout: one directory per hemisphere and latitude band, such as
+# `/mnt/dem/north/45/<stem>.tif`.
+#
+# @everywhere locator(s) = (lat, lon) -> joinpath("/mnt/dem", lat < 0 ? "south" : "north",
+#     string(abs(lat)), tilestem(s.res, lat, lon) * ".tif")
 
 # ---------------------------------------------------------------------------
 # What each worker does
@@ -67,7 +86,7 @@ settings = (;
     Sys.islinux() && ccall(:mallopt, Cint, (Cint, Cint), -1, 32 * 2^20)
     sys = DGG.CopernicusDEMSystem(s.res)
     source = s.synthetic ? SyntheticTiles(sys) :
-        CopernicusTiles(sys, tiles; cachedir = s.tiledir, download = s.download)
+        CopernicusTiles(sys, tiles; locate = locator(s), download = s.download)
     dem = TiledDEM(source, tiles; slots = s.cachetiles)
     from = DGG.DGGSpace(DGG.PartialGrid(sys, 1, dem.ids); chunklevel = 0)
     return (; dem, from, store = DGG.subzonestore(s.store))
@@ -95,8 +114,8 @@ end
 sys = DGG.CopernicusDEMSystem(res)
 tiles = settings.download || synthetic ?
     landtiles(sys, tilelist(data, res), settings.region) :
-    landtiles(sys, TileDirectory(settings.tiledir, res), settings.region)
-isempty(tiles) && error("no tiles found for region $(settings.region) in $(settings.tiledir)")
+    landtiles(sys, locator(settings), settings.region)
+isempty(tiles) && error("no tiles found for region $(settings.region)")
 
 chunks = covering_chunks(igeo7(), sys, tiles, settings.chunklevel; nthreads = Threads.nthreads())
 

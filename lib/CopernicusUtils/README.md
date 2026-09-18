@@ -36,5 +36,6 @@ tiles = landtiles(sys, locate)
 dem   = TiledDEM(CopernicusTiles(sys, tiles; locate, download = false), tiles)
 ```
 
-`scripts/copdem_production.jl` and `scripts/dagger_regrid/` are the full
-GLO-90 -> IGeo7 drivers built on it.
+`scripts/copdem_regrid/` regrids the whole DEM onto IGeo7 with it, on one
+machine or a Slurm cluster. `scripts/copdem_production.jl` is the threaded
+single-node driver.

@@ -1,9 +1,9 @@
-# Shared by both CopDEM drivers: the configuration, the source, the dependency
-# graph with its walk order, and the one-chunk regrid.
+# The threaded CopDEM driver's configuration, source, dependency graph with its
+# walk order, and one-chunk regrid.
 #
-# An include fragment. `copdem_production.jl` (threads) and the `DaggerRegrid`
-# module (processes) each load it into their own module. Tile access, the lazy
-# DEM array and the synthetic source live in `lib/CopernicusUtils`.
+# An include fragment, loaded by `copdem_production.jl` and `benchmark/copdem.jl`.
+# Tile access, the lazy DEM array and the synthetic source live in
+# `lib/CopernicusUtils`.
 
 import DiscreteGlobalGrids as DGG
 import GlobalRegridding as GR

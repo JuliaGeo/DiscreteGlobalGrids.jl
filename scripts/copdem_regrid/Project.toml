@@ -1,26 +1,13 @@
-name = "DaggerRegrid"
-uuid = "11720a2a-ed24-4506-8c84-45e7a82299a6"
-version = "0.0.0-DEV"
-authors = ["Anshul Singhvi"]
-
 [deps]
 CopernicusUtils = "2ce93296-2e59-4100-9c60-11a4bf28edcb"
 Dagger = "d58978e5-989f-55fb-8d15-ea34adc7bf54"
-Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
-DimensionalData = "0703355e-b756-11e9-17c0-8b28908087d0"
 DiscreteGlobalGrids = "443be784-8f3c-41ab-9ff0-108bddc7e690"
 Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
-GeometryOps = "3251bfac-6a57-4b6d-aa61-ac1fef2975ab"
 GlobalRegridding = "76847d5f-3a3e-4aa5-90cc-2a3a47dd1c11"
-Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
-Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+SlurmClusterManager = "c82cd089-7bf7-41d7-976b-6b5d413cbe0a"
 Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
 
 [sources]
 CopernicusUtils = {path = "../../lib/CopernicusUtils"}
-Dagger = {rev = "master", url = "https://github.com/JuliaParallel/Dagger.jl.git"}
 DiscreteGlobalGrids = {path = "../.."}
 GlobalRegridding = {path = "../../lib/GlobalRegridding"}
-
-[compat]
-julia = "1.11"

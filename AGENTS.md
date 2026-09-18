@@ -11,7 +11,7 @@ Manifests are disposable. Every environment in this monorepo is fully described 
 ## Tests and docs
 
 - One test file: `julia --project=test test/<path>.jl` from the repo root. Each suite is its own module.
-- GlobalRegridding: `julia --project=lib/GlobalRegridding -e 'using Pkg; Pkg.test()'`, which is what CI runs.
+- GlobalRegridding: `julia --project=lib/GlobalRegridding -e 'using Pkg; Pkg.test()'`, which is what CI runs. `lib/CopernicusUtils` runs the same way.
 - Full suite: `julia --project=. -e 'using Pkg; Pkg.test()'`, about 18 minutes.
 - Strict docs build: `DGG_DOCS_FAST=true julia --project=docs docs/make.jl`.
 

@@ -57,11 +57,11 @@ Real Copernicus DEM GeoTIFFs, found on disk by the locator `locate`.
 [`TileDirectory`](@ref) for the locator contract.
 
 Construction touches neither disk nor network. With `download = true` the first
-access to a land tile whose file is absent fetches its COG from `baseurl` to
-`<path>.part` and renames it into place, so only complete files carry the final
-name. One lock per tile makes concurrent requests for the same tile a single
-GET. With `download = false` an absent file is an error, and the source never
-writes.
+access to a land tile whose file is absent fetches its COG from `baseurl` to a
+temporary file beside it and renames that into place. Only complete files carry
+the final name, so several processes can share one directory. One lock per tile
+makes concurrent requests within a process a single GET. With
+`download = false` an absent file is an error, and the source never writes.
 
 `landtiles` are the level-0 ordinals of the tiles that exist, as
 [`landtiles`](@ref) returns them. Every other tile is ocean: [`loadtile`](@ref)
@@ -142,7 +142,8 @@ function tilepath!(source::CopernicusTiles, ordinal::Int; demand::Bool = true)
         isfile(path) && return path
         demand && Threads.atomic_add!(source.ncold, 1)
         mkpath(dirname(path))
-        part = path * ".part"
+        part, io = mktemp(dirname(path))
+        close(io)
         url = tileurl(source, ordinal)
         last_error = nothing
         for attempt in 1:source.retries

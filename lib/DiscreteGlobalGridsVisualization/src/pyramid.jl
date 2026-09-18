@@ -52,8 +52,17 @@ that hold nothing), the cells themselves, and the locator that turns one of them
 back into an index in the user's value vector.
 
 Building one is `O(samples)`, not `O(ncells)`: nothing here walks the data.
+
+An [`AbstractPyramid`](@ref DiscreteGlobalGrids.AbstractPyramid), so a descent
+written against that contract runs over a cell set in memory as readily as over
+a store. It answers `system`, `levels` and
+[`holdsdata`](@ref DiscreteGlobalGrids.holdsdata); it does NOT answer
+[`cellvalues`](@ref DiscreteGlobalGrids.cellvalues), because it does not own the
+values. The colour vector stays with the plot on purpose — `resample_frame`
+returns INDICES into it, which is what lets a recolour re-read the same frame
+instead of rebuilding it.
 """
-struct CellPyramid{S, G, C, L}
+struct CellPyramid{S, G, C, L} <: DGG.AbstractPyramid
     system::S
     leafgrid::G
     leaflevel::Int
@@ -65,6 +74,9 @@ struct CellPyramid{S, G, C, L}
     locate::L
     ncells::Int
 end
+
+DGG.system(pyr::CellPyramid) = pyr.system
+DGG.levels(pyr::CellPyramid) = pyr.rootlevel:pyr.leaflevel
 
 # `source` may be a system already, or a grid drawn from one.
 _system(sys::DGG.AbstractHierarchicalGridSystem) = sys
@@ -128,11 +140,15 @@ end
 
 Whether the subtree under `cell` can hold any of the pyramid's cells.
 
+An estimate, and deliberately one that errs towards `true`: the cap is sampled,
+so a cell it keeps may hold nothing. That is the side the
+[`holdsdata`](@ref DiscreteGlobalGrids.holdsdata) contract allows to be wrong.
+
 `node_extent` covers every descendant of `cell` at every depth, so two caps that
 miss each other rule the whole subtree out — which is what keeps the descent's
 cost proportional to what is on screen rather than to the size of the world.
 """
-function holdsdata(pyr::CellPyramid, cell)
+function DGG.holdsdata(pyr::CellPyramid, cell)
     cap = DGG.node_extent(pyr.system, cell)
     return _angle(pyr.capcentre, cap.point) <= cap.radius + pyr.capradius
 end

@@ -619,3 +619,55 @@ function descendant_range(sys::AbstractHierarchicalGridSystem, c::AbstractCellIn
         "descendant_range(::$(typeof(sys)), ::$(typeof(c)), ::Integer); it is not implemented"))
     throw(MethodError(descendant_range, (sys, c, l)))
 end
+
+# ===========================================================================
+# The padded slot space
+# ===========================================================================
+
+"""
+    slotcount(sys::AbstractHierarchicalGridSystem, l::Integer) -> Int
+
+The size of level `l`'s **slot space**: the id space the level's cells are
+addressed in before the ones that name nothing are taken out.
+
+A hierarchy of aperture `a` over `r` root cells addresses a level-`l` cell by
+its root and `l` digits, which is `r·aˡ` addresses, of which
+[`ncells`](@ref)`(sys, l)` name cells. IGEO7 has `12·7ˡ` slots against
+`10·7ˡ + 2` cells, the difference being the twelve pentagons' deleted branches;
+a system whose refinement deletes nothing has `slotcount == ncells`.
+
+**Required** of a system that is to be written in the pyramid layout, together
+with [`slotindex`](@ref DiscreteGlobalGrids.slotindex) and
+[`slotcell`](@ref DiscreteGlobalGrids.slotcell). What the layout buys from it is
+a chunk grid that follows the tree: `aᵏ` consecutive slots are exactly one
+subtree, whatever the subtree really holds, which no dense order can promise.
+"""
+function slotcount end
+
+"""
+    slotindex(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex) -> Int
+
+The one-based slot `c` occupies in its own level's slot space.
+
+Slot order is the level's canonical order with the absent addresses left in, so
+it is ASCENDING in the same sense [`globalindex`](@ref DiscreteGlobalGrids.globalindex)
+is, and the two agree wherever a level has no absent addresses at all.
+
+The subtree of a cell at level `l - d` is the `aᵈ` consecutive slots beginning at
+`(slotindex(sys, c) - 1)·aᵈ + 1`, which is the property the pyramid layout's
+chunking rests on.
+"""
+function slotindex end
+
+"""
+    slotcell(sys::AbstractHierarchicalGridSystem, l::Integer, i::Integer) -> Union{AbstractCellIndex,Nothing}
+
+The level-`l` cell at slot `i`, or `nothing` where the slot names none — the
+inverse of [`slotindex`](@ref DiscreteGlobalGrids.slotindex), total on
+`1:slotcount(sys, l)`.
+
+`nothing` is the answer for an address the refinement deleted, not an error: a
+reader walking a stored slot range meets those addresses in the ordinary course
+of reading, and they are what the layout's fill values stand for.
+"""
+function slotcell end

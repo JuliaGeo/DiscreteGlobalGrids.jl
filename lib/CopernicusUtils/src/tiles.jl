@@ -15,14 +15,20 @@ function stemtile(sys, stem::AbstractString)
     return CD.tilecell(sys, lat, lon)
 end
 
-"The AWS object stem of `tile`. Inverse of [`stemtile`](@ref)."
-function tilestem(sys, tile)
-    lat, lon = CD.tilecorner(sys, tile)
-    tag = resolution(sys) == 30 ? "10" : "30"
+"""
+    tilestem(res, lat, lon) -> String
+    tilestem(sys, tile) -> String
+
+The AWS object stem of the tile whose south-west corner is (`lat`, `lon`) in
+whole degrees, at `res` metres. Inverse of [`stemtile`](@ref).
+"""
+function tilestem(res::Integer, lat::Integer, lon::Integer)
+    tag = res == 30 ? "10" : "30"
     return string("Copernicus_DSM_COG_", tag, "_", lat < 0 ? "S" : "N",
         lpad(abs(lat), 2, '0'), "_00_", lon < 0 ? "W" : "E",
         lpad(abs(lon), 3, '0'), "_00_DEM")
 end
+tilestem(sys, tile) = tilestem(resolution(sys), CD.tilecorner(sys, tile)...)
 
 """
     tilelist(datadir, res = 90; baseurl = bucketurl(res), timeout = 600) -> String
@@ -79,4 +85,21 @@ function listedtiles(sys, path::AbstractString, regions = nothing)
         push!(out, Int(t.index))
     end
     return sort!(unique!(out))
+end
+
+"""
+    listedtiles(sys, locate, regions = nothing) -> Vector{Int}
+
+The level-0 ordinals of every tile whose GeoTIFF the [locator](@ref TileDirectory)
+`locate` finds on disk, ascending. One `isfile` per tile of the globe.
+"""
+function listedtiles(sys, locate, regions = nothing)
+    out = Int[]
+    for ordinal in 0:DGG.ncells(sys, 0) - 1
+        lat, lon = CD.tilecorner(sys, DGG.LevelIndex(0, ordinal))
+        inregions(regions, lon, lat) || continue
+        path = locate(lat, lon)
+        path !== nothing && isfile(path) && push!(out, ordinal)
+    end
+    return out
 end

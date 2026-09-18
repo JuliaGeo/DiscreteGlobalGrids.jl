@@ -47,6 +47,38 @@ end
     end
 end
 
+@testset "tile locators" begin
+    lat, lon = 0, 6
+    ordinal = Int(CD.tilecell(sys, lat, lon).index)
+    stem = tilestem(90, lat, lon)
+    @test stem == tilestem(sys, CD.tilecell(sys, lat, lon))
+    mktempdir() do dir
+        locate = TileDirectory(dir, 90)
+        flat = joinpath(dir, stem * ".tif")
+        nested = joinpath(dir, stem, stem * ".tif")
+        @test locate(lat, lon) == flat
+        @test isempty(listedtiles(sys, locate))
+        mkpath(dirname(nested)); touch(nested)
+        @test locate(lat, lon) == nested
+        @test listedtiles(sys, locate) == [ordinal]
+        @test isempty(listedtiles(sys, locate, [(20.0, 30.0, 20.0, 30.0)]))
+        touch(flat)
+        @test locate(lat, lon) == flat
+
+        custom(lat, lon) = lat < 0 ? nothing : joinpath(dir, "n$(lat)e$(lon).tif")
+        south = Int(CD.tilecell(sys, -1, lon).index)
+        src = CopernicusTiles(sys, [ordinal, south]; locate = custom, download = false)
+        @test tilecachepath(src, ordinal) == joinpath(dir, "n0e6.tif")
+        @test tilepath!(src, south) === nothing
+        @test all(isnan, loadtile(src, south))
+        @test_throws ErrorException tilepath!(src, ordinal)
+        touch(joinpath(dir, "n0e6.tif"))
+        @test tilepath!(src, ordinal) == joinpath(dir, "n0e6.tif")
+        @test_throws ArgumentError CopernicusTiles(sys, [ordinal])
+        @test_throws ArgumentError CopernicusTiles(sys, [ordinal]; cachedir = dir, locate = custom)
+    end
+end
+
 @testset "synthetic tiles" begin
     tile = CD.tilecell(sys, 46, 10)
     vals = synthetic_tile(sys, tile, NOMASK)

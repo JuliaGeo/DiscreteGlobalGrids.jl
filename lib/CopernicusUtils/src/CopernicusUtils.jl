@@ -17,7 +17,7 @@ const CD = DGG.CopernicusDEM
 const US = GO.UnitSpherical
 
 export stemtile, tilestem, tilelist, listedtiles
-export CopernicusTiles, SyntheticTiles, loadtile, tilepath!, tilecachepath, tileurl
+export CopernicusTiles, TileDirectory, SyntheticTiles, loadtile, tilepath!, tilecachepath, tileurl
 export LandMask, NOMASK, landmask, island, synthetic_elevation, synthetic_tile
 export SourceMask, hassource, cellsource
 export SubtreeIds, TileIds, tileat, TiledDEM, StripedLRUCache, covering_chunks

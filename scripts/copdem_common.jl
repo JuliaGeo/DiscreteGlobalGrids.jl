@@ -53,6 +53,7 @@ function copdem_config(; overrides...)
         maskarcsec  = _env("COPDEM_MASKARCSEC", 15), # synthetic land mask; 0 disables it
         tilecache   = get(ENV, "COPDEM_TILE_CACHE", joinpath(data, "CopernicusDEM", "tiles")),
         tilebaseurl = get(ENV, "COPDEM_TILE_BASEURL", CopernicusUtils.bucketurl(res)),
+        download    = _env("COPDEM_DOWNLOAD", true), # false: tilecache is complete and read-only
         workers     = _env("COPDEM_WORKERS", 2 * Threads.nthreads()), # concurrent chunk tasks
         batch       = 8,        # chunks handed out per pull, at most
         budget      = 2^30,     # lazy-regrid byte budget, per worker
@@ -186,7 +187,8 @@ function opensource(config)
     isempty(tiles) && error("the tile list and region select no tiles")
     mask = NOMASK
     tilesource = if config.source === :real
-        CopernicusTiles(sys, tiles; cachedir = config.tilecache, baseurl = config.tilebaseurl)
+        CopernicusTiles(sys, tiles; cachedir = config.tilecache,
+            download = config.download, baseurl = config.tilebaseurl)
     else
         shp = joinpath(config.data, "naturalearth", "ne_10m_land.shp")
         mask = landmask(shp, config.maskarcsec)

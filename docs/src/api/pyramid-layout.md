@@ -96,6 +96,37 @@ between tasks stays stateless.
 [`cellvalues`](@ref DiscreteGlobalGrids.cellvalues) needs neither: it groups its
 cells by chunk itself, which is why a frame costs one read per chunk touched.
 
+## Reading a subset, which is what plotting asks for
+
+The table above reads everything. A view reads a part, and that is where the
+layouts separate. Same tile, same machine, against `:cells` with the ranges
+encoding:
+
+| | `:cells` | `:pyramid` | |
+| --- | --- | --- | --- |
+| open the store | 0.192 s | 0.0016 s | 120× |
+| a 0.1° window at level 13 (163 098 cells) | 0.082 s | 0.0078 s | 10× |
+| the same window at level 8 (1 038 cells) | 9.84 s | 0.0017 s | 5 700× |
+
+Three different reasons, worth separating.
+
+**Opening** is `O(n)` for a stored coordinate and `O(1)` for an implicit one:
+`:cells` has to read its cell axis and check it before it can answer anything,
+while a pyramid's axis is arithmetic on the id. That gap widens with the store.
+
+**Locating** a window is arithmetic either way, but `:cells` resolves it against
+the stored axis and a pyramid against the slot number, so the pyramid reads only
+the chunks the window touches and nothing about where they are. The cost of "which
+subtree covers this cell range" is a handful of base-7 digit operations — it never
+touches the store.
+
+**The coarse view** is not a speedup at all, it is a different algorithm. A
+single-level store has no level 8; getting one means reading all 16 million
+leaves and aggregating them, every time. The pyramid reads the overview that was
+computed once at write time. This is the whole point of the layout, and it is
+the number that grows with the data: at ten times the cells the first column is
+ten times slower and the second is unchanged.
+
 ## Compared with the other layouts
 
 |  | `:cells` | `:subzones` | `:pyramid` |

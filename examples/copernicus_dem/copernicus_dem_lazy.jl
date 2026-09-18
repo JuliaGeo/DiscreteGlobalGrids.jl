@@ -43,13 +43,13 @@ const CACHE_TILES = 16
 
 """
 Every GLO-90 pixel as one `TiledDEM` over all 64 800 tiles, so its index order
-is the complete level-1 grid's. `loaded` records each listed tile decoded, in
+is the complete level-1 grid's. `loaded` records each land tile decoded, in
 decode order.
 """
 function glo90(sys, source)
     loaded = Int[]
     cache = StripedLRUCache{Vector{Float32}}(; slots=CACHE_TILES, stripes=1) do k
-        (k - 1) in source.listed && push!(loaded, k - 1)
+        (k - 1) in source.landtiles && push!(loaded, k - 1)
         loadtile(source, k - 1)
     end
     return TiledDEM(TileIds(sys, 0:64_799), cache), loaded
@@ -58,8 +58,8 @@ end
 # --- 2. Structure: chunks are exactly the tiles' descendant ranges. ------
 
 sys = DGG.CopernicusDEMSystem(90)
-listed = listedtiles(sys, tilelist(DATADIR, 90))
-source = CopernicusTiles(sys, listed; cachedir=joinpath(DATADIR, "tiles"))
+land = landtiles(sys, tilelist(DATADIR, 90))
+source = CopernicusTiles(sys, land; cachedir=joinpath(DATADIR, "tiles"))
 lazy, loaded = glo90(sys, source)
 ec = DiskArrays.eachchunk(lazy)
 
@@ -85,10 +85,10 @@ check("chunk widths step with the band table",
 ocean = CD.tilecell(sys, 0, -30)                   # mid-Atlantic
 andes = CD.tilecell(sys, -34, -71)                 # land, exercises the S/W labels
 check("the tile list separates land from ocean",
-    length(listed) >= 26_000 &&
-    Int(t50.index) in source.listed && Int(andes.index) in source.listed &&
-    !(Int(ocean.index) in source.listed);
-    detail="$(length(listed)) tiles listed, incl. $(tilestem(sys, andes))")
+    length(land) >= 26_000 &&
+    Int(t50.index) in source.landtiles && Int(andes.index) in source.landtiles &&
+    !(Int(ocean.index) in source.landtiles);
+    detail="$(length(land)) land tiles, incl. $(tilestem(sys, andes))")
 oceanvals = lazy[DGG.descendant_range(sys, ocean, 1)]
 check("an ocean chunk is all NaN with zero loads",
     all(isnan, oceanvals) && isempty(loaded);

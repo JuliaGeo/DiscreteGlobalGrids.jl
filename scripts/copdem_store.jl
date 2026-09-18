@@ -46,7 +46,7 @@ end
 function save_chunklist(path, ancestor, chunks)
     mkpath(dirname(path))
     open(path, "w") do io
-        println(io, "# level-$(ancestor) column indices covering the listed tiles")
+        println(io, "# level-$(ancestor) column indices covering the land tiles")
         for c in chunks
             println(io, c)
         end

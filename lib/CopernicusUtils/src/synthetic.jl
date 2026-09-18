@@ -37,7 +37,7 @@ struct LandMask
     bits::BitMatrix
 end
 
-"No mask: every post of a listed tile is valid."
+"No mask: every post of a land tile is valid."
 const NOMASK = nothing
 
 "Is (`lon`, `lat`) over land? True everywhere under [`NOMASK`](@ref)."
@@ -197,24 +197,24 @@ loadtile(source::SyntheticTiles, ordinal::Int) =
     synthetic_tile(source.sys, DGG.LevelIndex(0, ordinal), source.mask)
 
 """
-    SourceMask(mask, g0, listed)
+    SourceMask(mask, g0, landtiles)
 
 Whether a point has a valid synthetic post under it. A point has none when its
-tile is unlisted or when the land mask calls it ocean; the two disagree often
+tile is outside `landtiles` or when the land mask calls it ocean; the two disagree often
 enough (lake islands, mostly-sea tiles, region filters) that an oracle needs
 both. `g0` is the level-0 tile grid.
 """
 struct SourceMask{M,G}
     mask::M
     g0::G
-    listed::Set{Int}
+    landtiles::Set{Int}
 end
 
 @inline function hassource(s::SourceMask, p::GO.UnitSphericalPoint)
     lon, lat = US.GeographicFromUnitSphere()(p)
     island(s.mask, lon, lat) || return false
     t = DGG.cellat(s.g0, p)
-    return t !== nothing && Int(t.index) in s.listed
+    return t !== nothing && Int(t.index) in s.landtiles
 end
 
 """

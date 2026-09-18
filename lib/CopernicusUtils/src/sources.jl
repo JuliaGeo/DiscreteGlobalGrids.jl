@@ -49,29 +49,30 @@ function (dir::TileDirectory)(lat::Integer, lon::Integer)
 end
 
 """
-    CopernicusTiles(sys, listed; cachedir, download = true, baseurl, retries, backoff, timeout)
-    CopernicusTiles(sys, listed; locate, ...)
+    CopernicusTiles(sys, landtiles; cachedir, download = true, baseurl, retries, backoff, timeout)
+    CopernicusTiles(sys, landtiles; locate, ...)
 
 Real Copernicus DEM GeoTIFFs, found on disk by the locator `locate`.
 `cachedir = dir` is `locate = TileDirectory(dir, resolution(sys))`; see
 [`TileDirectory`](@ref) for the locator contract.
 
 Construction touches neither disk nor network. With `download = true` the first
-access to a listed tile whose file is absent fetches its COG from `baseurl` to
+access to a land tile whose file is absent fetches its COG from `baseurl` to
 `<path>.part` and renames it into place, so only complete files carry the final
 name. One lock per tile makes concurrent requests for the same tile a single
 GET. With `download = false` an absent file is an error, and the source never
 writes.
 
-An unlisted tile is ocean: [`loadtile`](@ref) returns all-`NaN32` for it without
-calling `locate`.
+`landtiles` are the level-0 ordinals of the tiles that exist, as
+[`landtiles`](@ref) returns them. Every other tile is ocean: [`loadtile`](@ref)
+returns all-`NaN32` for it without calling `locate`.
 
 `ndownloads` counts successful GETs; `ncold` counts demands that had to start
 one.
 """
 struct CopernicusTiles{S<:DGG.CopernicusDEMSystem,L}
     sys::S
-    listed::Set{Int}
+    landtiles::Set{Int}
     locate::L
     download::Bool
     baseurl::String
@@ -84,7 +85,7 @@ struct CopernicusTiles{S<:DGG.CopernicusDEMSystem,L}
     ncold::Threads.Atomic{Int}
 end
 
-function CopernicusTiles(sys::DGG.CopernicusDEMSystem, listed;
+function CopernicusTiles(sys::DGG.CopernicusDEMSystem, landtiles;
         cachedir::Union{AbstractString,Nothing} = nothing, locate = nothing,
         download::Bool = true,
         baseurl::AbstractString = bucketurl(resolution(sys)),
@@ -95,7 +96,7 @@ function CopernicusTiles(sys::DGG.CopernicusDEMSystem, listed;
     backoff >= 0 || throw(ArgumentError("backoff must be non-negative"))
     timeout > 0 || throw(ArgumentError("timeout must be positive"))
     locator = locate === nothing ? TileDirectory(cachedir, resolution(sys)) : locate
-    tiles = Set(Int.(listed))
+    tiles = Set(Int.(landtiles))
     return CopernicusTiles(sys, tiles, locator, download,
         String(rstrip(String(baseurl), '/')), Int(retries), Float64(backoff),
         Float64(timeout), Dict(t => ReentrantLock() for t in tiles),
@@ -126,12 +127,12 @@ _transientstatus(status::Integer) =
     tilepath!(source, ordinal; demand = true) -> Union{String,Nothing}
 
 The local path of a tile, downloading it first if needed; `nothing` for a tile
-that is unlisted (ocean) or that the locator says does not exist.
+that is ocean or that the locator says does not exist.
 `demand = false` marks a speculative fetch, which `source.ncold` leaves
 uncounted.
 """
 function tilepath!(source::CopernicusTiles, ordinal::Int; demand::Bool = true)
-    ordinal in source.listed || return nothing
+    ordinal in source.landtiles || return nothing
     path = tilecachepath(source, ordinal)
     path === nothing && return nothing
     isfile(path) && return path
@@ -157,7 +158,7 @@ function tilepath!(source::CopernicusTiles, ordinal::Int; demand::Bool = true)
                 status = err isa Downloads.RequestError ? err.response.status : 0
                 rm(part; force = true)
                 (status == 403 || status == 404) &&
-                    error("listed Copernicus tile returned HTTP $status from $url")
+                    error("Copernicus land tile returned HTTP $status from $url")
                 (!_transientstatus(status) || attempt == source.retries) && break
                 delay = source.backoff * 2.0^(attempt - 1)
                 @warn "Copernicus tile download failed; retrying" url attempt delay status

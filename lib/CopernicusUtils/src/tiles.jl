@@ -64,16 +64,16 @@ inregions(regions, lon, lat) =
     any(r -> r[1] <= lon <= r[2] && r[3] <= lat <= r[4], regions)
 
 """
-    listedtiles(sys, path, regions = nothing) -> Vector{Int}
+    landtiles(sys, path, regions = nothing) -> Vector{Int}
 
 The level-0 ordinals of every tile named in the tile list at `path`, ascending.
 `regions` is `nothing` for the globe or a list of `(w, e, s, n)` boxes that a
 tile's south-west corner must fall in.
 
-An unlisted tile is open ocean: it has no object in the bucket, so a source grid
-built over this list has no chunk there.
+These are the land tiles. Any other tile is open ocean: it has no object in the
+bucket, so a source grid built over this list has no chunk there.
 """
-function listedtiles(sys, path::AbstractString, regions = nothing)
+function landtiles(sys, path::AbstractString, regions = nothing)
     isfile(path) || throw(ArgumentError("no tile list at $path"))
     out = Int[]
     for line in eachline(path)
@@ -88,12 +88,12 @@ function listedtiles(sys, path::AbstractString, regions = nothing)
 end
 
 """
-    listedtiles(sys, locate, regions = nothing) -> Vector{Int}
+    landtiles(sys, locate, regions = nothing) -> Vector{Int}
 
 The level-0 ordinals of every tile whose GeoTIFF the [locator](@ref TileDirectory)
 `locate` finds on disk, ascending. One `isfile` per tile of the globe.
 """
-function listedtiles(sys, locate, regions = nothing)
+function landtiles(sys, locate, regions = nothing)
     out = Int[]
     for ordinal in 0:DGG.ncells(sys, 0) - 1
         lat, lon = CD.tilecorner(sys, DGG.LevelIndex(0, ordinal))

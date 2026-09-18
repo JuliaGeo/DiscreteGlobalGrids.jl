@@ -12,8 +12,8 @@ check_smoke(name, condition) =
 function smoke()
     config = copdem_config()
     sys = DGG.CopernicusDEMSystem(90)
-    listed = listedtiles(sys, tilelist(config.data, 90))
-    check_smoke("the production list has 26,475 unique tiles", length(listed) == 26_475)
+    land = landtiles(sys, tilelist(config.data, 90))
+    check_smoke("the production list has 26,475 unique tiles", length(land) == 26_475)
 
     stems = [
         "Copernicus_DSM_COG_30_N00_00_E006_00_DEM",
@@ -21,18 +21,18 @@ function smoke()
         "Copernicus_DSM_COG_30_S90_00_E000_00_DEM",
     ]
     ordinals = [Int(stemtile(sys, stem).index) for stem in stems]
-    listedset = Set(listed)
-    check_smoke("all three smoke tiles are listed", all(in(listedset), ordinals))
+    landset = Set(land)
+    check_smoke("all three smoke tiles are land tiles", all(in(landset), ordinals))
 
-    provider = CopernicusTiles(sys, listed; cachedir = config.tilecache)
+    provider = CopernicusTiles(sys, land; cachedir = config.tilecache)
 
     # The ocean contract is checked before any network operation. `loadtile`
     # has to return nodata while the provider's successful-GET count stays put.
-    ocean = first(t for t in 0:(DGG.ncells(sys, 0) - 1) if !(t in listedset))
+    ocean = first(t for t in 0:(DGG.ncells(sys, 0) - 1) if !(t in landset))
     before_ocean = provider.ndownloads[]
     oceanvals = loadtile(provider, ocean)
-    check_smoke("unlisted ocean tile is all NaN", all(isnan, oceanvals))
-    check_smoke("unlisted ocean tile makes no network request",
+    check_smoke("ocean tile is all NaN", all(isnan, oceanvals))
+    check_smoke("ocean tile makes no network request",
         provider.ndownloads[] == before_ocean)
 
     # Four workers ask for the same uncached tile. The per-tile lock must turn

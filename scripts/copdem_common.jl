@@ -174,7 +174,7 @@ include("copdem_policy.jl")
 """
     opensource(config) -> NamedTuple
 
-Everything about the source that reads no pixel: both grid systems, the listed
+Everything about the source that reads no pixel: both grid systems, the land
 tiles, the tile source, and the source space whose chunk `k` is `tiles[k]`.
 `mask` is the synthetic land mask, [`NOMASK`](@ref) for real tiles.
 """
@@ -183,7 +183,7 @@ function opensource(config)
     storesys7 = DGG.IGeo7System()
     sys7 = config.authalic ? DGG.AuthalicSystem(storesys7) : storesys7
     list = tilelist(config.data, config.res; baseurl = config.tilebaseurl)
-    tiles = listedtiles(sys, list, config.region)
+    tiles = landtiles(sys, list, config.region)
     isempty(tiles) && error("the tile list and region select no tiles")
     mask = NOMASK
     tilesource = if config.source === :real
@@ -203,7 +203,7 @@ end
     destination_chunks(config, src) -> Vector{Int}
 
 The level-`ancestor` chunks this run covers: `config.chunks` when given,
-otherwise the covering of the listed tiles, cached beside the store, thinned to
+otherwise the covering of the land tiles, cached beside the store, thinned to
 `config.maxchunks` evenly spaced chunks when that is set.
 """
 function destination_chunks(config, src)

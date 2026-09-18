@@ -24,7 +24,7 @@ import DiscreteGlobalGrids as DGG
 import GlobalRegridding as GR
 import Downloads
 import Statistics
-using CopernicusUtils: listedtiles, TileIds, SubtreeIds, covering_chunks
+using CopernicusUtils: landtiles, TileIds, SubtreeIds, covering_chunks
 
 const TILE_LIST_URL =
     "https://copernicus-dem-90m.s3.amazonaws.com/tileList.txt"
@@ -35,7 +35,7 @@ function production_spaces()
     sys = DGG.CopernicusDEMSystem(90)
     sys7 = DGG.IGeo7System()
     tilelist = Downloads.download(TILE_LIST_URL)
-    tiles = listedtiles(sys, tilelist)
+    tiles = landtiles(sys, tilelist)
     length(tiles) == EXPECTED_TILES || error(
         "official GLO-90 workload changed: expected $EXPECTED_TILES tiles, got $(length(tiles))")
 

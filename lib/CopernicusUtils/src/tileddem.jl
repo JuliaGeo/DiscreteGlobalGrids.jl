@@ -122,7 +122,7 @@ cachestats(c::StripedLRUCache) = (loads = c.loads[], hits = c.hits[],
     TiledDEM(ids::SubtreeIds, gettile)
     TiledDEM(source, tiles; slots = 256, stripes = 16)
 
-Every listed tile's posts as one lazy `Float32` vector in the source grid's own
+Every land tile's posts as one lazy `Float32` vector in the source grid's own
 index order. Chunk `k` is tile `k`, so reads are tile aligned and a regridder's
 source chunks are the DEM's own tiles.
 
@@ -131,7 +131,7 @@ form caches `loadtile(source, tiles[k])` in a [`StripedLRUCache`](@ref).
 
 ```julia
 sys   = DGG.CopernicusDEMSystem(90)
-tiles = listedtiles(sys, tilelist(datadir))
+tiles = landtiles(sys, tilelist(datadir))
 dem   = TiledDEM(CopernicusTiles(sys, tiles; cachedir), tiles)
 space = DGG.DGGSpace(DGG.PartialGrid(sys, 1, dem.ids); chunklevel = 0)
 ```
@@ -179,7 +179,7 @@ indices of `DGG.levelgrid(dstsys, level)`.
 
 Each tile's 1x1-degree extent is queried at `level`, so the answer is whole
 cells and each one is a complete subtree below it: one work unit, one store
-chunk. Every cell returned meets a listed tile, so ocean-only work is never
+chunk. Every cell returned meets a land tile, so ocean-only work is never
 enqueued.
 """
 function covering_chunks(dstsys, sys, tiles::AbstractVector{<:Integer}, level::Int;

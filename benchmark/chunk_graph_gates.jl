@@ -372,7 +372,7 @@ const CASES = [
 # is going to run.
 if !isempty(TILELIST)
     isfile(TILELIST) || error("DGG_COPDEM_TILELIST=$TILELIST is not a file")
-    using CopernicusUtils: listedtiles, TileIds, SubtreeIds, covering_chunks
+    using CopernicusUtils: landtiles, TileIds, SubtreeIds, covering_chunks
 end
 
 """
@@ -387,7 +387,7 @@ function production_case()
     return (name = "copdem90-igeo7-l12", oracle = false, radius = 0.0,
         make = function ()
             sys = DGG.CopernicusDEMSystem(90)
-            tiles = listedtiles(sys, TILELIST)
+            tiles = landtiles(sys, TILELIST)
             src = DGG.DGGSpace(DGG.PartialGrid(sys, 1, TileIds(sys, tiles));
                 chunklevel = 0)
             chunks = covering_chunks(SYS7, sys, tiles, 5;

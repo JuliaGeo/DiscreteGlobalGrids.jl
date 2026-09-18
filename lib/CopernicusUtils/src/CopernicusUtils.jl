@@ -16,7 +16,7 @@ import Extents
 const CD = DGG.CopernicusDEM
 const US = GO.UnitSpherical
 
-export stemtile, tilestem, tilelist, listedtiles
+export stemtile, tilestem, tilelist, landtiles
 export CopernicusTiles, TileDirectory, SyntheticTiles, loadtile, tilepath!, tilecachepath, tileurl
 export LandMask, NOMASK, landmask, island, synthetic_elevation, synthetic_tile
 export SourceMask, hassource, cellsource

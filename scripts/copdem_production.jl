@@ -253,7 +253,7 @@ function main(config = copdem_config())
     # --- the source and the work list ------------------------------------
     src = opensource(config)
     tiles = src.tiles
-    say("source: $(length(tiles)) listed tiles of $(DGG.ncells(src.sys, 0)), " *
+    say("source: $(length(tiles)) land tiles of $(DGG.ncells(src.sys, 0)), " *
         @sprintf("%.3e pixels", Float64(length(src.ids))))
     chunks = destination_chunks(config, src)
     capacity = 7^(config.level - config.ancestor)

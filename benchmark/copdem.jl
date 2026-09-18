@@ -7,7 +7,7 @@
 #         res=90 box=10,11,46,47 arms=real,linear,quadratic,rim,polar
 #
 # The source is `scripts/copdem_production.jl`'s: one `TiledDEM` over a
-# `PartialGrid` of the listed tiles' pixels, chunk `k` being tile `k`, decoded by
+# `PartialGrid` of the land tiles' pixels, chunk `k` being tile `k`, decoded by
 # `CopernicusTiles` and held in a `StripedLRUCache`. Methods and missing policies
 # come from that script's `regridmethod` and `regridpolicy`, so what runs here is
 # what a production run configured the same way computes. `pairnearest` is the
@@ -46,7 +46,7 @@
 # SEMANTICS. Each arm regrids one source under every method, the first method
 # being the baseline the others are compared against:
 #
-#   real       the listed tiles of `box`, on real elevations.
+#   real       the land tiles of `box`, on real elevations.
 #   linear     a field affine in lon/lat on the scaled lattice twin, destination
 #              finer than the source. Point stencils reproduce it to roundoff;
 #              the area mean is off by about half a source pixel of slope.
@@ -967,7 +967,7 @@ polarfield(p) = 1000.0 + 7.0e5 * p[1] + 4.0e5 * p[2]
 """
     realarm(opt, dir, sys7) -> NamedTuple
 
-The listed GLO-90 tiles of `opt.box` into IGeo7, under every named method.
+The land GLO-90 tiles of `opt.box` into IGeo7, under every named method.
 """
 function realarm(opt, dir, sys7)
     println("\n", "="^78, "\nreal — GLO-$(opt.res) $(opt.box) elevations")

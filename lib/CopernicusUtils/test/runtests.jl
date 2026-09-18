@@ -26,23 +26,23 @@ end
             Copernicus_DSM_COG_30_N00_00_E006_00_DEM
             Copernicus_DSM_COG_30_N00_00_E006_00_DEM
             """)
-        all = listedtiles(sys, path)
+        all = landtiles(sys, path)
         @test length(all) == 2 && issorted(all)
-        @test listedtiles(sys, path, [(5.0, 7.0, -1.0, 1.0)]) ==
+        @test landtiles(sys, path, [(5.0, 7.0, -1.0, 1.0)]) ==
               [Int(CD.tilecell(sys, 0, 6).index)]
     end
 end
 
-@testset "real tiles: unlisted is ocean, missing is an error offline" begin
-    listed = [Int(CD.tilecell(sys, 0, 6).index)]
+@testset "real tiles: outside landtiles is ocean, missing is an error offline" begin
+    tiles = [Int(CD.tilecell(sys, 0, 6).index)]
     ocean = Int(CD.tilecell(sys, 0, -30).index)
     mktempdir() do dir
-        src = CopernicusTiles(sys, listed; cachedir = dir, download = false)
+        src = CopernicusTiles(sys, tiles; cachedir = dir, download = false)
         @test tilepath!(src, ocean) === nothing
         @test all(isnan, loadtile(src, ocean))
-        @test_throws ErrorException loadtile(src, listed[1])
+        @test_throws ErrorException loadtile(src, tiles[1])
         @test src.ndownloads[] == 0
-        @test endswith(tileurl(src, listed[1]),
+        @test endswith(tileurl(src, tiles[1]),
             "Copernicus_DSM_COG_30_N00_00_E006_00_DEM.tif")
     end
 end
@@ -57,11 +57,11 @@ end
         flat = joinpath(dir, stem * ".tif")
         nested = joinpath(dir, stem, stem * ".tif")
         @test locate(lat, lon) == flat
-        @test isempty(listedtiles(sys, locate))
+        @test isempty(landtiles(sys, locate))
         mkpath(dirname(nested)); touch(nested)
         @test locate(lat, lon) == nested
-        @test listedtiles(sys, locate) == [ordinal]
-        @test isempty(listedtiles(sys, locate, [(20.0, 30.0, 20.0, 30.0)]))
+        @test landtiles(sys, locate) == [ordinal]
+        @test isempty(landtiles(sys, locate, [(20.0, 30.0, 20.0, 30.0)]))
         touch(flat)
         @test locate(lat, lon) == flat
 

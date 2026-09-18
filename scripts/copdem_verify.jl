@@ -99,7 +99,7 @@ function verify(config, src, layout, chunks)
     end
 
     # A chunk nobody wrote: the first level-`ancestor` chunk outside the
-    # covering, which by construction meets no listed tile.
+    # covering, which by construction meets no land tile.
     inset = Set(chunks)
     empty = findfirst(i -> !(i in inset), 1:DGG.ncells(DGG.system(layout), ancestor))
     if empty !== nothing

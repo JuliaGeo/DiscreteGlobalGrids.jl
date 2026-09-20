@@ -1,0 +1,28 @@
+name = "CopernicusUtils"
+uuid = "2ce93296-2e59-4100-9c60-11a4bf28edcb"
+authors = ["Anshul Singhvi <anshulsinghvi@gmail.com>", "and contributors"]
+version = "0.1.0"
+
+[workspace]
+projects = ["test"]
+
+[deps]
+ArchGDAL = "c9ce4bd3-c3d5-55b8-8973-c0e20141b8c3"
+DiscreteGlobalGrids = "443be784-8f3c-41ab-9ff0-108bddc7e690"
+DiskArrays = "3c3547ce-8d99-4f5e-a174-61eb10b00ae3"
+Downloads = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
+Extents = "411431e0-e8b7-467b-b5e0-f676ba4f2910"
+GeoInterface = "cf35fbd7-0cd7-5166-be24-54bfbe79505f"
+GeometryOps = "3251bfac-6a57-4b6d-aa61-ac1fef2975ab"
+
+[sources]
+DiscreteGlobalGrids = {path = "../.."}
+
+[compat]
+ArchGDAL = "0.10"
+DiskArrays = "0.4"
+Downloads = "1"
+Extents = "0.1"
+GeoInterface = "1"
+GeometryOps = "0.1.45"
+julia = "1.11"

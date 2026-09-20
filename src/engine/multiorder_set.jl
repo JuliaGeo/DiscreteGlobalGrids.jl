@@ -127,6 +127,23 @@ end
 
 Base.show(io::IO, ::MIME"text/plain", set::MultiOrderCellSet) = show(io, set)
 
+# Sorted, disjoint level-`l` ranges of `cells`; adjacent subtrees merge into one.
+function _merged_ranges(sys::AbstractHierarchicalGridSystem, cells, l::Int,
+    holder::AbstractString)
+    out = UnitRange{Int}[]
+    for c in cells
+        level(c) <= l || throw(ArgumentError(
+            "cannot expand to level $l: the $holder a level-$(level(c)) cell"))
+        r = descendant_range(sys, c, l)
+        if !isempty(out) && first(r) == last(out[end]) + 1
+            out[end] = first(out[end]):last(r)
+        else
+            push!(out, r)
+        end
+    end
+    return out
+end
+
 """
     level_ranges(set::MultiOrderCellSet, l::Integer) -> Vector{UnitRange{Int}}
 
@@ -147,19 +164,7 @@ function level_ranges(set::MultiOrderCellSet, l::Integer)
     has_sorted_subtrees(set.system) || throw(ArgumentError(
         "$(typeof(set.system)) has no descendant ranges, so a multi-order set " *
         "cannot be expanded to index ranges"))
-    target = Int(l)
-    out = UnitRange{Int}[]
-    for c in set.cells
-        level(c) <= target || throw(ArgumentError(
-            "cannot expand to level $target: the set contains a level-$(level(c)) cell"))
-        r = descendant_range(set.system, c, target)
-        if !isempty(out) && first(r) == last(out[end]) + 1
-            out[end] = first(out[end]):last(r)
-        else
-            push!(out, r)
-        end
-    end
-    return out
+    return _merged_ranges(set.system, set.cells, Int(l), "set contains")
 end
 
 """

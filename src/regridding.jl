@@ -3,7 +3,7 @@
 import GlobalRegridding as GR
 import DimensionalData as DD
 
-# Target cell count for automatic chunking. This affects memory use, not accuracy.
+# Automatic chunking targets this cell count; accuracy remains unchanged.
 const DEFAULT_CHUNK_CELLS = 4096
 
 # The space
@@ -11,11 +11,10 @@ const DEFAULT_CHUNK_CELLS = 4096
 """
     DGGSpace(grid::AbstractGrid; chunklevel = nothing, chunkcells = $DEFAULT_CHUNK_CELLS)
 
-Wrap `grid` as a `GlobalRegridding.RegridSpace`.
-
-Chunks are non-empty ancestor subtrees at `chunklevel`. By default, the level
-is chosen to keep roughly `chunkcells` cells per chunk. Grids without sorted
-subtrees use one chunk. Construction computes only one covering cap per chunk.
+Wrap `grid` as a `GlobalRegridding.RegridSpace`. Chunks use nonempty
+ancestor subtrees at `chunklevel`; the default chooses roughly `chunkcells`
+cells per chunk. Grids without sorted subtrees use one chunk. Construction
+computes one covering cap per chunk.
 """
 struct DGGSpace{G<:AbstractGrid,ID,C} <: GR.RegridSpace
     grid::G
@@ -74,8 +73,7 @@ function _chunklevel(sys::AbstractHierarchicalGridSystem, lvl::Int, n::Int, targ
     return best
 end
 
-# Return one index range per non-empty ancestor, or `nothing` when this
-# cannot be determined without scanning every cell.
+# Exact ancestor windows require metadata that avoids a full cell scan.
 function _chunkwindows(grid::AbstractGrid, sys::AbstractHierarchicalGridSystem,
         lvl::Int, a::Int)
     complete = ncells(grid) == _levelcells(sys, lvl)
@@ -95,11 +93,7 @@ function _chunkwindows(grid::AbstractGrid, sys::AbstractHierarchicalGridSystem,
     return ids, ranges
 end
 
-# The level-`a` ancestors that can hold any of `grid`'s cells. Every one of them
-# in general — the scan is what decides which are non-empty — but a ROOTED
-# `PartialGrid` holds nothing outside its root's subtree, so only that root's
-# level-`a` descendants can qualify and the rest of the level need never be
-# visited. That is exact, not a heuristic: the constructor checks the ancestry.
+# A rooted `PartialGrid` restricts candidate ancestors to its root subtree.
 _ancestorindices(::AbstractGrid, ::AbstractHierarchicalGridSystem, ::Int,
     ancestors::AbstractGrid) = 1:ncells(ancestors)
 
@@ -145,19 +139,11 @@ function GR.chunkat(space::DGGSpace, i::Integer)
     return k
 end
 
+# `CentroidSites` reads these lazily, so vast multi-root collections never materialize.
 GR.cellcentroid(space::DGGSpace, i::Int) =
     cell_centroid(space.grid, cellindex(space.grid, i))
 
-# The sites a point method interpolates between are `cellcentroid` above, read
-# through `GlobalRegridding`'s own `CentroidSites`: a pure vector that computes
-# an entry on read and holds nothing, so preparing a sampler materialises
-# nothing and concurrent queries share it. The collection's centroid field would
-# read the same, but `CellVector` indexes every cell of a holding whose ids are
-# not one subtree — 2.5e10 of them for the GLO-90 source, 187 GiB — and a
-# sampler never reads more sites than its stencils name.
-
-# Local, not global: the inverse of `cellcentroid` above, and on a `PartialGrid`
-# a different numbering from the grid's own cell ids.
+# `PartialGrid` lookup must return collection-local indices.
 cellat(space::DGGSpace, p::GO.UnitSphericalPoint) = localindex(space.grid, p)
 
 # Every shipped system places a point and names a one-ring in closed form, so
@@ -183,10 +169,7 @@ GR.celltree(space::DGGSpace) = treeify(space.grid)
 
 GR.chunkextents(space::DGGSpace) = space.caps
 
-# The DGG space is its own private chunk index: candidate queries descend the
-# grid's existing hierarchy to `chunklevel`, with no second tree or extent
-# adapter. Construct the hierarchical cursor directly because some systems use
-# a different optimized tree for cell intersections.
+# Reusing the grid hierarchy avoids a second chunk index and extent adapter.
 GR.chunkindex(space::DGGSpace) = space
 
 function GR.candidatechunks!(out::Vector{Int}, space::DGGSpace, dstcap::GR.Cap;
@@ -211,11 +194,7 @@ function GR.candidatechunks!(out::Vector{Int}, space::DGGSpace, dstcap::GR.Cap;
     return out
 end
 
-# CopernicusDEM has tens of thousands of level-0 roots, so the generic
-# ancestor cursor would still scan a flat root fanout for every query. Its
-# existing BlockCursor is the spatial hierarchy over that lattice. Traverse a
-# complete grid at the requested frontier level and filter its leaf ids through
-# the selected `PartialGrid` chunk ids; no source pixels are materialized.
+# `BlockCursor` avoids scanning CopernicusDEM's flat fanout of level-0 roots.
 function _mappedfrontierchunks!(out::Vector{Int}, space::DGGSpace, node, frontier,
         dstcap, intersects)
     intersects(dstcap, STI.node_extent(node)) || return out
@@ -255,13 +234,16 @@ GR.chunkranges(space::DGGSpace, chunk::Integer, ::NTuple{1,Int}) =
 """
     GlobalRegridding.subtree(space::DGGSpace, inds)
 
-Return the cell tree restricted to `inds`, with leaves still addressed by the
-space's local index.
-In order: the whole space, a grid that can window its own tree
-([`subcursor`](@ref)), an exact chunk range (the grid hierarchy in `O(1)`), and
-otherwise the common packed cell-space fallback. Grids with an analytical cell
-cap keep the hierarchical tree lazy; other whole spaces and small enough chunks
-carry precomputed leaf caps.
+Return the cell tree restricted to `inds`, with leaves addressed by local index.
+Selection proceeds through these routes:
+
+ 1. reuse the cached whole-space tree;
+ 2. use a grid-native [`subcursor`](@ref);
+ 3. reuse the hierarchy for an exact chunk range;
+ 4. build the packed cell-space fallback.
+
+Analytical cell caps keep hierarchy extents lazy; other small trees cache leaf
+caps.
 """
 function GR.subtree(space::DGGSpace, inds::AbstractUnitRange{<:Integer})
     GR._iswholespace(space, inds) && return _cachedcelltree(space)
@@ -294,14 +276,17 @@ end
     GlobalRegridding._asspace(target, name)
     GlobalRegridding._asspace(target, name, src_space)
 
-Return the [`DGGSpace`](@ref) over the cells a regridding target names. A grid
-stands for itself; a [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup), a [`CellVector`](@ref) and a
-[`MultiOrderCellSet`](@ref) name the [`PartialGrid`](@ref) of their cells.
+Resolve a regridding target into [`DGGSpace`](@ref):
 
-A bare system names no cells until a level is chosen. As a destination it takes
-the level whose cells are closest in size to the source's, which is the only
-spelling that reads `src_space`; as a source there is nothing to match against
-and it is an error.
+  - grids stand for their own cells;
+  - a [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup), a
+    [`CellVector`](@ref) and a [`MultiOrderCellSet`](@ref) name the
+    [`PartialGrid`](@ref) of their cells;
+  - mixed-level targets expand to reference-level leaves;
+  - a bare system used as a destination selects the level closest to the source
+    cell size.
+
+A bare-system source must specify its level with [`levelgrid`](@ref).
 """
 GR._asspace(grid::AbstractGrid, name::AbstractString) = DGGSpace(grid)
 
@@ -312,6 +297,12 @@ GR._asspace(cv::AbstractCellVector, name::AbstractString) = DGGSpace(PartialGrid
 GR._asspace(set::MultiOrderCellSet, name::AbstractString) =
     DGGSpace(PartialGrid(CellVector(set)))
 
+GR._asspace(mov::MultiOrderVector, name::AbstractString) =
+    DGGSpace(PartialGrid(CellVector(mov)))
+
+GR._asspace(lk::MultiOrderLookup, name::AbstractString) =
+    GR._asspace(parent(lk), name)
+
 GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString) =
     throw(ArgumentError(
         "`$name = $(typeof(sys).name.name)()` names no cells until a level is " *
@@ -321,25 +312,176 @@ GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString) =
 GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString,
     src_space::GR.RegridSpace) = DGGSpace(levelgrid(sys, levelfor(sys, src_space)))
 
-# A `Cells` axis already names the cells a regrid would otherwise look for a
-# raster lattice in, so a source given no `from` can point at the grid itself.
-GR.dimsource(lk::AbstractCellLookup) = cellset(lk)
+# Mixed-level source presentation
+
+"""
+    GlobalRegridding.sourcespacefor(mov::MultiOrderVector, method, data)
+
+Return the source space through which `method` reads a mixed-level container,
+and refuse an array `data` whose values the container does not describe.
+
+  - `Points()` sampling uses one [`MultiOrderGrid`](@ref) cell per stored cell.
+    Covering-ancestor lookup preserves nearest-cell values with fewer plan
+    columns than reference-level expansion.
+  - `Intervals` sampling uses the reference-level expansion. Descendant leaves
+    provide the gap-free cover required on non-congruent hierarchies such as H3
+    and IGeo7, whose child polygons may leave gaps relative to the parent.
+  - A container with one stored cell per reference-level leaf uses the
+    [`PartialGrid`](@ref) path for either sampling.
+
+An explicit `from` must match the value layout: one value per stored cell for
+point methods, one per reference-level leaf for area methods. A cube carrying a
+[`MultiOrderLookup`](@ref) fixes the value ordering, so its explicit `from` must
+name the same cells and reference level.
+"""
+function GR.sourcespacefor(mov::MultiOrderVector, method, data)
+    space = _readsstored(mov, method) ? DGGSpace(MultiOrderGrid(mov)) :
+            GR._asspace(mov, "from")
+    data isa AbstractArray && _checkfrom(mov, data, space)
+    return space
+end
+
+GR.sourcespacefor(lk::MultiOrderLookup, method, data) =
+    GR.sourcespacefor(parent(lk), method, data)
+
+_readsstored(mov::MultiOrderVector, method) =
+    _readsstored(mov, method, GR.sourcesampling(method))
+
+_readsstored(mov::MultiOrderVector, method, ::DD.Lookups.Points) = _expandsleaves(mov)
+
+_readsstored(::MultiOrderVector, method, ::DD.Lookups.Intervals) = false
+
+@noinline _readsstored(mov::MultiOrderVector, method, sampling) = throw(ArgumentError(
+    "$(nameof(typeof(method))) reports unsupported source sampling $(sampling) " *
+    "for a mixed-level container. Define `sourcesampling` as `Points()` to " *
+    "read its $(length(mov)) stored sample sites, or `Intervals(Center())` to " *
+    "read its reference-level polygon cover at level $(reference_level(mov))."))
+
+_leafcount(mov::MultiOrderVector) = sum(mov.stops) - sum(mov.starts) + length(mov)
+
+_expandsleaves(mov::MultiOrderVector) = _leafcount(mov) != length(mov)
+
+"""
+    GlobalRegridding.dimsource(lk::AbstractCellLookup)
+
+A single-level cell lookup names itself as the source target: its own cells, in
+its own order, resolve through [`GlobalRegridding._asspace`](@ref) to the
+[`PartialGrid`](@ref) the values are written against. The backing
+[`cellset`](@ref) is not that target: a lookup refined below its set, or expanded
+from a [`MultiOrderVector`](@ref), holds other cells than its backing does.
+"""
+GR.dimsource(lk::AbstractCellLookup) = lk
+
+GR.dimsource(lk::MultiOrderLookup) = cellset(lk)
+
+"""
+    GlobalRegridding.sourceview(lk::MultiOrderLookup, A, method)
+
+Present a mixed-level cube as the array `method` reads, aligned with the space
+[`GlobalRegridding.sourcespacefor`](@ref) resolves for the same `method`. The
+cube needs neither `from` nor a manual [`expand`](@ref).
+
+  - Point sampling returns `A`, one value per stored cell, and supports
+    pass-through dimensions.
+  - Area sampling returns the lazy `expand(A, ref)`. It enumerates descendants
+    in stored order, as [`GlobalRegridding._asspace`](@ref) does, so leaves align.
+  - A genuine expansion requires
+    [`GlobalRegridding.refinementinvariant`](@ref). Replicated leaf values change
+    methods that interpolate by sample-site position.
+  - Area sampling requires one-dimensional cubes because [`expand`](@ref) is
+    one-dimensional.
+"""
+function GR.sourceview(lk::MultiOrderLookup, A::DD.AbstractDimArray, method)
+    mov = parent(lk)
+    _readsstored(mov, method) && return A
+    ndims(A) == 1 || _nomultidim(lk, method)
+    (GR.refinementinvariant(method) || !_expandsleaves(mov)) ||
+        _nointerpolation(lk, method)
+    return expand(A, reference_level(lk))
+end
+
+@noinline _nointerpolation(lk::MultiOrderLookup, method) = throw(ArgumentError(
+    "$(nameof(typeof(method))) changes when replicated values move from stored " *
+    "cells to their leaf sites, so the mixed-level source cannot refine to " *
+    "level $(reference_level(lk)) implicitly. Define " *
+    "`GlobalRegridding.sourcesampling(method) = Points()` to read stored sample " *
+    "sites, or request leaf-site interpolation explicitly with `regrid(expand(A, " *
+    "DiscreteGlobalGrids.reference_level(lookup(A, Cells))); to = ..., " *
+    "method = ...)`."))
+
+@noinline _nomultidim(lk::MultiOrderLookup, method) = throw(ArgumentError(
+    "$(nameof(typeof(method))) requires the reference-level area cover at " *
+    "level $(reference_level(lk)), but `expand` is one-dimensional and the " *
+    "source has pass-through dimensions. Regrid one slice at a time, or use " *
+    "a sample-site method such as `NearestCell` or `DirectNearest`."))
+
+# Refuse an explicit mixed-level `from` that the layout of `data` contradicts.
+function _checkfrom(mov::MultiOrderVector, data::AbstractArray, space::GR.RegridSpace)
+    own = _mixedaxis(data)
+    if own !== nothing
+        _samecontainer(mov, own) || _fromcontradicts(mov, own)
+        return nothing
+    end
+    n = size(data, 1)
+    (n == ncells(space) || !_expandsleaves(mov)) && return nothing
+    stored, leaves = length(mov), _leafcount(mov)
+    n == stored && throw(ArgumentError(
+        "`from` resolves $stored mixed-level cells to $(ncells(space)) leaves " *
+        "at reference level $(reference_level(mov)), but the source holds " *
+        "$stored values, one per stored cell. Place them on " *
+        "`DimArray(values, Cells(MultiOrderLookup(mov)))` and regrid with no " *
+        "`from` at all; the axis defines how each value spreads over leaves."))
+    n == leaves && throw(ArgumentError(
+        "the source is already expanded to $leaves values at reference level " *
+        "$(reference_level(mov)), while `from` selects the $stored stored " *
+        "cells. Name the leaf geometry with `from = CellVector(mov)`, or let " *
+        "the expanded cube's `Cells` axis name it."))
+    return nothing
+end
+
+function _mixedaxis(data)
+    data isa DD.AbstractDimArray || return nothing
+    for l in DD.lookup(data)
+        l isa MultiOrderLookup && return parent(l)
+    end
+    return nothing
+end
+
+_samecontainer(a::MultiOrderVector, b::MultiOrderVector) =
+    a === b || (reference_level(a) == reference_level(b) && a.cells == b.cells)
+
+@noinline _fromcontradicts(mov::MultiOrderVector, own::MultiOrderVector) =
+    throw(ArgumentError(
+        "`from` names a different mixed-level container than the source's own " *
+        "`Cells` axis: `from` holds $(length(mov)) cells at reference level " *
+        "$(reference_level(mov)), the axis holds $(length(own)) at " *
+        "$(reference_level(own)). The axis fixes the value ordering, so this " *
+        "pairing would combine one container's geometry with another's values. " *
+        "Drop `from`, or attach the values to the intended container's axis."))
 
 # Labelling the output
 
 """
     GlobalRegridding.destinationdims(space::DGGSpace, sampling)
 
-Return the single [`Cells`](@ref DiscreteGlobalGrids.CellLookups.Cells) dimension a result over this space carries: a
-[`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup) over the destination's own cells, in its local index order.
-
-A cell holds one value however that value was measured, so the lookup is the
-same whichever `sampling` the method asks for. Being the space's only axis, it
-is the whole of the destination's shape, and a regrid needs no reshape to put a
-result on it.
+Return one [`Cells`](@ref DiscreteGlobalGrids.CellLookups.Cells) dimension
+containing a [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup) in
+the destination's local order. Cell labels are independent of `sampling`, and
+the single-axis shape requires no output reshape.
 """
 GR.destinationdims(space::DGGSpace, ::DD.Lookups.Sampling) =
     (Cells(CellLookup(space.grid)),)
+
+"""
+    GlobalRegridding.destinationdims(space::DGGSpace{<:MultiOrderGrid}, sampling)
+
+Return a [`MultiOrderLookup`](@ref) over the container's stored cells.
+
+This method labels output only. Regridding onto mixed levels requires a separate
+area-normalization policy.
+"""
+GR.destinationdims(space::DGGSpace{<:MultiOrderGrid}, ::DD.Lookups.Sampling) =
+    (Cells(MultiOrderLookup(cellset(space.grid))),)
 
 # The dual cells a point method interpolates on.
 include("dual_cells.jl")

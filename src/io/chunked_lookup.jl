@@ -43,7 +43,7 @@ import ..DiscreteGlobalGrids.Engine: _range_windows, _windows, windows
 # on `AbstractCellLookup` calls it, so a lookup that defined its own would be
 # indexed straight past its own subsetting rule.
 import ..DiscreteGlobalGrids.CellLookups: AbstractCellLookup, _subset,
-    _masksubset, show_selector_error
+    _rebuild, show_selector_error
 
 import ..Encodings
 using ..Encodings: CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding,
@@ -884,8 +884,6 @@ ChunkedCellLookup(lk::ChunkedCellLookup) = lk
 
 Base.parent(lk::ChunkedCellLookup) = lk.axis
 
-_subset(lk::ChunkedCellLookup, mask::AbstractArray{Bool}) = _masksubset(lk, mask)
-
 # A subset leaves the store behind: its cells are named explicitly, which is
 # what `CellVector` compresses.
 function _subset(lk::ChunkedCellLookup, idx)
@@ -912,11 +910,6 @@ chunkmanifest(lk::ChunkedCellLookup, chunklength::Integer) =
 encoding(lk::ChunkedCellLookup) = encoding(parent(lk))
 
 # --- DimensionalData plumbing ----------------------------------------------
-
-function Lookups.rebuild(lk::ChunkedCellLookup; data=nothing, kw...)
-    (data === nothing || data === lk || data === parent(lk)) && return lk
-    return _rebuild(lk, data)
-end
 
 _rebuild(lk::ChunkedCellLookup, ids::AbstractVector{<:AbstractCellIndex}) =
     issorted(ids) && allunique(ids) ?

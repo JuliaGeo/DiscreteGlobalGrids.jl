@@ -1,20 +1,13 @@
-# Dual cells behind a `DGGSpace`: what a point method interpolates on when the
-# source is a conforming DGGS. The polygon is the dual cell of a primal vertex —
-# the sample sites of the cells meeting there — and it is found from the host
-# cell's one-rings, so the tests below ask three things: that the cells it finds
-# are the ones the geometry has, that the interpolant on them obeys the point
-# laws, and that no chunking changes either.
-
 module RegridDualTests
 
 using Test
 import DiscreteGlobalGrids as DGG
+import DimensionalData as DD
 import GlobalRegridding as GR
 import GeometryOps as GO
 using Random
 
-# The relation oracles are defined once, in the GlobalRegridding suite, and
-# shared with it rather than re-spelled here.
+# Shared oracles keep dependency expectations identical across suites.
 include(joinpath(@__DIR__, "..", "..", "..", "lib", "GlobalRegridding", "test",
     "graphoracles.jl"))
 using .ChunkGraphOracles: graph_pairs
@@ -31,17 +24,13 @@ midpoint(a, b) = unit((a[1] + b[1], a[2] + b[2], a[3] + b[3]))
 field(q) = 0.3 + 1.7 * q[1] - 0.9 * q[2] + 2.1 * q[3]
 sourcefield(space) = [field(GR.cellcentroid(space, i)) for i in 1:Int(GR.ncells(space))]
 
-# What the stencil at `p` makes of that field, or `nothing` where `p` is unmapped.
 function interpolate(space, smp, row, p)
     GR.ismapped(GR.weightsat!(row, smp, p)) || return nothing
     return sum(row.weights[k] * field(GR.cellcentroid(space, row.indices[k]))
                for k in 1:length(row))
 end
 
-# Every distinct dual cell of a whole level, by probing each cell's own boundary:
-# the midpoint between a cell's site and one of its corners lies in that
-# corner's dual cell, so probing every boundary point of every cell reaches
-# every dual cell there is.
+# Site-to-corner midpoints cover every dual cell of a conforming level.
 function alldualcells(sys, lvl)
     grid = DGG.levelgrid(sys, lvl)
     space = DGG.DGGSpace(grid)
@@ -69,9 +58,7 @@ function alldualcells(sys, lvl)
     return tally, unmapped, kinds
 end
 
-# The oracle, allowed here and nowhere near production: the cells of `grid`
-# whose drawn boundary passes through the point `v`, found by matching
-# coordinates among the host and its vertex ring.
+# Coordinate matching supplies an independent topology oracle.
 function incidentcells(grid, host, v, tol)
     out = Set{Int}()
     for c in Iterators.flatten(((host,),
@@ -99,8 +86,7 @@ function assemble(plan, dst, src)
     return M
 end
 
-# The chunk pairs the stencils themselves name: the exact relation a point
-# method has to be a superset of.
+# Exact stencil pairs verify dependency-relation reach.
 function stencilpairs(dst, src)
     smp = GR.sampler(GR.BarycentricPoint(), src)
     row = GR.WeightRow()
@@ -410,6 +396,326 @@ querybytes(row, smp, p) =
         @test isempty(row)
     end
 
+end
+
+# Mixed-level representative selection, affine laws, and native interpolation.
+
+function mixed(sys, top::Int)
+    roots = collect(DGG.CellVector(DGG.levelgrid(sys, top + 1)))
+    kids(c, l) = collect(DGG.CellVector(DGG.subtree(sys, c, l)))
+    cells = vcat(kids(roots[1], top + 3), kids(roots[2], top + 2), roots[3:end])
+    return DGG.MultiOrderVector(sys, cells; reference_level = top + 3)
+end
+
+# Find a shallow cell whose interpolation fan crosses the refinement boundary.
+function coarsebesidefine(sys, mov, top::Int)
+    lvl = DGG.levelgrid(sys, top + 1)
+    fine = DGG.cellindex(lvl, 1)
+    for i in 1:length(mov)
+        c = mov[i]
+        DGG.level(c) == top + 1 || continue
+        any(n -> n == fine, DGG.neighbors(lvl, c, 1; connectivity = DGG.Vertex())) &&
+            return c
+    end
+    return nothing
+end
+
+# Stay away from boundaries that make containment ambiguous.
+function insidepoints(grid, c, t::Float64)
+    centre = DGG.cell_centroid(grid, c)
+    return [unit((centre[1] + t * (v[1] - centre[1]),
+        centre[2] + t * (v[2] - centre[2]),
+        centre[3] + t * (v[3] - centre[3])))
+            for v in DGG.cell_boundary(grid, c)]
+end
+
+# Full-container scan provides an independent oracle for refined neighbors.
+function representatives(mov, hostid, p)
+    sys = DGG.system(mov)
+    out = Set{Int}()
+    for n in DGG.neighbors(DGG.levelgrid(sys, DGG.level(hostid)), hostid, 1;
+        connectivity = DGG.Vertex())
+        j = DGG.covering_index(mov, n)
+        if j !== nothing
+            push!(out, j)
+            continue
+        end
+        best, bestd = 0, Inf
+        for i in 1:length(mov)
+            c = mov[i]
+            DGG.level(c) > DGG.level(n) || continue
+            DGG.ancestor(sys, c, DGG.level(n)) == n || continue
+            q = DGG.cell_centroid(DGG.levelgrid(sys, DGG.level(c)), c)
+            d = (q[1] - p[1])^2 + (q[2] - p[2])^2 + (q[3] - p[3])^2
+            d < bestd && (bestd = d; best = i)
+        end
+        best == 0 || push!(out, best)
+    end
+    return out
+end
+
+# A typed wrapper keeps the allocation measurement representative.
+function sweepstatus(row, smp, pts)
+    n = 0
+    for p in pts
+        GR.ismapped(GR.weightsat!(row, smp, p)) && (n += 1)
+    end
+    return n
+end
+
+# Distance of the weighted node sum from the chart origin. The chart is
+# query-centered, so an affine-exact stencil lands on the origin.
+function chartresidual(row, cell)
+    x = y = 0.0
+    for k in 1:length(row)
+        j = findfirst(==(row.indices[k]), cell.indices)
+        x += row.weights[k] * cell.nodes[j][1]
+        y += row.weights[k] * cell.nodes[j][2]
+    end
+    return max(abs(x), abs(y))
+end
+
+function interpolate_at(space, smp, row, vals, p)
+    GR.ismapped(GR.weightsat!(row, smp, p)) || return nothing
+    return sum(row.weights[k] * vals[row.indices[k]] for k in 1:length(row))
+end
+
+function maxadjacentjump(grid, v)
+    ok(x) = !(ismissing(x) || (x isa AbstractFloat && isnan(x)))
+    worst = 0.0
+    for i in 1:DGG.ncells(grid)
+        ok(v[i]) || continue
+        c = DGG.cellindex(grid, i)
+        for d in DGG.neighbors(grid, c, 1; connectivity = DGG.Edge())
+            j = DGG.localindex(grid, d)
+            (j === nothing || !ok(v[j])) && continue
+            worst = max(worst, abs(v[i] - v[j]))
+        end
+    end
+    return worst
+end
+
+# A smooth field isolates interpolation artifacts from source discontinuities.
+smooth(q) = 0.3 + 1.7 * q[1] - 0.9 * q[2] + 2.1 * q[3] + 0.6 * q[1] * q[2]
+
+storedvalues(mov, f) = [f(DGG.cell_centroid(
+    DGG.levelgrid(DGG.system(mov), DGG.level(mov[i])), mov[i])) for i in 1:length(mov)]
+
+@testset "dual cells over mixed levels on $(nameof(typeof(sys)))" for (sys, top) in
+                                                                     ((HEALPIX, 0), (IGEO7, 0))
+
+    mov = mixed(sys, top)
+    ref = DGG.reference_level(mov)
+    space = GR.sourcespacefor(mov, GR.BarycentricPoint())
+    smp = GR.sampler(GR.BarycentricPoint(), space)
+    row = GR.WeightRow()
+    lref = DGG.levelgrid(sys, ref)
+    refpoints = [DGG.cell_centroid(lref, DGG.cellindex(lref, i))
+                 for i in 1:DGG.ncells(lref)]
+
+    @testset "the space builds them, off the container" begin
+        @test space.grid isa DGG.MultiOrderGrid
+        @test GR.hasdualcells(space)
+        st = GR.samplerstate(space)
+        @test st isa DGG.MultiOrderDualTopology
+        @test st.cells === mov
+        @test smp.state === st
+        @test occursin("MultiOrderDualTopology", sprint(show, st))
+        @test GR.chartat(smp, refpoints[1]) === (0.0, 0.0)
+        # Triangles remain well-defined across mixed-level T-junctions.
+        @test all(p -> GR.nodecount(GR.dualcellat(smp, p)) == 3, refpoints)
+        @test all(p -> GR.dualcellat(smp, p).kind === GR.MeanValue, refpoints)
+    end
+
+    @testset "a stored site reproduces itself" begin
+        # Exact node hits expose misordered and misresolved fans.
+        exact = 0
+        for i in 1:length(mov)
+            c = mov[i]
+            p = DGG.cell_centroid(DGG.levelgrid(sys, DGG.level(c)), c)
+            GR.ismapped(GR.weightsat!(row, smp, p)) || continue
+            (length(row) == 1 && row.indices[1] == i && row.weights[1] == 1.0) &&
+                (exact += 1)
+        end
+        @test exact == length(mov)
+    end
+
+    @testset "affine reproduction inside a coarse cell beside fine ones" begin
+        coarse = coarsebesidefine(sys, mov, top)
+        @test coarse !== nothing
+        lvl = DGG.levelgrid(sys, top + 1)
+        host = DGG.localindex(mov, coarse)
+
+        # Three depths exercise different wedges and neighbor representatives.
+        pts = vcat((insidepoints(lvl, coarse, t) for t in (0.2, 0.5, 0.85))...)
+        @test length(pts) >= 8
+
+        charterr = 0.0
+        allhosted = true
+        allresolved = true
+        reached = Set{Int}()
+        for p in pts
+            @test GR.ismapped(GR.weightsat!(row, smp, p))
+            allhosted &= DGG.localindex(mov, p) == host
+            cell = GR.dualcellat(smp, p)
+            charterr = max(charterr, chartresidual(row, cell))
+            # Affine laws alone cannot detect the wrong descendant representative.
+            want = representatives(mov, coarse, p)
+            for i in row.indices
+                allresolved &= (i == host || i in want)
+                push!(reached, i)
+            end
+        end
+        @test allhosted
+        @test charterr < 1e-10
+        @test allresolved
+        @test any(i -> DGG.level(mov[i]) > DGG.level(coarse), reached)
+    end
+
+    @testset "the point laws hold across the level boundary" begin
+        mapped = 0
+        positive = true
+        finite = true
+        sumerr = 0.0
+        charterr = 0.0
+        for p in refpoints
+            status = GR.weightsat!(row, smp, p)
+            if GR.ismapped(status)
+                mapped += 1
+                positive &= all(>=(0.0), row.weights)
+                finite &= all(isfinite, row.weights)
+                sumerr = max(sumerr, abs(sum(row.weights) - 1.0))
+                cell = GR.dualcellat(smp, p)
+                charterr = max(charterr, chartresidual(row, cell))
+            else
+                # Degeneracies must clear the row and return a status.
+                @test isempty(row)
+            end
+        end
+        # Full coverage exposes flipped sliver triangles as unmapped sites.
+        @test mapped == length(refpoints)
+        @test positive
+        @test finite
+        @test sumerr < 1e-14
+        @test charterr < 1e-14
+
+        # Fixed-capacity fans allocate nothing after warm-up.
+        sweepstatus(row, smp, refpoints)
+        @test (@allocated sweepstatus(row, smp, refpoints)) == 0 skip = VERSION < v"1.12"
+    end
+
+    @testset "a hole is a rim, not a closed fan" begin
+        # Closing a fan across a hole would assign weight to uncovered ground.
+        gapat = findfirst(i -> DGG.level(mov[i]) == top + 1, 1:length(mov))
+        gap = mov[gapat]
+        holed = DGG.MultiOrderVector(sys,
+            [mov[i] for i in 1:length(mov) if i != gapat]; reference_level = ref)
+        hspace = GR.sourcespacefor(holed, GR.BarycentricPoint())
+        hsmp = GR.sampler(GR.BarycentricPoint(), hspace)
+        lvl = DGG.levelgrid(sys, top + 1)
+
+        inside = DGG.cell_centroid(lvl, gap)
+        @test (@inferred GR.weightsat!(row, hsmp, inside)) === GR.WeightsOutside
+        @test isempty(row)
+
+        rims = 0
+        mapped = 0
+        for n in DGG.neighbors(lvl, gap, 1; connectivity = DGG.Vertex())
+            DGG.covering_index(holed, n) === nothing && continue
+            for p in insidepoints(lvl, n, 0.75)
+                status = GR.weightsat!(row, hsmp, p)
+                status === GR.WeightsRim && (rims += 1; @test isempty(row))
+                GR.ismapped(status) && (mapped += 1)
+            end
+        end
+        @test rims > 0
+        @test mapped > 0
+    end
+
+    @testset "native interpolation reduces expansion artifacts" begin
+        # Replicated leaf values create flat interiors and steps at leaf spacing.
+        vals = storedvalues(mov, smooth)
+        cube = DD.DimArray(vals, DGG.Cells(DGG.MultiOrderLookup(mov)))
+        expanded = DGG.expand(cube, ref)
+        aspace = GR.sourcespacefor(mov, GR.Conservative())
+        asmp = GR.sampler(GR.BarycentricPoint(), aspace)
+        avals = collect(parent(expanded))
+        @test DGG.ncells(aspace) == length(avals) > length(mov)
+
+        coarse = coarsebesidefine(sys, mov, top)
+        lvl = DGG.levelgrid(sys, top + 1)
+        pts = insidepoints(lvl, coarse, 0.35)
+        a = [interpolate_at(aspace, asmp, row, avals, p) for p in pts]
+        b = [interpolate_at(space, smp, row, vals, p) for p in pts]
+        @test all(!isnothing, a) && all(!isnothing, b)
+        af, bf = Float64[x for x in a], Float64[x for x in b]
+        # Expansion is flat inside the coarse cell; native interpolation varies.
+        @test maximum(af) - minimum(af) < 1e-12
+        @test maximum(bf) - minimum(bf) > 1e-3
+
+        # Native interpolation reduces the largest adjacent-cell step.
+        dst = lref
+        nat = parent(DGG.regrid(cube; to = dst, method = GR.BarycentricPoint()))
+        exp_ = parent(DGG.regrid(expanded; to = dst, method = GR.BarycentricPoint()))
+        jn, je = maxadjacentjump(dst, nat), maxadjacentjump(dst, exp_)
+        @test jn < je
+        @test jn < 0.5 * je
+        truth = [smooth(DGG.cell_centroid(dst, DGG.cellindex(dst, i)))
+                 for i in 1:DGG.ncells(dst)]
+        @test maximum(abs.(nat .- truth)) < maximum(abs.(exp_ .- truth))
+    end
+
+    @testset "a uniform container keeps the conforming construction" begin
+        # One stored cell per leaf retains the conforming grid's native dual cells.
+        cells = collect(DGG.CellVector(DGG.levelgrid(sys, top + 2)))
+        uniform = DGG.MultiOrderVector(sys, cells; reference_level = top + 2)
+        uspace = GR.sourcespacefor(uniform, GR.BarycentricPoint())
+        @test uspace.grid isa DGG.PartialGrid
+        @test GR.samplerstate(uspace) isa DGG.DualTopology
+        usmp = GR.sampler(GR.BarycentricPoint(), uspace)
+        lvl = DGG.levelgrid(sys, top + 2)
+        probes = [midpoint(DGG.cell_centroid(lvl, DGG.cellindex(lvl, i)),
+            first(DGG.cell_boundary(lvl, DGG.cellindex(lvl, i))))
+                  for i in 1:min(200, DGG.ncells(lvl))]
+        counts = Set(GR.nodecount(GR.dualcellat(usmp, p)) for p in probes)
+        @test sys === HEALPIX ? (4 in counts) : counts == Set((3,))
+
+        # The uniform container must match the equivalent level grid exactly.
+        dst = DGG.levelgrid(sys, top + 1)
+        vals = storedvalues(uniform, smooth)
+        cube = DD.DimArray(vals, DGG.Cells(DGG.MultiOrderLookup(uniform)))
+        @test isequal(parent(DGG.regrid(cube; to = dst,
+                method = GR.BarycentricPoint())),
+            collect(GR.regrid(vals; to = DGG.DGGSpace(dst),
+                from = DGG.DGGSpace(lvl), method = GR.BarycentricPoint(),
+                lazy = false)))
+    end
+
+    @testset "DGGS point sampling ignores the raster pole policy" begin
+        # DGGS cells reach the poles, so raster pole synthesis is irrelevant.
+        pole = unit((0.0, 0.0, 1.0))
+        polar = GR.sampler(GR.BarycentricPoint(poles = nothing), space)
+        a, b = GR.WeightRow(), GR.WeightRow()
+        same = true
+        for p in vcat([pole, unit((0.0, 0.0, -1.0))],
+            refpoints[1:min(50, length(refpoints))])
+            GR.weightsat!(a, smp, p)
+            GR.weightsat!(b, polar, p)
+            same &= a.indices == b.indices && a.weights == b.weights
+        end
+        @test same
+        @test GR.ismapped(GR.weightsat!(row, smp, pole))
+
+        @test (@inferred GR.dualcellat(smp, pole)) isa DGG.GridDualCell
+        @test (@inferred GR.weightsat!(row, smp, pole)) === GR.WeightsMapped
+        @test (@inferred GR.chartat(smp, pole)) === (0.0, 0.0)
+        # The stencil bound is twice the widest stored cell.
+        r = @inferred GR.supportradius(GR.BarycentricPoint(), space)
+        @test 0 < r < Float64(pi)
+        widest = maximum(Float64(DGG.Fallbacks.cell_cap(
+            DGG.levelgrid(sys, DGG.level(c)), c).radius) for c in mov)
+        @test r ≈ 2 * widest
+    end
 end
 
 end # module

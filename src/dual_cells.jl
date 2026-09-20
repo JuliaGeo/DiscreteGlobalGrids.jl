@@ -1,47 +1,31 @@
-# Dual cells behind a `DGGSpace`.
-#
-# A point method interpolates between source sample sites, and for cell-centred
-# DGGS data the polygon it interpolates on is the dual cell of a primal vertex:
-# the sites of the cells meeting at that vertex. The cells meeting at a vertex
-# of the host cell are all in the host's `Vertex()` one-ring, and the host's
-# `Edge()` one-ring says where one vertex's fan ends and the next begins, so the
-# host's candidates come out of two ring calls and no vertex is ever numbered.
-
-# The most sample sites one dual cell holds. A dual cell of a primal vertex has
-# one node per cell meeting there, so this is the largest primal-vertex valence
-# supported; a fan longer than this is `WeightsDegenerate` rather than a
-# truncated stencil.
+# Fixed capacity keeps valid dual-cell queries allocation-free.
 const MAX_DUAL_NODES = 12
 
-# The most cells a host's `Vertex()` one-ring may hold. The largest
-# `maxneighbors` any system here declares is eleven; a longer ring is
-# `WeightsDegenerate`.
+# This exceeds every system's declared `maxneighbors` value.
 const MAX_DUAL_RING = 12
 
 const DualIndices = SmallVector{MAX_DUAL_NODES,Int}
 const DualNodes = SmallVector{MAX_DUAL_NODES,NTuple{2,Float64}}
 const DualRing = SmallVector{MAX_DUAL_RING,NTuple{2,Float64}}
 
+# `0` marks a ring direction missing from a mixed-level container.
+const MixedRingIndices = SmallVector{MAX_DUAL_RING,Int}
+
 """
     GridDualCell
 
-The [`GlobalRegridding.DualCell`](@ref) a [`DGGSpace`](@ref) answers: fixed
-capacity in both its source indices and its chart coordinates, so locating one
-reaches no heap.
+The fixed-capacity [`GlobalRegridding.DualCell`](@ref) returned by a
+[`DGGSpace`](@ref). Locating one allocates no heap storage.
 """
 const GridDualCell = GR.DualCell{DualIndices,DualNodes}
 
-# The answer where no dual cell holds the point. Its status says why.
 const NO_GRID_DUALCELL = GR.DualCell(DualIndices(), DualNodes(), GR.MeanValue)
 
 """
     DualTopology(grid)
 
-The complete level a [`DGGSpace`](@ref)'s dual cells read topology on.
-
-A space over a subset reads rings and sample sites here rather than on the
-subset, so a cell the subset does not hold is a missing node — a rim — instead
-of a ring silently one cell shorter.
+Store the complete level that builds a [`DGGSpace`](@ref)'s dual cells. The
+complete topology preserves missing-node detection along subset rims.
 """
 struct DualTopology{G<:AbstractGrid}
     grid::G
@@ -52,61 +36,68 @@ Base.show(io::IO, t::DualTopology) = print(io, "DualTopology(", t.grid, ")")
 _dualtopology(grid::AbstractGrid) = DualTopology(grid)
 _dualtopology(grid::PartialGrid) = DualTopology(grid.complete)
 
-# A `DGGSpace` builds dual cells from its grid's own adjacency.
 GR.hasdualcells(::DGGSpace) = true
+
+"""
+    MultiOrderDualTopology(cells::MultiOrderVector)
+
+Hold immutable mixed-level topology for concurrent sampler queries. Each query
+reads its host's conforming level ring and resolves members to stored cells.
+"""
+struct MultiOrderDualTopology{ID,S<:AbstractHierarchicalGridSystem}
+    cells::MultiOrderVector{ID,S}
+end
+
+Base.show(io::IO, t::MultiOrderDualTopology) =
+    print(io, "MultiOrderDualTopology(", length(t.cells), " stored cells)")
+
+_dualtopology(grid::MultiOrderGrid) = MultiOrderDualTopology(grid.cells)
 
 """
     GlobalRegridding.samplerstate(space::DGGSpace)
 
-The complete level the space's dual cells are built on, held once per sampler.
-
-It is read and never written, so concurrent queries share it; a query's own
-working buffers are fixed-capacity and live on its stack.
+Create the immutable topology shared by the sampler's concurrent queries.
+Each query uses its own fixed-capacity working buffers.
 """
 GR.samplerstate(space::DGGSpace) = _dualtopology(space.grid)
 
 const _DualSampler{V} = GR.Sampler{<:DGGSpace,V,<:DualTopology}
+const _MixedSampler{V} = GR.Sampler{<:DGGSpace,V,<:MultiOrderDualTopology}
+const _GridSampler{V} = GR.Sampler{<:DGGSpace,V,<:Union{DualTopology,MultiOrderDualTopology}}
 
 """
     GlobalRegridding.chartat(s::Sampler{<:DGGSpace}, p)
 
-The origin, always.
-
-The chart a `DGGSpace`'s dual cells are written in is the azimuthal-equidistant
-chart centred on the queried point itself, so the point sits at `(0.0, 0.0)` and
-the nodes carry their true geodesic distances and bearings from it.
+Return the origin `(0.0, 0.0)`. A `DGGSpace` writes dual cells in the
+azimuthal-equidistant chart centered on the query point, preserving each
+node's geodesic distance and bearing.
 """
-GR.chartat(::_DualSampler, p) = (0.0, 0.0)
+GR.chartat(::_GridSampler, p) = (0.0, 0.0)
 
 """
     GlobalRegridding.dualcellat(s::Sampler{<:DGGSpace}, p) -> GridDualCell
 
-The dual cell of source sample sites containing `p`, or a cell with no nodes.
-
-`p`'s host cell is located once, and the candidates are the dual cells of the
-host's own primal vertices — one per cell of its `Edge()` one-ring, whose nodes
-are the host's site followed by the run of its `Vertex()` one-ring that fans
-around that vertex. The candidate holding `p` supplies the stencil; no cell
-polygon is matched and no vertex is numbered.
-
-The kind is always `MeanValue`, which on the three nodes a hexagonal source
-gives is that triangle's barycentric coordinates.
+Return the `MeanValue` dual cell containing `p`, or an empty cell. Edge
+neighbors delimit candidate fans within the host's vertex ring. On a
+`MultiOrderGrid` the cell is the triangle of the host and the two resolved ring
+sites bracketing the query bearing.
 """
-GR.dualcellat(s::_DualSampler, p) = first(_locatedual(s, p))
+GR.dualcellat(s::_GridSampler, p) = first(_locatedual(s, p))
 
 """
     GlobalRegridding.weightsat!(row, s::Sampler{<:DGGSpace}, p)
 
-Weight the sample sites of the dual cell holding `p`.
+Weight the dual cell containing `p` at the query-centered chart origin. An
+unsuccessful query leaves the row empty.
 
-[`dualcellat`](@ref) locates the cell and its own kind weights the nodes, at the
-origin of the chart centred on `p`. Where no cell holds `p` the row stays empty
-and the status says why: `WeightsRim` where the cell exists on the level but one
-of its nodes is outside this space's collection, `WeightsOutside` where the
-space covers `p` nowhere, and `WeightsDegenerate` where the fan is unusable —
-nonlocal on the sphere, longer than a dual cell may be, or not a simple cell.
+# Dual-cell weight statuses
+
+  - `WeightsRim`: a required node lies outside the collection.
+  - `WeightsOutside`: the space leaves `p` uncovered.
+  - `WeightsDegenerate`: the fan exceeds capacity, crosses the chart's
+    antipode, or fails to form a simple cell.
 """
-function GR.weightsat!(row::GR.WeightRow, s::_DualSampler, p)
+function GR.weightsat!(row::GR.WeightRow, s::_GridSampler, p)
     empty!(row)
     cell, status = _locatedual(s, p)
     GR.nodecount(cell) == 0 && return status
@@ -116,12 +107,8 @@ end
 """
     GlobalRegridding.supportradius(::BarycentricPoint, space::DGGSpace)
 
-Twice the widest chunk cover, in radians.
-
-A dual cell's nodes are the sites of cells touching the point's host cell, so
-the stencil reaches at most one cell width past the point. Every cell lies
-inside its own chunk's cover, so twice the widest of those covers bounds any
-cell's width and chunk discovery keeps every chunk a stencil can name.
+Return twice the widest chunk-cover radius. This bounds a stencil that reaches
+one cell width beyond its host.
 """
 GR.supportradius(::GR.BarycentricPoint, space::DGGSpace) = _dualreach(space)
 
@@ -133,8 +120,17 @@ function _dualreach(space::DGGSpace)
     return min(Float64(pi), 2 * r)
 end
 
-# Is `c` one of the cells in `ring`? Rings are shorter than a dozen cells and
-# hold no duplicates, so the scan beats anything with a table behind it.
+# Stored-cell caps give a useful reach bound for the single-chunk mixed grid.
+function _dualreach(space::DGGSpace{<:MultiOrderGrid})
+    grid = space.grid
+    r = 0.0
+    for c in grid.cells
+        r = max(r, Float64(Fallbacks.cell_cap(grid, c).radius))
+    end
+    return min(Float64(pi), 2 * r)
+end
+
+# Short duplicate-free rings favor a linear scan over a lookup table.
 @inline function _inring(ring, c)
     for x in ring
         x == c && return true
@@ -144,13 +140,11 @@ end
 
 @inline _cyclicnext(k::Int, n::Int) = k == n ? 1 : k + 1
 
-# Ring positions as bits, so a walk carries them in a register instead of a
-# buffer. Position `k` is bit `k - 1`.
+# A bit mask keeps ring positions in a register.
 @inline _isset(bits::UInt16, k::Int) = (bits >> (k - 1)) & one(UInt16) == one(UInt16)
 @inline _set(bits::UInt16, k::Int) = bits | (one(UInt16) << (k - 1))
 
-# The next set position after `k`, going round. Only called where at least one
-# is set, so the walk always lands.
+# Callers guarantee at least one set bit, so the cyclic scan always lands.
 @inline function _nextset(bits::UInt16, k::Int, n::Int)
     j = k
     for _ in 1:n
@@ -160,17 +154,13 @@ end
     return k
 end
 
-# The dual cell holding `p` and what became of the search. `dualcellat` and
-# `weightsat!` are the same query: one wants the cell, the other also wants the
-# reason there is none.
+# Share location work while preserving the status needed by `weightsat!`.
 function _locatedual(s::_DualSampler, p)
     grid = s.space.grid
     topo = s.state.grid
     host = localindex(grid, p)
     if host === nothing
-        # A point the level covers but the collection does not: every dual cell
-        # around it needs the host's own site, which this space has no index
-        # for, so it is a rim rather than a cell built from someone else's.
+        # A missing host site makes this a collection rim.
         return (NO_GRID_DUALCELL,
             localindex(topo, p) === nothing ? GR.WeightsOutside : GR.WeightsRim)
     end
@@ -190,8 +180,7 @@ function _locatedual(s::_DualSampler, p)
         sites = SmallCollections.push(sites, c === nothing ? (0.0, 0.0) : c)
     end
 
-    # Where one vertex's fan ends and the next begins: the cells sharing a whole
-    # edge with the host, in the positions the vertex ring already put them in.
+    # Edge neighbors delimit vertex fans within the ordered vertex ring.
     cuts = zero(UInt16)
     edges = neighbors(topo, hostid, 1; connectivity = Edge())
     for k in 1:m
@@ -224,8 +213,7 @@ function _locatedual(s::_DualSampler, p)
         k = a
         while true
             i = localindex(grid, @inbounds fan[k])
-            # A node the collection does not hold has no local index at all, so
-            # this cell cannot be weighted here and nothing stands in for it.
+            # Every weighted node needs a local source index.
             i === nothing && return (NO_GRID_DUALCELL, GR.WeightsRim)
             indices = SmallCollections.push(indices, i)
             k == b && break
@@ -234,4 +222,95 @@ function _locatedual(s::_DualSampler, p)
         return (GR.DualCell(indices, nodes, GR.MeanValue), GR.WeightsMapped)
     end
     return (NO_GRID_DUALCELL, unusable ? GR.WeightsDegenerate : GR.WeightsOutside)
+end
+
+# --- mixed levels -----------------------------------------------------------
+
+@inline function _storedsite(mov::MultiOrderVector, k::Int)
+    c = @inbounds mov.cells[k]
+    return cell_centroid(levelgrid(mov.system, level(c)), c)
+end
+
+# Descendant intervals make the nearest stored refinement a bounded indexed scan.
+function _nearestunder(mov::MultiOrderVector, n::AbstractCellIndex, p)
+    r = descendant_range(mov.system, n, mov.reference_level)
+    lo = searchsortedfirst(mov.starts, first(r))
+    hi = searchsortedlast(mov.starts, last(r))
+    best = 0
+    bestd = Inf
+    for k in lo:hi
+        q = _storedsite(mov, k)
+        d = (q[1] - p[1])^2 + (q[2] - p[2])^2 + (q[3] - p[3])^2
+        d < bestd && (bestd = d; best = k)
+    end
+    return best
+end
+
+function _locatedual(s::_MixedSampler, p)
+    mov = s.state.cells
+    sys = mov.system
+    host = localindex(mov, p)
+    # A container hole supplies no host site for a stencil.
+    host === nothing && return (NO_GRID_DUALCELL, GR.WeightsOutside)
+    hostid = @inbounds mov.cells[host]
+    hostgrid = levelgrid(sys, level(hostid))
+    chart = GR.TangentChart(p)
+    hostsite = GR.chartpoint(chart, cell_centroid(hostgrid, hostid))
+    hostsite === nothing && return (NO_GRID_DUALCELL, GR.WeightsDegenerate)
+
+    # The host's complete level supplies a conforming ring.
+    ring = neighbors(hostgrid, hostid, 1; connectivity = Vertex())
+    m = length(ring)
+    m <= MAX_DUAL_RING || return (NO_GRID_DUALCELL, GR.WeightsDegenerate)
+
+    sites = DualRing()
+    ids = MixedRingIndices()
+    for j in 1:m
+        n = @inbounds ring[j]
+        k = covering_index(mov, n)
+        i = k === nothing ? _nearestunder(mov, n, p) : k
+        q = if i == 0
+            # A placeholder centroid preserves the angular extent of a gap.
+            GR.chartpoint(chart, cell_centroid(hostgrid, n))
+        else
+            # Ring members sharing a coarse ancestor contribute one site.
+            (i == host || _inring(ids, i)) && continue
+            GR.chartpoint(chart, _storedsite(mov, i))
+        end
+        q === nothing && return (NO_GRID_DUALCELL, GR.WeightsDegenerate)
+        ids = SmallCollections.push(ids, i)
+        sites = SmallCollections.push(sites, q)
+    end
+    n = length(ids)
+    n >= 2 || return (NO_GRID_DUALCELL, GR.WeightsDegenerate)
+
+    # The sites bracketing the host-to-origin bearing delimit the query wedge.
+    hx, hy = hostsite
+    base = atan(-hy, -hx)
+    lo = hi = 0
+    dlo, dhi = -1.0, 7.0
+    for k in 1:n
+        q = @inbounds sites[k]
+        d = mod(atan(q[2] - hy, q[1] - hx) - base, 2 * Float64(pi))
+        d < dhi && (dhi = d; hi = k)
+        d > dlo && (dlo = d; lo = k)
+    end
+    lo == hi && return (NO_GRID_DUALCELL, GR.WeightsDegenerate)
+
+    a, b = @inbounds(ids[lo]), @inbounds(ids[hi])
+    # A gap cannot close a valid interpolation triangle.
+    (a == 0 || b == 0) && return (NO_GRID_DUALCELL, GR.WeightsRim)
+
+    nodes = DualNodes()
+    nodes = SmallCollections.push(nodes, hostsite)
+    nodes = SmallCollections.push(nodes, @inbounds sites[lo])
+    nodes = SmallCollections.push(nodes, @inbounds sites[hi])
+    GR.containspoint(nodes, (0.0, 0.0)) ||
+        return (NO_GRID_DUALCELL, GR.WeightsOutside)
+
+    indices = DualIndices()
+    indices = SmallCollections.push(indices, host)
+    indices = SmallCollections.push(indices, a)
+    indices = SmallCollections.push(indices, b)
+    return (GR.DualCell(indices, nodes, GR.MeanValue), GR.WeightsMapped)
 end

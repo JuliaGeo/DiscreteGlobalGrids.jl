@@ -1,19 +1,10 @@
-# Grid id arithmetic (the existence model for Z7, the trivial one for HEALPix
-# nested) and the pluggable encoding registry.
-#
-# The oracle for every Z7 assertion is the enumerated truth: the level's cells
-# in canonical order, produced by the package's own `cellindex`, and the
-# structurally well-formed digit strings that name no cell (the "phantoms").
-# Counts reproduce the committed `10*7^L + 2` / `2*7^L - 2` numbers.
+# Enumerated canonical cells and well-formed phantom ids provide the Z7 oracle.
 
 using Test
 import DiscreteGlobalGrids as DGG
 using DiscreteGlobalGrids: IGeo7System, HEALPixSystem, Z7Cell, LevelIndex,
     levelgrid, ncells, cellindex, localindex, rawid, level
 
-# Every well-formed level-`L` digit string, ascending: base in 0:11 and `L`
-# digits in 0:6, tail padded with the 7 sentinel. `12 * 7^L` of them, of which
-# `2 * 7^L - 2` are phantoms — well formed but naming no cell.
 function structural_z7_ids(L::Int)
     p = 7^L
     tail = (UInt64(1) << (3 * (20 - L))) - UInt64(1)
@@ -112,9 +103,6 @@ end
         keys(Encodings.ENCODING_REGISTRY))
 end
 
-# A downstream encoding, as far as the registry is concerned: a subtype and an
-# instance. What it does with a store is the registry's business no more than a
-# convention's implementation is `CONVENTION_REGISTRY`'s.
 struct GriddedRunsEncoding <: Encodings.CellEncoding end
 Encodings.encodingname(::GriddedRunsEncoding) = "gridded_runs"
 
@@ -231,4 +219,47 @@ end
         length(ids))
     @test_throws DGGSFormatError Encodings.validate_ranges(grid,
         [ranges[1:1, 1] ranges[1:1, 1] .- 1], 0)
+end
+
+@testset "the compacted axis: two columns to a validated MultiOrderVector" begin
+    for sys in (HEALPixSystem(), IGeo7System())
+        l1 = levelgrid(sys, 1)
+        a = cellindex(l1, 2)
+        b = cellindex(l1, 4)
+        kids = collect(DGG.children(sys, b))
+        mov = DGG.MultiOrderVector(sys, [a; kids])
+        lv = Int8[level(c) for c in mov]
+        ids = [rawid(c) for c in mov]
+
+        m2 = Encodings.cellaxis(CompactedEncoding(), sys, lv, ids;
+            declared_length=length(mov))
+        @test m2 isa DGG.MultiOrderVector
+        @test collect(m2) == collect(mov) && m2 == mov
+
+        grab(f) = try
+            f()
+            nothing
+        catch e
+            e
+        end
+        checkof(f) = (e = grab(f); e isa DGGSFormatError ? e.check : e)
+
+        @test checkof(() -> Encodings.cellaxis(CompactedEncoding(), sys,
+            lv[1:end-1], ids)) === :compacted_column_mismatch
+        @test checkof(() -> Encodings.cellaxis(CompactedEncoding(), sys, lv, ids;
+            declared_length=length(mov) + 1)) === :count_mismatch
+        @test checkof(() -> Encodings.cellaxis(CompactedEncoding(), sys,
+            reverse(lv), reverse(ids))) === :compacted_axis_order
+        @test checkof(() -> Encodings.cellaxis(CompactedEncoding(), sys,
+            [lv; lv[end]], [ids; ids[end]])) === :invalid_compacted_axis
+        @test checkof(() -> Encodings.cellaxis(CompactedEncoding(), sys,
+            [lv; Int8(level(b))], [ids; rawid(b)])) === :invalid_compacted_axis
+        @test checkof(() -> Encodings.cellaxis(CompactedEncoding(), sys,
+            Int8[99; lv[2:end]], ids)) === :invalid_stored_level
+        @test checkof(() -> Encodings.cellaxis(CompactedEncoding(), sys, lv,
+            [typemax(Int64); ids[2:end]])) === :id_names_no_cell
+        # Validate the level before narrowing an out-of-range UInt to Int.
+        @test checkof(() -> Encodings.cellaxis(CompactedEncoding(), sys,
+            [typemax(UInt64); UInt64.(lv[2:end])], ids)) === :invalid_stored_level
+    end
 end

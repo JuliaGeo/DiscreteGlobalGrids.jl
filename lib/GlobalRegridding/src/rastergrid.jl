@@ -70,19 +70,19 @@ _default_unit_sphere_to_native(t::US.UnitSphereFromGeographic) = inv(t)
 
 Return the forward chart implied by the CRS metadata of a dimensional array or
 dimension tuple, or `_UNSET_RASTER_KEYWORD` when it carries none or names
-geographic longitude/latitude. Plain dimensional data carries no CRS. The
+longitude/latitude in Greenwich degrees. Plain dimensional data carries no CRS. The
 Rasters extension reads `Projected` and `Mapped` lookups and calls
 [`_projected_crs_native_to_unit_sphere`](@ref) for any CRS it cannot classify
-as geographic on its own.
+as Greenwich degrees on its own.
 """
 _crs_native_to_unit_sphere(::Any) = _UNSET_RASTER_KEYWORD
 
 """
     _projected_crs_native_to_unit_sphere(crs) -> transform or _UNSET_RASTER_KEYWORD
 
-Return the forward chart for a CRS value that is not known to be geographic.
-Proj classifies the CRS and builds the transformation to geographic
-longitude/latitude, so the generic method throws: without Proj the CRS cannot
+Return the forward chart for a CRS value requiring coordinate normalization.
+Proj reads geographic prime meridians and angular units or transforms projected
+coordinates to geographic longitude/latitude, so the generic method throws: without Proj the CRS cannot
 be interpreted, and silently treating it as longitude/latitude would be wrong.
 """
 _projected_crs_native_to_unit_sphere(crs) = throw(ArgumentError(
@@ -107,8 +107,7 @@ end
     _native_coordinate_limits(native_to_unit_sphere) -> (xperiod, ybounds)
 
 Return the first native coordinate's period and the second native coordinate's
-bounds. Either may be `nothing`. Only the geographic-degrees transform supplies
-defaults.
+bounds. Either may be `nothing`. Known longitude/latitude charts supply defaults.
 """
 _native_coordinate_limits(::Any) = (nothing, nothing)
 _native_coordinate_limits(::US.UnitSphereFromGeographic) = (360.0, (-90.0, 90.0))
@@ -201,8 +200,10 @@ The forward chart is chosen in this order:
 
  1. An explicit `native_to_unit_sphere` (or `transform`) keyword.
  2. CRS metadata on the X/Y lookups. With Rasters loaded, `Projected` lookups
-    supply their `crs` and `Mapped` lookups their `mappedcrs`. A geographic CRS
-    keeps the built-in longitude/latitude chart. A projected CRS needs Proj:
+    supply their `crs` and `Mapped` lookups their `mappedcrs`. Greenwich degrees
+    keep the built-in chart. Other geographic coordinates need Proj to convert
+    angular units and shift the prime meridian, preserving the datum and latitude
+    convention. A projected CRS needs Proj:
     with both loaded, the chart is
     `Proj.Transformation(crs, "EPSG:4326"; always_xy = true)` and `cellat`
     works through its inverse; with Rasters alone, construction throws an

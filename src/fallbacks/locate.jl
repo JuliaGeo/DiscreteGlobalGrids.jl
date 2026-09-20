@@ -110,6 +110,29 @@ function one_ring(grid::AbstractGrid, c::AbstractCellIndex,
     return _wind!(shell, grid, centre, _ring_frame(grid, centre, first(shell)))
 end
 
+@inline _counterclockwise(ring, ::Winding) = ring
+
+function _counterclockwise(ring, ::Clockwise)
+    out = collect(ring)
+    length(out) > 1 && reverse!(out, 2, length(out))
+    return out
+end
+
+@inline _counterclockwise(ring::SmallCollections.SmallVector, ::Clockwise) =
+    length(ring) <= 1 ? ring : reverse(ring, 2, length(ring))
+
+@inline _ordered_one_ring(grid, c, connectivity) =
+    _counterclockwise(one_ring(grid, c, connectivity), winding(grid, connectivity))
+
+# Inspect dispatch once per walk: only the geometric fallback needs a shared tree.
+function _neighbor_walk(grid, c, connectivity)
+    method = which(one_ring, (typeof(grid), typeof(c), typeof(connectivity)))
+    fallback = which(one_ring, (AbstractGrid, AbstractCellIndex, Connectivity))
+    method === fallback || return x -> _ordered_one_ring(grid, x, connectivity)
+    tree = treeify(grid)
+    return x -> one_ring(grid, x, connectivity, tree)
+end
+
 """
     checked_steps(k) -> Int
 
@@ -143,8 +166,11 @@ adjacency_shells(walk::W, grid::AbstractGrid, c::AbstractCellIndex,
 
 # A declared turn is carried outward; anything else is measured.
 adjacency_shells(walk::W, grid::AbstractGrid, c::AbstractCellIndex, steps::Int,
-    ::Union{CounterClockwise,Clockwise}) where {W} =
-    _shells_wound(walk, grid, c, steps)
+    ::CounterClockwise) where {W} = _shells_wound(walk, grid, c, steps)
+
+adjacency_shells(walk::W, grid::AbstractGrid, c::AbstractCellIndex, steps::Int,
+    order::Clockwise) where {W} =
+    _shells_wound(x -> _counterclockwise(walk(x), order), grid, c, steps)
 
 adjacency_shells(walk::W, grid::AbstractGrid, c::AbstractCellIndex, steps::Int,
     ::Winding) where {W} = _shells_azimuth(walk, grid, c, steps)
@@ -378,11 +404,11 @@ heap shells exactly as before.
 # native automaton reaches it and nothing builds a spatial tree.
 Base.@constprop :aggressive shell_ring(grid::AbstractGrid, c::AbstractCellIndex,
     steps::Int, connectivity::Connectivity) =
-    _shell_ring(x -> one_ring(grid, x, connectivity), grid, c, steps, connectivity)
+    _shell_ring(x -> _ordered_one_ring(grid, x, connectivity), grid, c, steps, connectivity)
 
 Base.@constprop :aggressive shell_disc(grid::AbstractGrid, c::AbstractCellIndex,
     steps::Int, connectivity::Connectivity) =
-    _shell_disc(x -> one_ring(grid, x, connectivity), grid, c, steps, connectivity)
+    _shell_disc(x -> _ordered_one_ring(grid, x, connectivity), grid, c, steps, connectivity)
 
 # The generic entry points: no native automaton, so the geometric one-ring runs
 # and its spatial tree is hoisted out of the per-cell walk exactly once.
@@ -540,12 +566,12 @@ end
 
 shell_ring(grid::AbstractGrid, c::AbstractCellIndex, ::Val{K},
     connectivity::Connectivity) where {K} =
-    _static_shell_ring(x -> one_ring(grid, x, connectivity), grid, c, Val(K),
+    _static_shell_ring(x -> _ordered_one_ring(grid, x, connectivity), grid, c, Val(K),
         connectivity)
 
 shell_disc(grid::AbstractGrid, c::AbstractCellIndex, ::Val{K},
     connectivity::Connectivity) where {K} =
-    _static_shell_disc(x -> one_ring(grid, x, connectivity), grid, c, Val(K),
+    _static_shell_disc(x -> _ordered_one_ring(grid, x, connectivity), grid, c, Val(K),
         connectivity)
 
 Base.@constprop :aggressive function _shell_disc(walk::W, grid::AbstractGrid,
@@ -639,8 +665,8 @@ Base.@constprop :aggressive function neighbors(grid::AbstractGrid, c::AbstractCe
         connectivity::Connectivity=Vertex())
     steps = checked_steps(k)
     steps == 0 && return typeof(c)[]
-    steps == 1 && return one_ring(grid, c, connectivity)
-    return _geometric_shell_disc(grid, c, steps, connectivity)
+    steps == 1 && return _ordered_one_ring(grid, c, connectivity)
+    return _shell_disc(_neighbor_walk(grid, c, connectivity), grid, c, steps, connectivity)
 end
 
 """
@@ -653,9 +679,8 @@ Base.@constprop :aggressive function ring(grid::AbstractGrid, c::AbstractCellInd
         connectivity::Connectivity=Vertex())
     steps = checked_steps(k)
     steps == 0 && return typeof(c)[c]
-    # A walk that ran out of cells before reaching `steps` has an empty shell
-    # there: the ring is genuinely empty, not missing.
-    return _geometric_shell_ring(grid, c, steps, connectivity)
+    steps == 1 && return _ordered_one_ring(grid, c, connectivity)
+    return _shell_ring(_neighbor_walk(grid, c, connectivity), grid, c, steps, connectivity)
 end
 
 """

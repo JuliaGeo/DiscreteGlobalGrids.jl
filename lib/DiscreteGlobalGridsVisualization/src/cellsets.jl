@@ -51,14 +51,22 @@ Base.hash(cs::CellSet, h::UInt) = hash(cs.cells, hash(cs.source, hash(:CellSet, 
 The cells of `grid` as a lazy vector, `cellindex(grid, i)` at index `i`.
 
 Every grid can be enumerated this way, including ones outside a hierarchy that
-have no `CellVector`.
+have no `CellVector`. An empty standalone grid uses `AbstractCellIndex` as its
+element type.
 """
 struct GridCells{G, ID} <: AbstractVector{ID}
     grid::G
 end
 
 function GridCells(grid)
-    ID = DGG.cellindextype(DGG.system(grid))
+    sys = DGG.system(grid)
+    ID = if sys !== nothing
+        DGG.cellindextype(sys)
+    elseif DGG.ncells(grid) == 0
+        DGG.AbstractCellIndex
+    else
+        typeof(DGG.cellindex(grid, 1))
+    end
     return GridCells{typeof(grid), ID}(grid)
 end
 
@@ -192,5 +200,5 @@ Everything [`cellset`](@ref) reads on its own, as a type.
 What it leaves out is the two-argument form, `cellset(system, ids)`, where the
 cells are named by a pair rather than by one object.
 """
-const CellContainer = Union{CellSet, CellRegion, DGG.AbstractGrid, DGG.CellVector,
-    DGG.CellLookup, DGG.MultiOrderCellSet, DGG.MultiOrderCoverage, SubtreeIterator}
+const CellContainer = Union{CellSet, CellRegion, DGG.AbstractGrid, DGG.AbstractCellVector,
+    DGG.AbstractCellLookup, DGG.MultiOrderCellSet, DGG.MultiOrderCoverage, SubtreeIterator}

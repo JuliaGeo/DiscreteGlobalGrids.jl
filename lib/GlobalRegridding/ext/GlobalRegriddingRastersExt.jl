@@ -129,18 +129,15 @@ end
 """
     _geographic_without_proj(crs::GeoFormat) -> Bool
 
-Return whether `crs` is recognizably geographic from its GeoFormatTypes value
-alone: `EPSG(4326)`, a PROJ string whose `+proj` is a longitude/latitude
-family, or WKT whose root node is a geographic or geodetic CRS. Geographic
-here means longitude/latitude in degrees from Greenwich. WKT2 `GEODCRS` also
-covers geocentric CRSs, which this heuristic accepts. Anything else is left
-for Proj to classify.
+Return whether `crs` names longitude/latitude in Greenwich degrees without
+requiring Proj: EPSG:4326 or a longitude/latitude PROJ string with the default
+prime meridian and axes. WKT and explicit prime meridians require Proj to
+interpret their angular units and offsets.
 """
 _geographic_without_proj(crs::GFT.EPSG) = crs.val == (4326,)
 _geographic_without_proj(crs::GFT.ProjString) =
-    occursin(r"\+proj=(longlat|latlong|latlon|lonlat)\b", GFT.val(crs))
-_geographic_without_proj(crs::GFT.AbstractWellKnownText) =
-    startswith(lstrip(GFT.val(crs)), r"(GEOGCS|GEOGCRS|GEODCRS|GEODETICCRS|GEOGRAPHICCRS)\[")
+    occursin(r"\+proj=(longlat|latlong|latlon|lonlat)\b", GFT.val(crs)) &&
+    !occursin(r"\+(pm|axis)\s*=", GFT.val(crs))
 _geographic_without_proj(::GFT.GeoFormat) = false
 
 end # module GlobalRegriddingRastersExt

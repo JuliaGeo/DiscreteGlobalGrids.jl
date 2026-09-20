@@ -12,6 +12,8 @@ import DimensionalData as DD
 
 CairoMakie.activate!(type = "png")
 
+include("adapters.jl")
+
 const SYS = DGG.IGeo7System()
 const ALPS = DGG.Extents.Extent(X = (10.0, 11.0), Y = (46.0, 47.0))
 

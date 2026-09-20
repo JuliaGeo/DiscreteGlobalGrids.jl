@@ -544,7 +544,7 @@ function _cell_meets_cap(cap, grid, c, strict::Bool)
     # Conservatively accept undecidable centre containment to avoid false misses:
     # by here the cap holds no vertex, so it is wholly inside the cell or wholly
     # outside it, and "outside" would drop a cap sitting deep inside one.
-    radius > 0 && point_in_cell(ring, cap.point) !== false && return true
+    (!strict || radius > 0) && point_in_cell(ring, cap.point) !== false && return true
     threshold = cos(min(Float64(pi), radius))
     for i in 1:n
         a = ring[i]

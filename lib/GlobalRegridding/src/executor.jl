@@ -323,13 +323,20 @@ cellarea(space::RegridSpace, i::Integer) =
     spatialdims(A) -> Tuple{Vararg{Int}}
 
 Return the dimension numbers replaced by regridding. Dimensional arrays use
-their X/Y dimensions; other arrays use the first two dimensions, or one for a
-vector. The source cell count validates the result.
+the cell axis identified by [`dimsource`](@ref), or their X/Y dimensions.
+Other arrays use the first two dimensions, or one for a vector. The source
+cell count validates the result.
 """
 spatialdims(A::AbstractArray) = ndims(A) <= 1 ? (1,) : (1, 2)
 
 function spatialdims(A::DD.AbstractDimArray)
     ds = DD.dims(A)
+    cells = findall(_iscellaxis, ds)
+    if !isempty(cells)
+        length(cells) == 1 || throw(ArgumentError(
+            "$(length(cells)) cell dimensions found in $ds; a regrid replaces one cell axis"))
+        return (only(cells),)
+    end
     pos = Int[]
     for (i, d) in enumerate(ds)
         (d isa DD.Dimensions.XDim || d isa DD.Dimensions.YDim) && push!(pos, i)
@@ -341,12 +348,16 @@ function spatialdims(A::DD.AbstractDimArray)
                         "a regrid replaces at most two"))
 end
 
+_iscellaxis(d) = dimsource(DD.lookup(d)) !== nothing
+_hascellaxis(::AbstractArray) = false
+_hascellaxis(A::DD.AbstractDimArray) = any(_iscellaxis, DD.dims(A))
+
 # Resolve spatial dimensions against the source space's cell count.
 function resolvespatialdims(data::AbstractArray, nsrc::Integer)
     sd = spatialdims(data)
     _spatialsize(data, sd) == nsrc && return _checkleading(data, sd)
     alt = length(sd) == 1 ? (1, 2) : (1,)
-    ndims(data) >= length(alt) && _spatialsize(data, alt) == nsrc &&
+    !_hascellaxis(data) && ndims(data) >= length(alt) && _spatialsize(data, alt) == nsrc &&
         return _checkleading(data, alt)
     throw(DimensionMismatch(
         "source data of size $(size(data)) does not flatten to the source " *

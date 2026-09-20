@@ -16,6 +16,42 @@ using .DGGTestHelpers: syslabel, sweepcovers
 
 const CL = DGG.CellLookups
 
+@testset "compressed lookup replacements preserve cell identities" begin
+    sys = DGG.HEALPixSystem()
+    lk = DGG.CellLookup(DGG.levelgrid(sys, 0))
+    supplied = DGG.CellVector(DGG.levelgrid(sys, 0))[[2, 4, 7]]
+    rebuilt = DD.Lookups.rebuild(lk; data=supplied)
+    @test rebuilt isa DGG.CellLookup
+    @test collect(rebuilt) == collect(supplied)
+    @test CL.windows(rebuilt) === DGG.Engine.windows(supplied)
+    @test isempty(DD.Lookups.rebuild(lk; data=supplied[Int[]]))
+
+    for wrong in (DGG.CellVector(DGG.levelgrid(sys, 1))[1:2],
+                  DGG.CellVector(DGG.levelgrid(DGG.ISEA4RSystem(), 0))[1:2])
+        @test_throws ArgumentError DD.Lookups.rebuild(lk; data=wrong)
+        @test_throws ArgumentError DD.Lookups.rebuild(lk; data=wrong[Int[]])
+    end
+end
+
+@testset "empty cubes have empty automatic chunk plans" begin
+    lk = DGG.CellLookup(DGG.levelgrid(DGG.HEALPixSystem(), 0))[Int[]]
+    cube = DD.DimArray(Float64[], DGG.Cells(lk))
+    plan = DGG.chunkplan(cube)
+    @test isempty(plan)
+    @test DGG.nchunks(plan) == 0
+    @test isempty(DGG.chunkplan(cube; chunks=1))
+    @test_throws ArgumentError DGG.chunkplan(cube; chunks=0)
+    @test_throws ArgumentError DGG.chunkplan(cube; chunks=-1)
+    calls = Ref(0)
+    DGG.foreachchunk(cube, plan) do chunk
+        calls[] += 1
+    end
+    @test calls[] == 0
+    dest = Float64[]
+    @test DGG.mapneighbors!(dest, (_, value, _) -> value, cube) === dest
+    @test isempty(dest)
+end
+
 
 const REGION = GI.Polygon([GI.LinearRing([(6.0, 45.8), (10.5, 45.8), (10.5, 47.8),
     (6.0, 47.8), (6.0, 45.8)])])

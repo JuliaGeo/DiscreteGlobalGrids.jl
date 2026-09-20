@@ -59,9 +59,11 @@ result = regrid(data, plan)
 
 `RasterGrid` reads the CRS of the X/Y lookups, so a `Rasters.Raster` and a
 `DimArray` with `Projected` lookups both work: a geographic CRS is treated as
-longitude and latitude in degrees, and a projected CRS is charted through Proj
-when both Rasters and Proj are loaded. With Rasters loaded but not Proj, a
-projected CRS throws an `ArgumentError`. Lookups with no CRS are assumed
+longitude and latitude. Proj normalizes angular units and prime meridians to
+Greenwich degrees, preserving the datum and latitude convention; datum shifts
+and authalic latitude conversion require an explicit chart. Projected CRSs are
+charted through Proj when both Rasters and Proj are loaded. With Rasters alone,
+CRSs requiring Proj interpretation throw an `ArgumentError`. Lookups with no CRS are assumed
 geographic; pass `native_to_unit_sphere` to chart them otherwise. For
 plain arrays, supply a source space with `from`. Put spatial dimensions first,
 in the source space's cell order.

@@ -1376,6 +1376,19 @@ end
     @test checked_near > 0 && checked_far > 0
 end
 
+@testset "query: zero-radius caps contain their center" begin
+    grid = levelgrid(HEALPixSystem(), 3)
+    p = sph(12.3, 45.6)
+    c = cellat(grid, p)
+    cap = US.SphericalCap(p, 0.0)
+    @test cell_centroid(grid, c) != p
+    @test query(grid, Intersects(cap)) == [c]
+    @test c ∉ query(grid, Disjoint(cap))
+    @test length(query(grid, Disjoint(cap))) == ncells(grid) - 1
+    @test !EN._cell_meets_cap(cap, grid, c, true)
+    @test EN._cell_meets_cap(cap, grid, c, false)
+end
+
 @testset "query: caps wider than a hemisphere" begin
     # A cap of radius > pi/2 is not convex, so containment cannot be read off
     # the vertices; it is decided through the complement cap instead. "All of
@@ -1630,3 +1643,5 @@ using DiscreteGlobalGrids.Helpers
 end
 
 end # module HelpersUtilTests
+
+include("neighborhood_hooks.jl")

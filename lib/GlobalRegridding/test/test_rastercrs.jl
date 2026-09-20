@@ -92,12 +92,53 @@ const GRRastersProjExt = Base.get_extension(GlobalRegridding, :GlobalRegriddingR
         @test_throws ArgumentError RasterGrid(mixed)
     end
 
+    @testset "prime meridians and angular units preserve latitude convention" begin
+        paris = 2 + 20 / 60 + 14.025 / 3600
+        coordinates = (X(-1.0:1.0:1.0), Y(49.0:1.0:51.0))
+        for (crs, scale) in (
+                (ProjString("+proj=longlat +datum=WGS84 +pm=paris"), 1.0),
+                (ProjString("+proj=longlat +datum=WGS84 +pm=paris +type=crs"), 1.0),
+                (ProjString("+proj=longlat +ellps=clrk80ign +towgs84=-168,-60,320 +pm=paris"), 1.0),
+                (EPSG(4807), 0.9),
+                (Rasters.GeoFormatTypes.WellKnownText(Proj.CRS("EPSG:4807")), 0.9),
+                (Rasters.GeoFormatTypes.WellKnownText2(Proj.CRS("EPSG:4807")), 0.9))
+            @test !GRRastersExt._geographic_without_proj(crs)
+            raster = Rasters.Raster(values, coordinates; crs)
+            space = RasterGrid(raster)
+            @test space.native_to_unit_sphere isa GRRastersProjExt._GeographicChart
+            for lon in (-1.0, 0.0, 1.0), lat in (49.0, 50.0, 51.0)
+                point = space.native_to_unit_sphere((lon, lat))
+                expected = GEOGRAPHIC_TO_UNIT_SPHERE((scale * lon + paris, scale * lat))
+                @test all(isapprox.(Tuple(point), Tuple(expected); atol = 1e-9))
+                @test all(isapprox.(space.unit_sphere_to_native(point), (lon, lat); atol = 1e-10))
+            end
+            @test all(cellat(space, cellcentroid(space, i)) == i for i in 1:ncells(space))
+            @test space.xperiod ≈ 360 / scale
+            @test all(isapprox.(GR._spherical_step_bounds_radians(space.native_to_unit_sphere, 1.0, 1.0),
+                (deg2rad(scale), deg2rad(scale))))
+            world = RasterGrid(Rasters.Raster(ones(36, 18),
+                (X((-175.0:10.0:175.0) ./ scale), Y((-85.0:10.0:85.0) ./ scale)); crs))
+            @test all(cellat(world, cellcentroid(world, i)) == i for i in 1:ncells(world))
+            seam = RasterGrid(Rasters.Raster(ones(4, 3),
+                (X((177.0:1.0:180.0) ./ scale), Y((49.0:1.0:51.0) ./ scale)); crs))
+            @test all(cellat(seam, cellcentroid(seam, i)) == i for i in 1:ncells(seam))
+            shifted = RasterGrid(DD.DimArray(values,
+                (X(scale .* (-1.0:1.0:1.0) .+ paris), Y(scale .* (49.0:1.0:51.0)))))
+            @test parent(regrid(raster; to = shifted, method = DirectNearest(), lazy = false)) ≈ values
+        end
+        for pm in ("greenwich", "0")
+            crs = ProjString("+proj=longlat +datum=WGS84 +pm=$pm")
+            @test RasterGrid(Rasters.Raster(values, geographic; crs)).native_to_unit_sphere isa
+                GO.UnitSpherical.UnitSphereFromGeographic
+        end
+    end
+
     @testset "Proj-free classification and error" begin
         @test GRRastersExt._geographic_without_proj(EPSG(4326))
         @test !GRRastersExt._geographic_without_proj(EPSG(3857))
         @test GRRastersExt._geographic_without_proj(ProjString("+proj=longlat +datum=WGS84 +no_defs"))
         @test !GRRastersExt._geographic_without_proj(ProjString("+proj=merc +datum=WGS84"))
-        @test GRRastersExt._geographic_without_proj(
+        @test !GRRastersExt._geographic_without_proj(
             Rasters.WellKnownText(Rasters.GeoFormatTypes.CRS(), "GEOGCS[\"WGS 84\",DATUM[]]"))
         @test !GRRastersExt._geographic_without_proj(
             Rasters.WellKnownText(Rasters.GeoFormatTypes.CRS(), "PROJCS[\"WGS 84 / Pseudo-Mercator\"]"))

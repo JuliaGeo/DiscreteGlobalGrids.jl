@@ -124,4 +124,28 @@ end
     @test levelfor(HP, north; over = ARCTIC) == 7
 end
 
+@testset "AOI sizing samples the subset's stored cells" begin
+    world = Extents.Extent(X = (-180.0, 180.0), Y = (-90.0, 90.0))
+    grid = levelgrid(HP, 10)
+    sub = PartialGrid(HP, 10, [cellindex(grid, 1)])
+    @test length(query(sub, Intersects(world))) == 1
+    @test cellsize(sub; over = world) == cellsize(sub)
+    @test cellsize(DGG.DGGSpace(sub); over = world) == cellsize(sub)
+    @test levelfor(HP, sub; over = world) == 10
+
+    band = PartialGrid(COP, 0, query(levelgrid(COP, 0), Intersects(ARCTIC)))
+    @test cellsize(band; over = world) == cellsize(band)
+    @test_throws "no cell of the grid meets" cellsize(band; over = EQUATOR)
+
+    many = CellVector(levelgrid(HP, 4))[1:400]
+    partial = PartialGrid(many)
+    chosen = setdiff(1:length(many), DGG._sampleindices(length(many), 4))[end]
+    point = cell_centroid(partial, many[chosen])
+    cap = DGG.GO.UnitSpherical.SphericalCap(point, 1e-8)
+    sampled = DGG._aoicells(partial, cap, 4)
+    @test many[chosen] in sampled
+    @test all(in(query(partial, Intersects(cap))), sampled)
+    @test cellsize(partial; over = cap, samples = 4) == cellsize(partial)
+end
+
 end # module SizingTests

@@ -355,7 +355,12 @@ function Lookups.rebuild(lk::CellLookup; data=nothing, kw...)
     return _rebuild(lk, data)
 end
 
-_rebuild(lk::CellLookup, cv::CellVector) = _derive(lk, windows(cv))
+function _rebuild(lk::CellLookup, cv::CellVector)
+    system(cv) == system(lk) && level(cv) == level(lk) || throw(ArgumentError(
+        "a CellLookup at level $(level(lk)) of $(system(lk)) cannot be rebuilt " *
+        "around cells at level $(level(cv)) of $(system(cv))"))
+    return _derive(lk, windows(cv))
+end
 
 function _rebuild(lk::CellLookup, ids::AbstractVector{<:AbstractCellIndex})
     cv = parent(lk)

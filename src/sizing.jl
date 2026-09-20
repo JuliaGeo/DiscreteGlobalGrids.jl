@@ -162,6 +162,35 @@ function _aoicells(grid::AbstractGrid, over, samples::Int)
         "no cell of the grid meets the area of interest")
 end
 
+# A subset's coarse ancestors can contain mostly absent cells. Sample its own
+# storage, then fill any remaining slots with exact spatial-query matches.
+function _aoicells(grid::PartialGrid, over, samples::Int)
+    target = Engine._query_target(over)
+    k = min(max(samples, 1), ncells(grid))
+    out = cellindextype(system(grid))[]
+    pred = Intersects(nothing)
+    indices = unique!(_sampleindices(ncells(grid), k))
+    for i in indices
+        c = cellindex(grid, i)
+        Engine._matches(pred, target, grid, c) && push!(out, c)
+    end
+    if length(out) < k && length(indices) < ncells(grid)
+        seen = Set(out)
+        STI.depth_first_search(Base.Fix1(Extents.intersects, target.cap), treeify(grid)) do i
+            c = cellindex(grid, i)
+            c in seen && return nothing
+            if Engine._matches(pred, target, grid, c)
+                push!(out, c)
+                push!(seen, c)
+                length(out) == k && return GO.LoopStateMachine.Action(:full_return, nothing)
+            end
+            return nothing
+        end
+    end
+    isempty(out) && throw(ArgumentError("no cell of the grid meets the area of interest"))
+    return out
+end
+
 # A space has no hierarchy of its own to descend, so an equal-area system
 # stands in as the probe and `GR.cellat` finds the space's cell under each point.
 const _PROBE = HEALPixSystem()

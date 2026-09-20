@@ -213,7 +213,7 @@ _chunkbounds(data, dnum::Int, chunks::Integer, n::Int) = Int(chunks)
 function _chunkbounds(data, dnum::Int, chunks::Symbol, n::Int)
     chunks === :auto || throw(ArgumentError(
         "chunks is :auto or a positive chunk length in cells, not $(repr(chunks))"))
-    DiskArrays.haschunks(data) isa DiskArrays.Chunked || return n
+    DiskArrays.haschunks(data) isa DiskArrays.Chunked || return max(1, n)
     grid = DiskArrays.eachchunk(data)
     return [UnitRange{Int}(r) for r in grid.chunks[dnum]]
 end

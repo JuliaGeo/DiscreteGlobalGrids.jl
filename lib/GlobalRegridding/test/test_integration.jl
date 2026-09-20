@@ -237,6 +237,37 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         @test_throws "from = T6Grid()" regrid(zeros(32); to = dst, from = data)
     end
 
+    @testset "cell axes preserve non-spatial dimensions" begin
+        space = ToyCellAxisSpace(ToyLonLatSpace(4, 2; chunks = (4, 1)))
+        n = ncells(space)
+        cells = DD.Dim{:Cells}(DD.Lookups.Categorical(
+            [T6Cell(i) for i in 1:n]; order = DD.Lookups.Unordered()))
+        for others in ((DD.Ti([2001]),), (DD.Ti([2001, 2002]),),
+                      (DD.Ti([2001]), DD.Dim{:Band}([:red, :blue]), DD.Dim{:Run}([1])))
+            shape = (n, map(length, others)...)
+            data = reshape(collect(1.0:prod(shape)), shape)
+            cube = DD.DimArray(data, (cells, others...))
+            @test GR.spatialdims(cube) == (1,)
+            for method in (NearestCell(), DirectNearest()), lazy in (false, true)
+                plan = plan_regrid(cube; from = space, to = space, method, lazy)
+                out = regrid(cube, plan)
+                @test size(out) == shape
+                @test Base.tail(DD.dims(out)) == Base.tail(DD.dims(cube))
+                @test Array(out) == data
+                dest = similar(data)
+                @test regrid!(dest, cube, plan) === dest
+                @test dest == data
+            end
+        end
+
+        cube = DD.DimArray(zeros(n, 2), (cells, DD.Ti(1:2)))
+        @test_throws DimensionMismatch GR.resolvespatialdims(cube, 2n)
+        nonleading = DD.DimArray(zeros(1, n), (DD.Ti([2001]), cells))
+        @test_throws "spatial dimensions (2,)" GR.resolvespatialdims(nonleading, n)
+        duplicate = DD.DimArray(zeros(n, n), (cells, DD.Dim{:OtherCells}(DD.val(cells))))
+        @test_throws "2 cell dimensions" GR.spatialdims(duplicate)
+    end
+
     @testset "cross-method agreement" begin
         # All methods closely reproduce a smooth, slowly varying field.
         h(lon, lat) = 10 + sind(lat) + 0.5 * cosd(lon) * cosd(lat)

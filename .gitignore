@@ -27,9 +27,8 @@ docs/src/tutorials/*.md
 /dem_igeo7.png
 /seasonal_tavg.mp4
 
-# Lazily downloaded Copernicus DEM GeoTIFFs are a persistent local cache, not
-# repository data.
-/benchmark/data/CopernicusDEM/tiles/
+# The CopDEM scripts' default data root: tile list, downloaded GeoTIFFs, stores.
+/benchmark/data/
 
 # macOS
 .DS_Store

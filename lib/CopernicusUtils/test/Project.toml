@@ -1,0 +1,10 @@
+[deps]
+CopernicusUtils = "2ce93296-2e59-4100-9c60-11a4bf28edcb"
+DiscreteGlobalGrids = "443be784-8f3c-41ab-9ff0-108bddc7e690"
+DiskArrays = "3c3547ce-8d99-4f5e-a174-61eb10b00ae3"
+GeometryOps = "3251bfac-6a57-4b6d-aa61-ac1fef2975ab"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[sources]
+CopernicusUtils = {path = ".."}
+DiscreteGlobalGrids = {path = "../../.."}

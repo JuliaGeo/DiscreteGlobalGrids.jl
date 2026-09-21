@@ -1,0 +1,13 @@
+[deps]
+CopernicusUtils = "2ce93296-2e59-4100-9c60-11a4bf28edcb"
+Dagger = "d58978e5-989f-55fb-8d15-ea34adc7bf54"
+DiscreteGlobalGrids = "443be784-8f3c-41ab-9ff0-108bddc7e690"
+Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
+GlobalRegridding = "76847d5f-3a3e-4aa5-90cc-2a3a47dd1c11"
+SlurmClusterManager = "c82cd089-7bf7-41d7-976b-6b5d413cbe0a"
+Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
+
+[sources]
+CopernicusUtils = {path = "../../lib/CopernicusUtils"}
+DiscreteGlobalGrids = {path = "../.."}
+GlobalRegridding = {path = "../../lib/GlobalRegridding"}

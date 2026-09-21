@@ -368,12 +368,11 @@ const CASES = [
      make = () -> (dgg(SYS7, 5, 3), dgg(SYS7, 4, 2))),
 ]
 
-# The production pair needs `listedtiles`, `TileIds`, `SubtreeIds` and
-# `covering_chunks`. Loading that file pulls in ArchGDAL and Zarr, so only do it
-# when the case is actually going to run.
+# CopernicusUtils pulls in ArchGDAL, so load it only when the production case
+# is going to run.
 if !isempty(TILELIST)
     isfile(TILELIST) || error("DGG_COPDEM_TILELIST=$TILELIST is not a file")
-    include(joinpath(@__DIR__, "..", "scripts", "copdem_production.jl"))
+    using CopernicusUtils: landtiles, TileIds, SubtreeIds, covering_chunks
 end
 
 """
@@ -388,7 +387,7 @@ function production_case()
     return (name = "copdem90-igeo7-l12", oracle = false, radius = 0.0,
         make = function ()
             sys = DGG.CopernicusDEMSystem(90)
-            tiles = listedtiles(sys, TILELIST, nothing)
+            tiles = landtiles(sys, TILELIST)
             src = DGG.DGGSpace(DGG.PartialGrid(sys, 1, TileIds(sys, tiles));
                 chunklevel = 0)
             chunks = covering_chunks(SYS7, sys, tiles, 5;

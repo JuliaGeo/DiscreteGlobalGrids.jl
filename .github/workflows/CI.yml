@@ -71,6 +71,7 @@ jobs:
           - DiscreteGlobalGridsConformanceTesting
           - DiscreteGlobalGridsVisualization
           - GlobalRegridding
+          - CopernicusUtils
         os:
           - ubuntu-latest
         include:

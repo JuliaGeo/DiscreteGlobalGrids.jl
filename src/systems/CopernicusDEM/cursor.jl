@@ -10,8 +10,7 @@ const LeafCells = Engine.LeafCells
     BlockStrategy
 
 How a [`BlockCursor`](@ref) partitions rectangles: [`Bisected`](@ref) by default,
-or [`Blocked`](@ref). Both produce the same intersections;
-`scripts/bench_copdem_cursor.jl` times them.
+or [`Blocked`](@ref). Both produce the same intersections.
 """
 abstract type BlockStrategy end
 

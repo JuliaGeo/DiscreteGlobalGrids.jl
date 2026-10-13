@@ -81,7 +81,8 @@ metadata keys retained for a rewrite.
 """
 function DiscreteGlobalGrids.dggread(store::StoreLike; vars=DD.All(), lazy::Bool=true,
     validate::Symbol=:strict, conventions=DiscreteGlobalGrids.CONVENTION_REGISTRY,
-    description::Union{StoreDescription,Nothing}=nothing, ancestors=nothing)
+    description::Union{StoreDescription,Nothing}=nothing, ancestors=nothing,
+    cache=false)
     samples = validation_samples(validate)
     group, identifier = opengroup(store)
     return with_store_context(identifier) do
@@ -96,6 +97,20 @@ function DiscreteGlobalGrids.dggread(store::StoreLike; vars=DD.All(), lazy::Bool
                 "the ancestor-subzone layout, whose shape is in its own attributes."))
             return DGGSZarrSubzones.assemble(group, snap, identifier, vars, lazy, ancestors)
         end
+        # Likewise the pyramid layout, and for the same reason: its variables are
+        # subgroups of one array per level, sharing no cell axis and needing no
+        # convention to say what they are.
+        if DiscreteGlobalGrids.ispyramidstore(snap.attrs)
+            description === nothing || throw(ArgumentError(
+                "`description` asserts a one-dimensional cell axis; this store is " *
+                "the pyramid layout, whose shape is in its own attributes."))
+            ancestors === nothing || throw(ArgumentError(
+                "`ancestors` selects the columns of an ancestor-subzone store, and " *
+                "this store is the pyramid layout."))
+            return DGGSZarrPyramid.assemble(group, snap, identifier, vars, lazy, cache)
+        end
+        cache === false || throw(ArgumentError(
+            "`cache` wraps the levels of a pyramid store, and this store is not one."))
         ancestors === nothing || throw(ArgumentError(
             "`ancestors` selects the columns of an ancestor-subzone store, and " *
             "this store is not one."))

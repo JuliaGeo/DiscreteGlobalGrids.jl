@@ -37,6 +37,14 @@ Public `gs://` URLs use HTTPS; `s3://` additionally requires `using AWSS3`.
 `vars` selects data variables. Metadata retain source attributes and the detected
 grid description for a later rewrite.
 
+A store in [The pyramid layout](@ref) is recognized by its own attributes and
+read as a [`StorePyramid`](@ref DiscreteGlobalGrids.StorePyramid) — every level,
+lazily — rather than as a cube: its levels share no cell axis, and the coarse
+ones are how a reader finds out which chunks of the fine ones exist. `cache`
+wraps each of its levels in a `DiskArrays` chunk cache, as `true` or a budget in
+megabytes; a region read run by run visits one chunk many times over, and
+without it each visit decompresses that chunk again.
+
 `validate=:strict` validates IDs when scanning an axis. A stored chunk manifest
 can avoid that scan; `:scan` forces it. `:lazy` samples IDs instead.
 A supplied [`StoreDescription`](@ref) bypasses metadata detection, not mechanical
@@ -72,9 +80,13 @@ group attributes come from `metadata["attrs"]`. Generated convention keys take
 precedence, and layer order is normalized alphabetically.
 
 `layout=:subzones` selects the separate ancestor-subzone writer and requires
-`ancestor_level`. See [Reading and writing DGGS stores](@ref),
-[The ancestor-subzone layout](@ref), and [Workflow execution details](@ref)
-for layout-specific options and metadata rules.
+`ancestor_level`. `layout=:pyramid` selects the multi-level writer: one subgroup
+per variable holding `level0 … level{L}` over the slot space, chunked at a power
+of the aperture, with `aggregate`, `fill_value`, `chunks` and `overwrite` in
+place of the keywords above. See [Reading and writing DGGS stores](@ref),
+[The ancestor-subzone layout](@ref), [The pyramid layout](@ref), and
+[Workflow execution details](@ref) for layout-specific options and metadata
+rules.
 """
 dggwrite(args...; kwargs...) = _needs_zarr("dggwrite")
 

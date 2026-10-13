@@ -122,6 +122,7 @@ include("core/manifolds.jl")
 include("interface/types.jl")
 include("interface/grid.jl")
 include("interface/system.jl")
+include("interface/pyramid.jl")
 
 # Declared here rather than beside its method because both modules included
 # below import it; the method expands a `MultiOrderCellSet` to a level
@@ -216,6 +217,10 @@ include("io/conventions.jl")
 # The two-dimensional ancestor-subzone layout: arithmetic and vocabulary only,
 # read after the conventions whose grid reference table it spells names out of.
 include("io/subzones.jl")
+# The multi-level pyramid layout, likewise arithmetic and vocabulary only. After
+# `subzones.jl` because both spell grid names out of the same reference table
+# and this one borrows its `gridnamefor`.
+include("io/pyramid.jl")
 include("io/api.jl")
 
 # Following the chunk lines of a stored cube: the plan, the runner, and the
@@ -358,6 +363,19 @@ public cellfield
 # A tuning knob for the default `node_extent`, read by no caller that does not
 # implement a system.
 public cap_inflation
+# The slot space: a level's id space with the addresses naming no cell left in.
+# Spelled only by code that lays a level out on disk, or by a system supplying
+# the three methods for one.
+public slotcount, slotindex, slotcell
+
+# --- Pyramids --------------------------------------------------------------
+# The multi-level read contract, shared by the store pyramid below and by the
+# visualization package's in-memory one.
+export AbstractPyramid
+export holdsdata, cellvalues
+# What `dggread` answers with on a pyramid store; named, never constructed by a
+# caller. The layout beside it is the store's shape, for slot arithmetic.
+public StorePyramid, PyramidLayout
 # Caught, not called.
 public NeighborCallbackError
 

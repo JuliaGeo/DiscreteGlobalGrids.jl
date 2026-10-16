@@ -44,6 +44,4 @@ DiscreteGlobalGrids.Helpers.EllipsoidShapeError
 DiscreteGlobalGrids.Fallbacks.closed_ring
 DiscreteGlobalGrids.border_engine
 DiscreteGlobalGrids.lattice_decode
-Trees.AbstractCurvilinearGrid
-Trees.cell_range_extent
 ```

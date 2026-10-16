@@ -545,3 +545,11 @@ function subtree_border_count(::IGeo7System, c::Z7Cell, l::Integer)
         "IGeo7 descendant level must be in $res:$MAX_RESOLUTION, got $target"))
     return Int(_border_count(c.id, res, target))
 end
+
+# ===========================================================================
+# GridInterface shape traits
+# ===========================================================================
+
+# Cells are hexagons whose edges are great-circle arcs: one simple ring, convex.
+GridInterface.cellshape(::IGeo7LevelGrid) = GridInterface.ConvexCells()
+GridInterface.edgekind(::IGeo7LevelGrid) = GridInterface.GeodesicEdges()

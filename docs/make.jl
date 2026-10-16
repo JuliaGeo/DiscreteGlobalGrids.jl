@@ -71,7 +71,6 @@ end
 # docstrings belong to those packages; `GlobalRegridding` is not a direct
 # dependency of this environment, so reach it through a name it owns.
 const GlobalRegridding = parentmodule(DiscreteGlobalGrids.regrid)
-const Trees = DiscreteGlobalGrids.Trees
 
 const DOCS_MODULES = [
     DiscreteGlobalGrids,
@@ -84,7 +83,6 @@ const DOCS_MODULES = [
     Base.get_extension(DiscreteGlobalGrids, :DiscreteGlobalGridsZarrExt),
     DiscreteGlobalGrids.DE9IM,
     GlobalRegridding,
-    Trees,
 ]
 
 const DOCS_PAGES = [

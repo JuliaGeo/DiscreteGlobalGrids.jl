@@ -27,6 +27,7 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     ancestor, descendants, descendant_range
 
 import GeometryOps as GO
+import GridInterface
 import SmallCollections
 using SmallCollections: SmallVector
 

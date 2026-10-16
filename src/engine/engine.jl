@@ -50,8 +50,13 @@ import GeometryOpsCore as GOCore
 import GeoInterface as GI
 import Extents
 import DE9IM
-import ConservativeRegridding: Trees
 import GeometryOps: SpatialTreeInterface as STI
+import GeometryOps.SpatialTreeInterface: split_weight, subtree_indices
+# The intent layer the cursors answer: `treeify(grid, hint)` and the chunk and
+# subset vocabulary the region verbs are read through.
+import GridInterface
+import GridInterface: LeafHint, Balanced, ForSweeps, ForQueries, leaf_capacity, grow,
+    chunks, chunkat, gridrelation, parentpositions, cellshape, isglobal
 # Only for the `getindex` tie-break in `cell_vector.jl`: a neighbour list is one
 # of SmallCollections' vectors, and indexing a cell vector by one is otherwise
 # ambiguous against that package's own method.

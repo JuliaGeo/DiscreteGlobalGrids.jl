@@ -251,3 +251,11 @@ function descendants(::A5System, c::A5Cell, l::Integer)
     issorted(ids) || sort!(ids)
     return [A5Cell(id) for id in ids]
 end
+
+# ===========================================================================
+# GridInterface shape traits
+# ===========================================================================
+
+# Cells are pentagons whose edges are curves of the projection: one simple ring, not promised convex.
+GridInterface.cellshape(::A5LevelGrid) = GridInterface.SimpleCells()
+GridInterface.edgekind(::A5LevelGrid) = GridInterface.CurvedEdges()

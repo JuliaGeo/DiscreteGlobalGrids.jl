@@ -45,6 +45,7 @@ module S2
 import ..DiscreteGlobalGrids as DGG
 
 import GeometryOps as GO
+import GridInterface
 const US = GO.UnitSpherical
 # Preserve the UnionAll so the two-argument `(point, radius)` constructor applies;
 # `SphericalCap{Float64}` would silently reach the three-field default instead.

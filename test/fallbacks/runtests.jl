@@ -34,6 +34,7 @@ import GeoInterface as GI
 import Extents
 import ConservativeRegridding
 import ConservativeRegridding: Trees
+import GridInterface
 import GeometryOps: SpatialTreeInterface as STI
 
 const US = GO.UnitSpherical
@@ -359,7 +360,7 @@ end
 
     # `getcell` is `cell_polygon . cellindex`, by index.
     @test collect(GI.getpoint(GI.getexterior(getcell(grid, 17)))) == closed
-    @test getcell === Trees.getcell
+    @test ncells === GridInterface.ncells
 
     # Areas: an octant is exactly pi/2 steradians, and eight of them are the
     # sphere. This is the closed-form check on the spherical area path.

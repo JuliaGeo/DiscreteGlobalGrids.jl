@@ -8,6 +8,7 @@
 module CopernicusDEMSystemTests
 
 using Test
+import GridInterface
 using Random
 
 using DiscreteGlobalGrids
@@ -17,9 +18,11 @@ const CD = DiscreteGlobalGrids.CopernicusDEM
 # Sections (k2b) and (k3) read the extent tables the cursors share.
 const Engine = DiscreteGlobalGrids.Engine
 
-using DiscreteGlobalGridsConformanceTesting
-# Section (l) calls these conformance helpers directly.
-import DiscreteGlobalGridsConformanceTesting as CT
+# Section (l) runs GridInterface's conformance checks through this package's
+# wrapper; the stencil sections call its own oracle helpers.
+include("../../conformance_helpers.jl")
+import .ConformanceHelpers as CT
+using .ConformanceHelpers: conformance_grid, conformance_system
 
 import GeometryOps as GO
 import GeometryOpsCore as GOCore
@@ -95,18 +98,6 @@ end
 # Section (l) reproduces this exact seeded draw.
 const CONFORMANCE_SEED = 20260815
 const GI_SAMPLES = 32
-
-"""
-The tile-row latitudes `test_grid_interface` will sample: the harness's own
-draw, reproduced by calling the harness's own `sample_indices` — so an
-upstream change to the sampling moves this too and section (l)'s assertion
-goes red instead of silently testing different cells.
-"""
-function sampled_tile_lats(sys, l, seed, n_samples)
-    g = levelgrid(sys, l)
-    indices = CT.sample_indices(MersenneTwister(seed), ncells(g), n_samples)
-    return [CD.tilecorner(sys, cellindex(g, p))[1] for p in indices]
-end
 
 # --------------------------------------------------------------------------
 # Point-stencil helpers, for section (n)
@@ -922,6 +913,15 @@ end
     # `treeify` hands the block cursor back memoized; `BlockCursor` is the bare one.
     @test treeify(levelgrid(GLO90, 0)) isa CD.MemoBlockCursor
     @test treeify(levelgrid(GLO90, 1)) isa CD.MemoBlockCursor
+    # Every GridInterface intent and leaf size names the block cursor; the
+    # generic hierarchy cursor (a flat root over 64 800 tiles) is never built.
+    for l in (0, 1), how in (GridInterface.ForQueries(), GridInterface.ForSweeps(),
+                             GridInterface.Balanced(), 9)
+        t = treeify(levelgrid(GLO90, l), how)
+        @test t isa CD.MemoBlockCursor
+        @test !(t isa GridInterface.HierarchyCursor) && !(t isa GridInterface.SelectionCursor)
+    end
+    @test GridInterface.root_index(GLO90) === nothing
     @test treeify(rect) isa DGG.TiledRasterCursor
     @test treeify(rows) isa DGG.TiledRasterCursor
     # Mid-row and scattered holdings are rectangles too, one per run.
@@ -1183,7 +1183,7 @@ end
     # ---- the index space ----------------------------------------------------
     # Tree and leaf indices both use the grid's own index space.
     root = CD.BlockCursor(levelgrid(TWIN, 0))
-    @test DGG.ncells(root) == ncells(TWIN, 0)
+    @test CR.Trees.ncells(root) == ncells(TWIN, 0)
     for i in (1, 2, ncells(TWIN, 0) ÷ 3, ncells(TWIN, 0))
         @test getcell(root, i) ==
               cell_polygon(levelgrid(TWIN, 0), cellindex(levelgrid(TWIN, 0), i))
@@ -1442,7 +1442,7 @@ end
               collect(STI.getchild(tree))
         @test_throws BoundsError STI.getchild(tree, STI.nchild(tree) + 1)
         @test_throws ArgumentError STI.child_indices_extents(tree)
-        @test DGG.ncells(tree) == ncells(g)
+        @test CR.Trees.ncells(tree) == ncells(g)
         @test getcell(tree, 7) == cell_polygon(g, cellindex(g, 7))
         @test CR.Trees.split_weight(tree) == ncells(g)
         @test GOCore.best_manifold(tree) == GOCore.best_manifold(g)
@@ -1570,7 +1570,7 @@ end
     @test [c.node for c in STI.getchild(memoroot)] ==
           [STI.getchild(bareroot, k) for k in 1:STI.nchild(bareroot)]
     @test STI.getchild(memoroot, 2).node == STI.getchild(bareroot, 2)
-    @test DGG.ncells(memoroot) == DGG.ncells(bareroot)
+    @test CR.Trees.ncells(memoroot) == CR.Trees.ncells(bareroot)
     @test getcell(memoroot, first(tilerange)) == getcell(bareroot, first(tilerange))
     @test CR.Trees.split_weight(memoroot) == CR.Trees.split_weight(bareroot)
     @test GOCore.best_manifold(memoroot) == GOCore.best_manifold(bareroot)
@@ -1982,10 +1982,30 @@ end
 # =========================================================================
 
 # The hierarchical harness is quadratic in child count, so it runs on the scaled twin.
+# GridInterface's tree intents on this lattice all name the block cursor: it
+# is the two-level tree the lattice needs, and the generic hierarchy cursor —
+# a flat root over 64 800 tiles — is never built over it.
+@testset "GridInterface intents never build the generic cursor" begin
+    g = levelgrid(GLO90, 1)
+    @test treeify(g, GridInterface.ForQueries()) isa CD.MemoBlockCursor
+    @test treeify(g, GridInterface.Balanced()) isa CD.MemoBlockCursor
+    @test treeify(g, GridInterface.ForSweeps()) isa CD.MemoBlockCursor
+    @test treeify(g, 16) isa CD.MemoBlockCursor
+    @test treeify(g; leaf_capacity = GridInterface.ForQueries()) isa CD.MemoBlockCursor
+    # Every intent resolves to this module's override, never to GridInterface's
+    # default (which would build its `HierarchyCursor` over the lattice), and
+    # the system has no root index for that cursor to read.
+    for g0 in (g, levelgrid(GLO90, 0)), H in (GridInterface.ForQueries, GridInterface.ForSweeps,
+                                             GridInterface.Balanced, Int)
+        @test which(treeify, Tuple{typeof(g0),H}).module === CD
+        @test !(treeify(g0, H === Int ? 16 : H()) isa GridInterface.HierarchyCursor)
+    end
+    @test GridInterface.root_index(GLO90) === nothing
+end
+
 @testset "conformance (scaled twin)" begin
-    test_grid_interface(levelgrid(TWIN, 0); label = "CopernicusDEM twin level 0")
-    test_grid_interface(levelgrid(TWIN, 1); label = "CopernicusDEM twin level 1")
-    test_hierarchical_system(TWIN; label = "CopernicusDEM twin")
+    conformance_grid(levelgrid(TWIN, 1); name = "CopernicusDEM twin level 1")
+    conformance_system(TWIN; levels = (0,), name = "CopernicusDEM twin")
 
     # Twin pole rings clear the harness's absolute degeneracy floor.
     N = CD.lat_intervals(TWIN)
@@ -1995,23 +2015,12 @@ end
     end
 end
 
-# The harness's absolute `1e-12` degeneracy floor rejects valid level-1 pole rings.
-# Use a reproducible sample without pole rows; testset (e) covers them separately.
+# Level 1 is 6.9e10 cells: every law samples (a fixed seed, few samples).
 @testset "conformance (GLO-30 and GLO-90)" begin
     for sys in (GLO90, GLO30)
-        test_grid_interface(levelgrid(sys, 0); label = "$sys level 0")
-
-        # Reproduce and validate the harness sample before using it.
-        @test !any(in((89, -90)),
-                   sampled_tile_lats(sys, 1, CONFORMANCE_SEED, GI_SAMPLES))
-
-        # Matching RNG states confirm the harness consumed the reproduced draw.
-        r = MersenneTwister(CONFORMANCE_SEED)
-        ref = MersenneTwister(CONFORMANCE_SEED)
-        CT.sample_indices(ref, ncells(levelgrid(sys, 1)), GI_SAMPLES)
-        test_grid_interface(levelgrid(sys, 1); n_samples = GI_SAMPLES,
-                            rng = r, label = "$sys level 1")
-        @test r == ref
+        conformance_grid(levelgrid(sys, 0); name = "$sys level 0")
+        conformance_grid(levelgrid(sys, 1); nsamples = GI_SAMPLES,
+                         seed = CONFORMANCE_SEED, name = "$sys level 1")
     end
 
     # Hierarchical runs are opt-in because sibling partitioning is quadratic:
@@ -2027,9 +2036,8 @@ end
             gate == "all"       ? (GLO90, GLO30) :
             throw(ArgumentError("DGG_COPDEM_FULL=$gate is not one of 0, 1, 90, 30, all"))
     for sys in gated
-        test_hierarchical_system(sys; n_samples = 1,
-                                 rng = MersenneTwister(CONFORMANCE_SEED),
-                                 label = "CopernicusDEM $sys")
+        conformance_system(sys; levels = (0,), nsamples = 1,
+                           seed = CONFORMANCE_SEED, name = "CopernicusDEM $sys")
     end
 end
 

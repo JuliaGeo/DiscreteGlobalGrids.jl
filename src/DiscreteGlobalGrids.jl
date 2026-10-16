@@ -51,25 +51,23 @@ explicitly named wrappers convert longitude and latitude at API boundaries.
   - `src/systems/`: grid-system implementations.
   - `src/core/`: the authalic manifold pair.
   - [`Helpers`](@ref): shared allocation-free primitives.
-  - `lib/DiscreteGlobalGridsConformanceTesting/`: the test-only package whose
-    `test_grid_interface` / `test_hierarchical_system` suites make these
-    contracts executable; a new grid or system is expected to pass them.
+  - `GridInterfaceConformance` (in `GridInterface.jl/lib/`): the test-only
+    package whose `test_grid` / `test_system` suites make these contracts
+    executable; a new grid or system is expected to pass them.
 
 [`query`](@ref) uses DE9IM.jl predicate types with spherical semantics defined
-here. `treeify`, `ncells`, and `getcell` extend and re-export
-`ConservativeRegridding.Trees` bindings.
+here. The grid verbs — `ncells`, `cellindex`, `cell_boundary`, `neighbors`,
+`treeify`, `query`, the hierarchy family — are `GridInterface`'s functions,
+extended here and re-exported; `getcell` is this package's own.
 
 [`regrid`](@ref), [`regrid!`](@ref) and [`plan_regrid`](@ref) are
 `GlobalRegridding`'s own, keywords and all; `src/regridding.jl` adds the target
 resolution that lets a grid, a [`CellVector`](@ref), a [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup), a
-[`MultiOrderCellSet`](@ref), or a bare system spell a destination. `cellat` is
-that package's binding for the same reason the `Trees` ones are. The rest of
-the space contract
-`src/regridding.jl` fills in — `nchunks`, `ownedindices`, `chunkat`,
-`cellcentroid`, `celltree`, `chunkextents`, `chunkindex`, `candidatechunks!`,
-`chunkranges`, `subtree` and `destinationdims` — is extended under
-`GlobalRegridding`'s own name rather than imported; `samplesites` is left to
-that package's own centroid vector.
+[`MultiOrderCellSet`](@ref), or a bare system spell a destination. The space
+contract `src/regridding.jl` fills in — `nchunks`, `ownedindices`, `chunkat`, `cellcentroid`, `celltree`, `chunkextents`, `chunkindex`,
+`candidatechunks!`, `chunkranges`, `subtree` and `destinationdims` — is
+extended under `GlobalRegridding`'s own name rather than imported;
+`samplesites` is left to that package's own centroid vector.
 """
 module DiscreteGlobalGrids
 
@@ -80,9 +78,32 @@ using GeometryOps: UnitSphericalPoint
 import GeometryOpsCore as GOCore
 import GeoInterface as GI
 import Extents
-import ConservativeRegridding
-import ConservativeRegridding: Trees
+# `ConservativeRegridding` stays a dependency for the GlobalRegridding face:
+# `src/regridding.jl` imports it and is the only file that names its `Trees`
+# module.
 import GeometryOps: SpatialTreeInterface as STI
+# The tree verbs every DGG cursor answers are SpatialTreeInterface's own.
+import GeometryOps.SpatialTreeInterface: split_weight, subtree_indices
+
+# The grid contract. DGG does not declare the verbs it shares with
+# GridInterface: it imports them, attaches its methods to them, and re-exports
+# them below, so `using DiscreteGlobalGrids` reads exactly as before while a
+# consumer written against GridInterface sees DGG's grids without an adapter.
+# Everything with no GridInterface counterpart (`rawid`, `getcell`, `one_ring`,
+# `region`, `adjacency`, the raster hooks, the engines) is still declared here,
+# and so are the two verbs whose GridInterface namesake takes the same
+# arguments and answers something else: `cell_extent` (a lon/lat `Extent` here,
+# a `SphericalCap` there) and `cellat` (a typed id here, a position there).
+# `src/fallbacks/gridinterface.jl` gives GridInterface's two their methods.
+import GridInterface
+import GridInterface: ncells, cellindex, cell_boundary, cell_corners, cell_centroid,
+    cell_area, level, reindex, cellindextypes, localindex, globalindex,
+    neighbors, ring, halo, border, interior, treeify, query, system,
+    levels, levelgrid, rootcells, children, node_extent, ancestor, subtree,
+    descendant_range, has_sorted_subtrees, has_congruent_refinement,
+    maxneighbors, maxring, winding, chunks, chunkat, cellsize, grow,
+    AbstractCellIndex, Connectivity, Vertex, Edge,
+    Winding, CounterClockwise, Clockwise, CustomOrder, Unordered
 # `neighbors` and `ring` use variable-length, fixed-capacity containers bounded
 # by `maxneighbors`.
 import SmallCollections
@@ -95,16 +116,15 @@ using DE9IM: DE9IMPredicate,
     Intersects, Disjoint, Contains, Within, Covers, CoveredBy,
     Touches, Crosses, Overlaps, Equals
 
-# Extend the original `Trees` bindings so re-exporting them does not introduce
-# wrapper functions or binding ambiguity.
-import ConservativeRegridding.Trees: treeify, ncells, getcell
-
 # `GlobalRegridding` owns the regridding verbs and the space contract, and has no
 # dependency on this package; `src/regridding.jl` implements the contract for the
-# grids here. `cellat` is its binding for the same reason the `Trees` ones are:
-# extending it rather than shadowing it keeps one function per name for a
-# session that holds both surfaces. Every other hook `src/regridding.jl` fills
-# in is extended qualified, so those names stay out of this namespace.
+# grids here. `cellat` is its binding: this package's `cellat(grid, p)` answers
+# a typed id, as that package's does, where `GridInterface.cellat(grid, p)`
+# answers a position — the same signature with a different answer, so the two
+# cannot be one function, and the GridInterface form is a method on
+# `GridInterface.cellat` (`src/fallbacks/gridinterface.jl`). Every other hook
+# `src/regridding.jl` fills in is extended qualified, so those names stay out
+# of this namespace.
 import GlobalRegridding: cellat, regrid, regrid!, plan_regrid
 # The method and policy names ride along re-exported: they appear in the verbs'
 # keyword arguments, so a session that can call `regrid` can also spell
@@ -223,12 +243,15 @@ include("io/api.jl")
 # the region verbs below it.
 include("chunks.jl")
 
+# This package's grids in GridInterface's spelling: traits, position forms,
+# and the two verbs whose meaning differs between the vocabularies.
+include("gridinterface.jl")
+
 # Last: the regridding face reads the grids, the compressed collection, and the
 # cube axis alike.
 include("regridding.jl")
 include("partitioning.jl")
 include("partitioning_backends.jl")
-include("cap_cached_tree.jl")
 
 # Copernicus DEM answers point queries from its own row arithmetic. The methods
 # dispatch on the space above, so the file is read into that system's module

@@ -6,7 +6,7 @@ ConservativeRegridding = "8e50ac2c-eb48-49bc-a402-07c87b949343"
 DataStructures = "864edb3b-99cc-5e75-8d2d-829cb0a9cfe8"
 DimensionalData = "0703355e-b756-11e9-17c0-8b28908087d0"
 DiscreteGlobalGrids = "443be784-8f3c-41ab-9ff0-108bddc7e690"
-DiscreteGlobalGridsConformanceTesting = "13a16fb4-09f9-4c22-804e-8e2836b6de9f"
+GridInterface = "7bba8399-ed35-4924-b5cf-83e2b32b3972"
 DiscreteGlobalGridsVisualization = "26394bad-8505-4b24-ad04-fcf267e3a913"
 DiskArrays = "3c3547ce-8d99-4f5e-a174-61eb10b00ae3"
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
@@ -38,9 +38,17 @@ Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 WGLMakie = "276b4fcb-3e11-5398-bf8b-a0c2d153d008"
 Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
 
+[extras]
+SpatialTreeInterface = "bf42099b-6274-40f2-a94d-272408263a4f"
+UnitSphericalGeometryCore = "374d2b58-edf9-4f97-868a-42ae1c074d0a"
+
 [sources]
 DiscreteGlobalGrids = {path = ".."}
-DiscreteGlobalGridsConformanceTesting = {path = "../lib/DiscreteGlobalGridsConformanceTesting"}
+GridInterface = {path = "../../GridInterface.jl"}
+GeometryOps = {path = "/home/anshul/.julia/dev/geo/GeometryOps-split"}
+GeometryOpsCore = {path = "/home/anshul/.julia/dev/geo/GeometryOps-split/GeometryOpsCore"}
+SpatialTreeInterface = {path = "/home/anshul/.julia/dev/geo/GeometryOps-split/SpatialTreeInterface"}
+UnitSphericalGeometryCore = {path = "/home/anshul/.julia/dev/geo/GeometryOps-split/UnitSphericalGeometryCore"}
 DiscreteGlobalGridsVisualization = {path = "../lib/DiscreteGlobalGridsVisualization"}
 DocumenterVitepress = {rev = "as/bonito-plugin", url = "https://github.com/LuxDL/DocumenterVitepress.jl.git"}
 Geomorphometry = {rev = "clipped-neighbors", url = "https://github.com/asinghvi17/GeoArrayOps.jl.git"}

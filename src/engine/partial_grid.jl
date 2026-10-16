@@ -143,6 +143,12 @@ ncells(grid::PartialGrid) = length(grid.ids)
 cellindex(grid::PartialGrid, i::Int) = grid.ids[i]
 system(grid::PartialGrid) = grid.system
 level(grid::PartialGrid) = grid.level
+
+# To GridInterface a `PartialGrid` is a subset of its complete level: its
+# `globalindex` answers are positions in `parent(grid)`, which is what the
+# `Index(Global())` forms and the subset laws read.
+gridrelation(::PartialGrid) = GridInterface.ParentGrid()
+Base.parent(grid::PartialGrid) = grid.complete
 cell_boundary(grid::PartialGrid, c::AbstractCellIndex) = cell_boundary(grid.complete, c)
 cell_corners(grid::PartialGrid, c::AbstractCellIndex) = cell_corners(grid.complete, c)
 cell_centroid(grid::PartialGrid, c::AbstractCellIndex) = cell_centroid(grid.complete, c)

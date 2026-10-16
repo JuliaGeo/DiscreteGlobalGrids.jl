@@ -101,7 +101,7 @@ end
 """
     RasterTileTree(grid, inds; arity = RASTER_TILE_ARITY)
 
-The tile layer of the tree [`treeify`](@ref ConservativeRegridding.Trees.treeify) builds for a grid that answers
+The tile layer of the tree [`treeify`](@ref) builds for a grid that answers
 [`raster_tiles`](@ref): the tiles covering grid indices `inds`, sorted by the
 Morton key of their cap centres, with a cap and a pixel count stored per node.
 
@@ -323,22 +323,91 @@ function STI.child_indices_extents(c::TiledRasterCursor)
 end
 
 # ===========================================================================
-# ConservativeRegridding.Trees
+# The tree as a cell source, and the SpatialTreeInterface work verbs
 # ===========================================================================
 
 GOCore.best_manifold(c::TiledRasterCursor) = GOCore.best_manifold(c.tree.grid)
 
 # Leaf indices are grid indices at every node, so these answer about the whole
 # grid regardless of which node holds them.
-Trees.ncells(c::TiledRasterCursor) = ncells(c.tree.grid)
-Trees.getcell(c::TiledRasterCursor, i::Int) = getcell(c.tree.grid, i)
-Trees.getcell(c::TiledRasterCursor) = getcell(c.tree.grid)
+getcell(c::TiledRasterCursor, i::Int) = getcell(c.tree.grid, i)
+getcell(c::TiledRasterCursor) = getcell(c.tree.grid)
 
-# `Trees.ncells` answers for the whole grid, so the frontier's default estimate
-# would be wrong here; a node knows its own pixel count.
-function Trees.split_weight(c::TiledRasterCursor)
+# A node knows its own pixel count.
+function split_weight(c::TiledRasterCursor)
     c.inraster && return (c.j1 - c.j0 + 1) * (c.i1 - c.i0 + 1)
     return @inbounds c.tree.node_weight[c.node]
+end
+
+"""
+    RasterIndices(grid, tile, j0, j1, i0, i1) <: AbstractVector{Int}
+
+The grid indices of one raster rectangle, row-major, computed on read through
+[`raster_localindex`](@ref): what [`subtree_indices`](@ref
+GeometryOps.SpatialTreeInterface.subtree_indices) hands back for a node inside
+a tile, with nothing materialised.
+"""
+struct RasterIndices{G<:AbstractGrid,T} <: AbstractVector{Int}
+    grid::G
+    tile::T
+    j0::Int
+    nfast::Int
+    i0::Int
+    n::Int
+end
+
+Base.size(v::RasterIndices) = (v.n,)
+Base.IndexStyle(::Type{<:RasterIndices}) = IndexLinear()
+Base.@propagate_inbounds function Base.getindex(v::RasterIndices, k::Int)
+    @boundscheck checkbounds(v, k)
+    slow, fast = divrem(k - 1, v.nfast)
+    return raster_localindex(v.grid, v.tile, v.j0 + slow, v.i0 + fast)
+end
+
+# The positions beneath a node: a tile node emits every pixel of its tiles,
+# one lazy rectangle per tile; a raster node emits its own rectangle.
+function subtree_indices(c::TiledRasterCursor)
+    _isempty(c) && return Int[]
+    tree = c.tree
+    if c.inraster
+        tile = @inbounds tree.tiles[c.slot]
+        nfast = c.i1 - c.i0 + 1
+        return RasterIndices(tree.grid, tile, c.j0, nfast, c.i0, nfast * (c.j1 - c.j0 + 1))
+    end
+    lo, hi = @inbounds tree.node_lo[c.node], tree.node_hi[c.node]
+    parts = map(lo:hi) do slot
+        nrows, ncols = @inbounds tree.shapes[slot]
+        RasterIndices(tree.grid, @inbounds(tree.tiles[slot]), 0, ncols, 0, nrows * ncols)
+    end
+    return RangeCat(parts)
+end
+
+"""
+    RangeCat(parts) <: AbstractVector{Int}
+
+The concatenation of index vectors, read lazily: `getindex` finds the part by a
+binary search over the cumulative lengths.
+"""
+struct RangeCat{V<:AbstractVector} <: AbstractVector{Int}
+    parts::Vector{V}
+    offsets::Vector{Int}      # `offsets[k]` is the number of entries before part `k`
+end
+
+function RangeCat(parts::Vector{V}) where {V<:AbstractVector}
+    offsets = Vector{Int}(undef, length(parts) + 1)
+    offsets[1] = 0
+    for (k, part) in enumerate(parts)
+        offsets[k + 1] = offsets[k] + length(part)
+    end
+    return RangeCat{V}(parts, offsets)
+end
+
+Base.size(v::RangeCat) = (v.offsets[end],)
+Base.IndexStyle(::Type{<:RangeCat}) = IndexLinear()
+Base.@propagate_inbounds function Base.getindex(v::RangeCat, k::Int)
+    @boundscheck checkbounds(v, k)
+    part = searchsortedlast(v.offsets, k - 1)
+    return @inbounds v.parts[part][k - v.offsets[part]]
 end
 
 # ===========================================================================

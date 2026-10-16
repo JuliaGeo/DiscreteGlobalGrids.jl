@@ -259,13 +259,17 @@ singleton tag: `Conservative`, `NearestCell` or `BilinearPoint`; `Weighted` or `
 
 ## Conformance testing
 
-The executable form of these contracts is
-`lib/DiscreteGlobalGridsConformanceTesting`, whose two entry points assert the laws a grid
-and a system must satisfy: index round-trips, boundary rings that are closed implicitly and
-wound counter-clockwise seen from outside, centroids strictly inside their own cells,
-neighbour symmetry and two-hop closure, ring and disc consistency, and the covering law —
-that a descendant's boundary lies inside every ancestor's node extent, at every depth.
+The grid verbs are GridInterface's, so the executable form of these contracts is
+GridInterface's conformance package, `GridInterfaceConformance`, whose `test_grid` and
+`test_system` assert the laws a grid and a system must satisfy: index round-trips, boundary
+rings that are closed implicitly and wound counter-clockwise seen from outside, centroids
+strictly inside their own cells, neighbour symmetry, ring and disc consistency, the subset
+and tree laws, and the covering law — that a descendant's boundary lies inside every
+ancestor's node extent, at every depth.
 
-A system opts out by capability rather than by name: the suite checks whether a method is
-actually specialised and skips the corresponding laws if it is not. A new grid or system is
+A system opts out by capability rather than by name: the suite reads the traits a grid
+declares (`cellshape`, `winding`, `location_is_analytic`, …) and skips or relaxes the
+corresponding laws accordingly. This package's own stricter oracles — rotational order of
+every ring, the two-hop neighbour closure — live in `test/conformance_helpers.jl` and are
+asserted by each system's suite. A new grid or system is
 expected to pass both suites.

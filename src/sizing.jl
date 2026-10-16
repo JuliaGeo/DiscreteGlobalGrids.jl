@@ -42,7 +42,7 @@ whose cells are lon/lat boxes. Use [`cell_area`](@ref) for one exact cell.
 
 See also [`levelfor`](@ref), which asks the question the other way round.
 """
-function cellsize end
+cellsize
 
 cellsize(grid::AbstractGrid; over=nothing, radius::Real=_EARTH_RADIUS,
     samples::Integer=256) =

@@ -505,3 +505,11 @@ function DGG.ring(g::CopernicusDEMLevelGrid, c::DGG.LevelIndex, ::Val{K};
     K == 1 && return DGG.one_ring(g, c, connectivity)
     return DGG.shell_ring(g, c, Val(K), connectivity)
 end
+
+# ===========================================================================
+# GridInterface shape traits
+# ===========================================================================
+
+# Cells are lon/lat rectangles whose parallels are small circles: one simple ring, not promised convex.
+GridInterface.cellshape(::CopernicusDEMLevelGrid) = GridInterface.SimpleCells()
+GridInterface.edgekind(::CopernicusDEMLevelGrid) = GridInterface.CurvedEdges()

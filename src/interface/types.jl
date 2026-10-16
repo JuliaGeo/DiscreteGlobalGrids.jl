@@ -1,9 +1,9 @@
 # ---------------------------------------------------------------------------
-# Core grid, system, and cell-index types. `level` and `rawid` are declared here
-# for `LevelIndex`; their contracts are documented in `interface/grid.jl`.
+# Core grid, system, and cell-index types. `rawid` is declared here for
+# `LevelIndex`; its contract is documented in `interface/grid.jl`. `level` is
+# GridInterface's function, imported by the module.
 # ---------------------------------------------------------------------------
 
-function level end
 function rawid end
 
 """
@@ -11,7 +11,7 @@ function rawid end
 
 One finite collection of unit-sphere cells: a complete DGGS level, a regional
 subset, or a standalone structured grid. A grid need not cover the sphere;
-[`treeify`](@ref ConservativeRegridding.Trees.treeify)'s root extent defines its coverage.
+[`treeify`](@ref)'s root extent defines its coverage.
 
 # Index types and index spaces
 
@@ -47,7 +47,7 @@ A grid type writes exactly four methods:
 
 Everything else—[`localindex`](@ref DiscreteGlobalGrids.localindex), [`cell_polygon`](@ref),
 [`cell_area`](@ref), [`cell_extent`](@ref), [`getcell`](@ref),
-[`cellat`](@ref), [`neighbors`](@ref), [`ring`](@ref), [`treeify`](@ref ConservativeRegridding.Trees.treeify),
+[`cellat`](@ref), [`neighbors`](@ref), [`ring`](@ref), [`treeify`](@ref),
 and [`query`](@ref)—is provided generically and may be optimized without
 changing semantics. The generic [`localindex`](@ref DiscreteGlobalGrids.localindex) scans `1:ncells(grid)`
 linearly, so a grid that can search should override it.
@@ -69,6 +69,11 @@ abstract type AbstractGrid end
 # A grid is one argument to every cell verb, never a container to iterate over:
 # `cell_centroid.(grid, cells)` broadcasts the cells, not the grid.
 Base.broadcastable(g::AbstractGrid) = Ref(g)
+
+# Every grid here is a GridInterface grid: the contract is duck-typed, and this
+# is the declaration that lets a consumer written against GridInterface accept
+# one. The `Int` arguments of that contract are the local indices above.
+GridInterface.isgrid(::AbstractGrid) = true
 
 """
     abstract type AbstractHierarchicalGridSystem
@@ -129,7 +134,7 @@ Identity and geometry dispatch on the **system**: the tables above are all
 
 Everything else dispatches on the **grid**. A system's fast paths —
 [`cellat`](@ref), [`neighbors`](@ref), [`ring`](@ref), [`cell_area`](@ref),
-[`treeify`](@ref ConservativeRegridding.Trees.treeify), the subtree engines — attach to
+[`treeify`](@ref), the subtree engines — attach to
 `HierarchicalLevelGrid{typeof(sys)}`, for which each system here keeps a local
 alias:
 
@@ -149,6 +154,9 @@ abstract type AbstractHierarchicalGridSystem end
 # As for a grid: a system broadcasts as one value, so `ancestor.(sys, cells, 3)`
 # needs no `Ref`.
 Base.broadcastable(sys::AbstractHierarchicalGridSystem) = Ref(sys)
+
+# And every system is a GridInterface hierarchical system.
+GridInterface.issystem(::AbstractHierarchicalGridSystem) = true
 
 """
     abstract type AbstractQuadFaceGridSystem <: AbstractHierarchicalGridSystem
@@ -196,8 +204,12 @@ same cell in complete grids, subsets, or without a grid at all.
 
 One scheme per system is canonical ([`cellindextype`](@ref)); alternates are
 reached through [`reindex`](@ref) and listed by [`cellindextypes`](@ref).
+
+This is `GridInterface.AbstractCellIndex`, imported: every id here is a typed
+id of that contract, and `cell_boundary(grid, c)` with a typed `c` is the
+same method whichever package the caller imported the verb from.
 """
-abstract type AbstractCellIndex end
+AbstractCellIndex
 
 """
     LevelIndex(level, index) <: AbstractCellIndex
@@ -278,6 +290,10 @@ contract, and [`PartialGrid`](@ref), the grid-shaped sibling.
 """
 abstract type AbstractCellVector{ID} <: AbstractVector{ID} end
 
+# The connectivity and winding vocabulary is GridInterface's, imported: one
+# `Vertex()` serves `neighbors` whichever package a caller spelled it from. The
+# docstrings below are this package's reading of the same types.
+
 """
     abstract type Connectivity
 
@@ -286,7 +302,7 @@ How two cells must meet to count as adjacent. See [`neighbors`](@ref).
 Concrete singletons: [`Vertex`](@ref) (Moore, the default) and [`Edge`](@ref)
 (von Neumann).
 """
-abstract type Connectivity end
+Connectivity
 
 """
     Vertex() <: Connectivity
@@ -299,7 +315,7 @@ each vertex. Higher-valence vertices add corner-only neighbours. This includes
 A5's 4-valent corners and ISEA4R's 4-valent lattice corners and 5-valent
 icosahedral vertices.
 """
-struct Vertex <: Connectivity end
+Vertex
 
 """
     Edge() <: Connectivity
@@ -307,7 +323,7 @@ struct Vertex <: Connectivity end
 von Neumann connectivity: two cells are adjacent only if they share a whole
 **edge**. The opt-in restriction of the [`Vertex()`](@ref Vertex) default.
 """
-struct Edge <: Connectivity end
+Edge
 
 """
     abstract type Winding
@@ -325,7 +341,7 @@ every ring, plus a sort.
 Concrete singletons: [`CounterClockwise`](@ref), [`Clockwise`](@ref),
 [`CustomOrder`](@ref) and [`Unordered`](@ref).
 """
-abstract type Winding end
+Winding
 
 """
     CounterClockwise() <: Winding
@@ -334,7 +350,7 @@ abstract type Winding end
 starting at the system's own start direction. The order [`neighbors`](@ref)
 states, and the one every system in this package declares.
 """
-struct CounterClockwise <: Winding end
+CounterClockwise
 
 """
     Clockwise() <: Winding
@@ -344,7 +360,7 @@ winding like [`CounterClockwise`](@ref), read in the other direction: the shell
 walk reverses it and is otherwise unchanged, so declaring this costs nothing
 against declaring the counter-clockwise turn.
 """
-struct Clockwise <: Winding end
+Clockwise
 
 """
     CustomOrder() <: Winding
@@ -360,7 +376,7 @@ than linearly — so there is no outward order to propagate and the geometric so
 is the answer rather than a fallback. A system whose one-ring is genuinely
 unsorted wants [`Unordered`](@ref) instead.
 """
-struct CustomOrder <: Winding end
+CustomOrder
 
 """
     Unordered() <: Winding
@@ -370,4 +386,4 @@ weakest declaration, and the safe default for a system that has not stated
 otherwise. The shell walk measures azimuth, as it does for
 [`CustomOrder`](@ref).
 """
-struct Unordered <: Winding end
+Unordered

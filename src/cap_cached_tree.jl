@@ -92,9 +92,10 @@ function STI.child_indices_extents(t::CapCachedTree)
     return _CapCachedLeafEntries(c, t.caps)
 end
 
-Trees.ncells(t::CapCachedTree) = Trees.ncells(t.node)
-Trees.getcell(t::CapCachedTree, i::Int) = Trees.getcell(t.node, i)
-Trees.getcell(t::CapCachedTree) = Trees.getcell(t.node)
+getcell(t::CapCachedTree, i::Int) = getcell(t.node, i)
+getcell(t::CapCachedTree) = getcell(t.node)
+split_weight(t::CapCachedTree) = split_weight(t.node)
+subtree_indices(t::CapCachedTree) = subtree_indices(t.node)
 GOCore.best_manifold(t::CapCachedTree) = GOCore.best_manifold(t.node)
 
 """

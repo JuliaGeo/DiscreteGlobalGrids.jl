@@ -6,7 +6,7 @@
 
 H3's aperture-7 hexagonal hierarchy with twelve pentagons at resolutions
 `0:15`. Libh3 supplies geometry, location, and adjacency. Boundaries are
-implicitly closed counter-clockwise rings and include distortion vertices.
+implicitly closed counter-clockwise rings of the six (five) true vertices only, without libh3's distortion vertices.
 Canonical ordering makes `has_sorted_subtrees` true.
 """
 struct H3System <: AbstractHierarchicalGridSystem end
@@ -254,3 +254,11 @@ function descendant_range(sys::H3System, c::H3Cell, l::Integer)
     count = Int(H3Native.cell_to_children_size(c.id, target))
     return p:(p+count-1)
 end
+
+# ===========================================================================
+# GridInterface shape traits
+# ===========================================================================
+
+# Cells are hexagons and pentagons whose edges are great-circle arcs: one simple ring, convex.
+GridInterface.cellshape(::H3LevelGrid) = GridInterface.ConvexCells()
+GridInterface.edgekind(::H3LevelGrid) = GridInterface.GeodesicEdges()

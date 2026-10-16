@@ -68,7 +68,6 @@ jobs:
       fail-fast: false
       matrix:
         package:
-          - DiscreteGlobalGridsConformanceTesting
           - DiscreteGlobalGridsVisualization
           - GlobalRegridding
         os:
@@ -109,9 +108,8 @@ jobs:
       - uses: julia-actions/cache@v3
       - name: Certify the generic fallbacks
         run: |
-          julia --project=lib/DiscreteGlobalGridsConformanceTesting -e 'using Pkg; Pkg.instantiate()'
-          julia --project=lib/DiscreteGlobalGridsConformanceTesting \
-            lib/DiscreteGlobalGridsConformanceTesting/test/generic_fallbacks.jl
+          julia --project=test -e 'using Pkg; Pkg.instantiate()'
+          julia --project=test test/fallbacks/generic_fallbacks.jl
 
   docs:
     name: Documentation

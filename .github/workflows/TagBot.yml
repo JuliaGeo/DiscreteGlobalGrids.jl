@@ -31,7 +31,6 @@ jobs:
       matrix:
         subdir:
           - ""
-          - lib/DiscreteGlobalGridsConformanceTesting
           - lib/DiscreteGlobalGridsVisualization
           - lib/GlobalRegridding
     steps:

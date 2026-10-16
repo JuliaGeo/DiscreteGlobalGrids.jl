@@ -282,3 +282,11 @@ function DGG.ring(g::S2LevelGrid, c::DGG.LevelIndex, ::Val{K};
     K == 1 && return DGG.one_ring(g, c, connectivity)
     return DGG.shell_ring(g, c, Val(K), connectivity)
 end
+
+# ===========================================================================
+# GridInterface shape traits
+# ===========================================================================
+
+# Cells are quadrilaterals bounded by great circles: one simple ring, convex.
+GridInterface.cellshape(::S2LevelGrid) = GridInterface.ConvexCells()
+GridInterface.edgekind(::S2LevelGrid) = GridInterface.GeodesicEdges()

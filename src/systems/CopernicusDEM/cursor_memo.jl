@@ -54,10 +54,10 @@ end
 STI.child_indices_extents(t::MemoBlockCursor) = STI.child_indices_extents(t.node)
 
 GOCore.best_manifold(t::MemoBlockCursor) = GOCore.best_manifold(t.node)
-Trees.ncells(t::MemoBlockCursor) = Trees.ncells(t.node)
-Trees.getcell(t::MemoBlockCursor, i::Int) = Trees.getcell(t.node, i)
-Trees.getcell(t::MemoBlockCursor) = Trees.getcell(t.node)
-Trees.split_weight(t::MemoBlockCursor) = Trees.split_weight(t.node)
+DGG.getcell(t::MemoBlockCursor, i::Int) = DGG.getcell(t.node, i)
+DGG.getcell(t::MemoBlockCursor) = DGG.getcell(t.node)
+split_weight(t::MemoBlockCursor) = split_weight(t.node)
+subtree_indices(t::MemoBlockCursor) = subtree_indices(t.node)
 
 DGG.treeify(::GOCore.Manifold, t::MemoBlockCursor) = t
 DGG.treeify(t::MemoBlockCursor) = t

@@ -22,12 +22,12 @@ order: indices run over `1:ncells(grid)`.
 
 **Required** of every [`AbstractGrid`](@ref).
 
-This is `ConservativeRegridding.Trees.ncells` — the same binding, extended here
-— so any grid is a `Trees` source without an import or a wrapper.
+This is `GridInterface.ncells` — the same binding, extended here — so any grid
+is a GridInterface grid without an import or a wrapper.
 
 Must be O(1) and must not change over the lifetime of the grid object.
 """
-function ncells end
+ncells
 
 """
     cellindex(grid::AbstractGrid, i::Int) -> AbstractCellIndex
@@ -47,7 +47,7 @@ system, and of the grid's own canonical id type otherwise. Together with
 See also [`cellindex(grid, i, T)`](@ref cellindex), which requests a specific
 index scheme.
 """
-function cellindex end
+cellindex
 
 """
     cell_boundary(grid::AbstractGrid, c::AbstractCellIndex) -> AbstractVector{<:GO.UnitSphericalPoint}
@@ -71,7 +71,7 @@ Contract:
 The container may be any `AbstractVector` — a `Vector`, a static vector, or a
 lazily computed one. Callers must not mutate it.
 """
-function cell_boundary end
+cell_boundary
 
 """
     cell_corners(grid::AbstractGrid, c::AbstractCellIndex) -> AbstractVector{<:GO.UnitSphericalPoint}
@@ -85,7 +85,7 @@ seen from outside the sphere, unit-norm points. The fallback returns
 great-circle arcs; a system that densifies curved edges returns its chart
 corners here. Callers must not mutate the result.
 """
-function cell_corners end
+cell_corners
 
 """
     cell_centroid(grid::AbstractGrid, c::AbstractCellIndex) -> GO.UnitSphericalPoint
@@ -100,7 +100,7 @@ labelling, plotting and nearest-cell code uses as *the* location of the cell.
 Systems that can compute a true area centroid should; systems that cannot may
 return any interior point, and should say which in their own documentation.
 """
-function cell_centroid end
+cell_centroid
 
 # ===========================================================================
 # Identity: levels, raw encodings, index schemes
@@ -119,7 +119,7 @@ The refinement level of a cell id or grid. `level(c)` is total on
 Levels are non-negative, increase with refinement, and are compared with
 `<`; the valid range for a system is [`levels(sys)`](@ref levels).
 """
-function level end
+level
 
 """
     rawid(c::AbstractCellIndex) -> Integer
@@ -159,7 +159,7 @@ they are alternative names for the same tessellation, not approximations of it.
 Requesting an unsupported `T` throws an `ArgumentError` naming
 [`cellindextypes(sys)`](@ref cellindextypes).
 """
-function reindex end
+reindex
 
 """
     cellindextypes(sys::AbstractHierarchicalGridSystem) -> Tuple{Vararg{Type{<:AbstractCellIndex}}}
@@ -176,7 +176,7 @@ The grid form asks the grid's system; a standalone grid
 one scheme it demonstrably names cells in (empty grids have no schemes to
 report).
 """
-function cellindextypes end
+cellindextypes
 
 """
     localindex(collection, c::AbstractCellIndex) -> Union{Int,Nothing}
@@ -209,7 +209,7 @@ The local index of the cell containing a point.
 
 See also [`globalindex`](@ref DiscreteGlobalGrids.globalindex), [`cellindex`](@ref).
 """
-function localindex end
+localindex
 
 """
     globalindex(collection, c::AbstractCellIndex) -> Union{Int,Nothing}
@@ -226,7 +226,7 @@ carry a cell between collections without carrying a stale offset.
 
 See also [`localindex`](@ref DiscreteGlobalGrids.localindex), [`cellindex`](@ref).
 """
-function globalindex end
+globalindex
 
 # The two spaces coincide at both ends of the hierarchy, and saying so once here
 # is what lets generic code ask for a local index and be right either way.
@@ -293,7 +293,7 @@ Systems must override when the published boundary only approximates the true
 cell, as for a densified curved boundary, and document the returned quantity.
 The result is never a planar area.
 """
-function cell_area end
+cell_area
 
 """
     cell_extent(grid::AbstractGrid, c::AbstractCellIndex) -> Extents.Extent{(:X, :Y)}
@@ -313,8 +313,8 @@ function cell_extent end
 """
     getcell(grid::AbstractGrid, i::Int) -> GI.Polygon
 
-The cell at **local index** `i` as a unit-sphere polygon. This extends
-`ConservativeRegridding.Trees.getcell` and is implemented as
+The cell at **local index** `i` as a unit-sphere polygon. This package's own
+verb (GridInterface spells it `cell_geometry`), implemented as
 
     cell_polygon(grid, cellindex(grid, i))
 
@@ -461,7 +461,7 @@ not care, and one read by direction — a gradient, an upwind stencil — cannot
 written at all against a sorted list, which is why the index forms carry the
 same order the id forms do.
 """
-function neighbors end
+neighbors
 
 """
     ring(grid::AbstractGrid, c::AbstractCellIndex, k::Integer; connectivity::Connectivity = Vertex())
@@ -503,7 +503,7 @@ Worth reaching for in a focal loop over many cells and not otherwise. The
 removes allocations, and only for a system that has opted in — the rest forward
 to the `Integer` form and lose nothing.
 """
-function ring end
+ring
 
 """
     one_ring(grid, c, connectivity) -> ordered neighbours of `c`
@@ -566,7 +566,7 @@ levels, so there is no single level to answer at. Use
 
 See also [`border`](@ref) and [`interior`](@ref), the same boundary from inside.
 """
-function halo end
+halo
 
 """
     border(region; connectivity = Vertex(), cells = false)
@@ -588,10 +588,10 @@ one-ring against the complete one, `O(cells · degree)`.
 
 Both walks are serial; [`adjacency`](@ref) is the verb that threads.
 """
-function border end
+border
 
 @doc (@doc border)
-function interior end
+interior
 
 """
     region(x) -> CellVector
@@ -680,12 +680,19 @@ function neighborcount end
 # ===========================================================================
 
 """
-    treeify(grid::AbstractGrid)
+    treeify(grid::AbstractGrid; leaf_capacity = nothing)
+    treeify(grid::AbstractGrid, hint::GridInterface.LeafHint)
+    treeify(grid::AbstractGrid, n::Integer)
     treeify(manifold::GeometryOpsCore.Manifold, grid::AbstractGrid)
 
-A spatial tree over `grid`, used for traversal pruning and
-`ConservativeRegridding`. This extends `ConservativeRegridding.Trees.treeify`
-and is total on [`AbstractGrid`](@ref).
+A spatial tree over `grid`, used for traversal pruning and regridding. This
+extends `GridInterface.treeify` and is total on [`AbstractGrid`](@ref).
+
+The bare form is this package's own tree — the finest one, which is also what
+`GridInterface.ForQueries()` names. The keyword and the two-argument forms are
+GridInterface's intent layer: a `LeafHint` is turned into a leaf size by
+`GridInterface.leaf_capacity(grid, hint)`, and the integer form builds the
+same cursor with that many cells per leaf.
 
 The result implements `GeometryOps.SpatialTreeInterface`. **Node extents are
 `GO.UnitSpherical.SphericalCap`s** at every level of every tree here, which is
@@ -696,12 +703,12 @@ fallback tree over index space.
 
 The one-argument form picks the manifold with `best_manifold(grid)`.
 """
-function treeify end
+treeify
 
 """
     subcursor(grid::AbstractGrid, inds::AbstractUnitRange) -> tree or `nothing`
 
-The [`treeify`](@ref ConservativeRegridding.Trees.treeify) tree restricted to the grid indices `inds`, with leaf
+The [`treeify`](@ref) tree restricted to the grid indices `inds`, with leaf
 indices still in `grid`'s own index space, or `nothing` (the default) when
 this grid cannot express that restriction. The result must cover exactly the
 cells at `inds`, no more.
@@ -732,7 +739,7 @@ when this grid's cells are not pixels of raster tiles.
     opaque to the caller, which only passes it back to the three hooks below, so
     a grid may carry in it whatever those need — an identifier, the rectangle's
     origin, its offset in the grid.
-  - Implemented by grids over a collection of raster tiles; [`treeify`](@ref ConservativeRegridding.Trees.treeify)
+  - Implemented by grids over a collection of raster tiles; [`treeify`](@ref)
     builds a tiled raster tree for them.
 """
 function raster_tiles end
@@ -796,7 +803,7 @@ the exact result.
 The `sys` method answers at the requested `level` without materialising the
 level grid.
 """
-function query end
+query
 
 # ===========================================================================
 # Provenance
@@ -810,7 +817,7 @@ The default is `nothing`.
 
 See also [`level`](@ref).
 """
-function system end
+system
 
 # The two provenance defaults. A grid built by a system overrides both; a
 # standalone grid inherits "no hierarchy" and is complete at the base

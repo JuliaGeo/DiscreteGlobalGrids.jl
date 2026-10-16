@@ -27,7 +27,7 @@ struct Blocked{K} <: BlockStrategy end
     Bisected()
 
 Split the longer axis in two, the rule both trees over this lattice use. This
-is what [`treeify`](@ref ConservativeRegridding.Trees.treeify) builds.
+is what [`treeify`](@ref) builds.
 """
 struct Bisected <: BlockStrategy end
 
@@ -39,7 +39,7 @@ const DEFAULT_STRATEGY = Bisected()
                 strategy = DEFAULT_STRATEGY)
 
 A spatial-tree cursor over a rectangle of the complete Copernicus DEM lattice.
-Prefer [`treeify`](@ref ConservativeRegridding.Trees.treeify), which wraps it in a [`MemoBlockCursor`](@ref).
+Prefer [`treeify`](@ref), which wraps it in a [`MemoBlockCursor`](@ref).
 
   - A node is either a tile rectangle (`inpixels == false`) or a raster
     rectangle within tile `(r0, q0)` (`inpixels == true`).
@@ -327,20 +327,58 @@ function STI.child_indices_extents(c::BlockCursor)
 end
 
 # ===========================================================================
-# ConservativeRegridding.Trees
+# The tree as a cell source, and the SpatialTreeInterface work verbs
 # ===========================================================================
 
 GOCore.best_manifold(c::BlockCursor) = GOCore.best_manifold(c.grid)
 
 # Leaf indices are grid indices, so these answer about the whole grid
 # regardless of which node holds them.
-Trees.ncells(c::BlockCursor) = DGG.ncells(c.grid)
-Trees.getcell(c::BlockCursor, i::Int) = DGG.getcell(c.grid, i)
-Trees.getcell(c::BlockCursor) = DGG.getcell(c.grid)
+DGG.getcell(c::BlockCursor, i::Int) = DGG.getcell(c.grid, i)
+DGG.getcell(c::BlockCursor) = DGG.getcell(c.grid)
 
-# `Trees.ncells` answers for the whole grid, so the frontier's default estimate
-# would be wrong here; a block knows its own cell count.
-Trees.split_weight(c::BlockCursor) = Int(_node_cells(c))
+# A block knows its own cell count.
+split_weight(c::BlockCursor) = Int(_node_cells(c))
+
+"""
+    BlockWalk(node::BlockCursor) <: AbstractVector{Int}
+
+The grid indices beneath a node in the tree's own leaf order — the children in
+order, each leaf's cells row-major — computed on read: entry `k` descends from
+the node through the child whose cell count covers `k`, so nothing is
+materialised and a read costs the node's depth times its fan-out. What
+[`subtree_indices`](@ref GeometryOps.SpatialTreeInterface.subtree_indices)
+answers for every node.
+"""
+struct BlockWalk{C<:BlockCursor} <: AbstractVector{Int}
+    node::C
+    n::Int
+end
+
+Base.size(w::BlockWalk) = (w.n,)
+Base.IndexStyle(::Type{<:BlockWalk}) = IndexLinear()
+Base.@propagate_inbounds function Base.getindex(w::BlockWalk, k::Int)
+    @boundscheck checkbounds(w, k)
+    return _walk_index(w.node, k)
+end
+
+function _walk_index(c::BlockCursor, k::Int)
+    if STI.isleaf(c)
+        nfast, _ = _leafshape(c)
+        slow, fast = divrem(k - 1, nfast)
+        c.inpixels && return _index(c, c.r0, c.q0, c.j0 + slow, c.i0 + fast)
+        return _index(c, c.r0 + slow, c.q0 + fast, 0, 0)
+    end
+    for j in 1:STI.nchild(c)
+        child = STI.getchild(c, j)
+        m = Int(_node_cells(child))
+        k <= m && return _walk_index(child, k)
+        k -= m
+    end
+    throw(BoundsError(c, k))
+end
+
+subtree_indices(c::BlockCursor) = BlockWalk(c, Int(_node_cells(c)))
 
 # ===========================================================================
 # The lattice as raster tiles
@@ -506,6 +544,17 @@ function DGG.treeify(::GOCore.Manifold,
     tree = Engine.tiled_raster_tree(grid)
     return tree === nothing ? DGG.HierarchicalGridCursor(grid) : tree
 end
+
+# GridInterface's intents and integer form all name the block cursor: it is
+# already the two-level tree this lattice needs, so no leaf size and no intent
+# builds anything else over it — in particular never the generic hierarchy
+# cursor, whose flat root over 64 800 tiles is what made the prototype's point
+# query cost a second. The `ForQueries` methods exist only to settle the
+# ambiguity against the engine's `(AbstractGrid, ForQueries)` method.
+const _CDEMGrid = Union{CopernicusDEMLevelGrid,DGG.PartialGrid{<:CopernicusDEMSystem}}
+DGG.treeify(grid::_CDEMGrid, ::GridInterface.LeafHint) = DGG.treeify(grid)
+DGG.treeify(grid::_CDEMGrid, ::GridInterface.ForQueries) = DGG.treeify(grid)
+DGG.treeify(grid::_CDEMGrid, ::Integer) = DGG.treeify(grid)
 
 BlockCursor(grid::CopernicusDEMLevelGrid; strategy::BlockStrategy=DEFAULT_STRATEGY) =
     _level_cursor(grid, strategy)

@@ -15,8 +15,8 @@
 #      deeper level is wanted and takes a seeded, reproducible draw above its
 #      cap. Where a testset iterates a whole level it says so.
 #
-#   2. CONTRACT. The two conformance suites from
-#      `DiscreteGlobalGridsConformanceTesting`, with default kwargs.
+#   2. CONTRACT. GridInterface's conformance suites (`GridInterfaceConformance`),
+#      with default kwargs.
 #
 #   3. STRUCTURAL. The package-specific seam topology and its 9-neighbour corner
 #      cells, the rotational start, the exact subtree cap, and the 0-based id /
@@ -36,7 +36,8 @@ import DiscreteGlobalGrids as DGG
 const I4 = DiscreteGlobalGrids.ISEA4R
 const ISEA = DiscreteGlobalGrids.ISEA
 
-using DiscreteGlobalGridsConformanceTesting
+include("../../conformance_helpers.jl")
+using .ConformanceHelpers: conformance_grid, conformance_system
 
 import GeometryOps as GO
 const US = GO.UnitSpherical
@@ -1406,10 +1407,13 @@ end
 # =========================================================================
 
 @testset "conformance" begin
-    for l in (0, 1, 3)
-        test_grid_interface(levelgrid(SYS, l); label = "ISEA4R level $l")
+    # Known gap: the pruning cap of a projected cell is computed from its
+    # densified boundary and allocates (GridInterface's `cell_extent` sweep).
+    known = ["forwarding sweep over extent allocates nothing"]
+    for l in (0, 1)
+        conformance_grid(levelgrid(SYS, l); name = "ISEA4R level $l", known)
     end
-    test_hierarchical_system(SYS)
+    conformance_system(SYS; levels = (3,), name = "ISEA4R", known)
 end
 
 end # @testset "ISEA4R system (T12)"

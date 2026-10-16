@@ -440,26 +440,25 @@ function STI.child_indices_extents(cursor::HierarchicalGridCursor)
 end
 
 # --------------------------------------------------------------------------
-# ConservativeRegridding.Trees
+# The tree as a cell source, and the SpatialTreeInterface work verbs
 # --------------------------------------------------------------------------
 
 GOCore.best_manifold(cursor::HierarchicalGridCursor) = GOCore.best_manifold(cursor.grid)
-
-# The root cursor's window is the whole grid, so one definition serves both the
-# tree-level (`1:ncells(tree)`) and node-level index spaces.
-Trees.ncells(cursor::HierarchicalGridCursor) = _stored_count(cursor)
 
 # `i` is a GRID index, at every node — the same index space
 # `child_indices_extents` yields, so that the index pairs a dual tree walk
 # collects are valid arguments here. (At the root, where every consumer calls
 # it, the node-local and grid index spaces coincide anyway.)
-function Trees.getcell(cursor::HierarchicalGridCursor, i::Int)
+function getcell(cursor::HierarchicalGridCursor, i::Int)
     1 <= i <= ncells(cursor.grid) || throw(BoundsError(cursor.grid, i))
     return cell_polygon(cursor.grid, cellindex(cursor.grid, i))
 end
 
-Trees.getcell(cursor::HierarchicalGridCursor) =
-    (Trees.getcell(cursor, i) for i in node_indices(cursor))
+getcell(cursor::HierarchicalGridCursor) =
+    (getcell(cursor, i) for i in node_indices(cursor))
 
-# No `Trees.split_weight` method: the frontier's default reads `Trees.ncells`,
-# which is `_stored_count` here — already the node's own work estimate.
+# The node's own work estimate is the cells it stores, and the positions its
+# leaves emit are its window (a range) or its selection (a vector): both lazy,
+# neither copied.
+split_weight(cursor::HierarchicalGridCursor) = _stored_count(cursor)
+subtree_indices(cursor::HierarchicalGridCursor) = node_indices(cursor)

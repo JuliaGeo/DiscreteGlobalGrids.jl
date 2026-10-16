@@ -102,7 +102,7 @@ descendant_range
 
 ## Trees over a grid
 
-[`treeify`](@ref ConservativeRegridding.Trees.treeify) exposes a grid as a spatial tree for queries and regridding.
+[`treeify`](@ref) exposes a grid as a spatial tree for queries and regridding.
 Hierarchical grids can use their existing parent/child structure and compute
 node geometry as the traversal needs it.
 

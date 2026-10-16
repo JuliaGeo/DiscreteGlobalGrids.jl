@@ -22,6 +22,7 @@ module HEALPix
 import ..DiscreteGlobalGrids as DGG
 
 import GeometryOps as GO
+import GridInterface
 
 import SmallCollections
 using SmallCollections: SmallVector
@@ -30,6 +31,7 @@ include("chart.jl")
 include("neighbors.jl")
 include("system.jl")
 include("border.jl")
+include("vertices.jl")
 
 export HEALPixSystem, HEALPixRingIndex
 

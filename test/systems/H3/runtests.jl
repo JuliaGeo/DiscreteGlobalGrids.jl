@@ -6,16 +6,17 @@
 #     checked against a direct call rather than against a value someone typed
 #     in. The sealed constants that remain (the pentagon base cells, a couple
 #     of well-known indices) are asserted against libh3 too.
-#   * CONFORMANCE tests, the two property suites from
-#     `DiscreteGlobalGridsConformanceTesting`, which check the interface
-#     contracts every system owes.
+#   * CONFORMANCE tests, GridInterface's property suites
+#     (`GridInterfaceConformance`), which check the interface contracts every
+#     system owes.
 
 module H3TestSuite
 
 using Test
 using Random
 import DiscreteGlobalGrids as DGG
-using DiscreteGlobalGridsConformanceTesting
+include("../../conformance_helpers.jl")
+using .ConformanceHelpers: conformance_grid, conformance_system
 using SmallCollections: SmallVector
 
 const H3 = DGG.H3
@@ -309,20 +310,33 @@ end
 
     # =======================================================================
     @testset "boundary and centroid vs cellToBoundary" begin
-        worst_area = 0.0
+        worst_even = 0.0
         for res in 0:5
             grid = DGG.levelgrid(S, res)
             for c in sample_cells(res)
                 id = DGG.rawid(c)
                 ring = DGG.cell_boundary(grid, c)
                 raw = H3N.cell_boundary_cartesian(id; closed_ring=false)
-                # The ring is libh3's, vertex for vertex, unchanged.
-                @test length(ring) == length(raw)
-                @test 5 <= length(ring) <= 10
-                for (p, q) in zip(ring, raw)
-                    @test p[1] ≈ q[1] atol = 1e-15
-                    @test p[2] ≈ q[2] atol = 1e-15
-                    @test p[3] ≈ q[3] atol = 1e-15
+                # The ring is the cell's true vertices — six, five at a
+                # pentagon — each one a vertex of libh3's own boundary. libh3's
+                # ring also holds the distortion vertices where a class III
+                # (odd-level) cell crosses an icosahedron edge, which are not
+                # vertices of the cell and are left out here.
+                @test length(ring) == (H3N.is_pentagon(id) ? 5 : 6)
+                @test length(raw) >= length(ring)
+                iseven(res) && @test length(raw) == length(ring)
+                for p in ring
+                    @test minimum(q -> sum(abs2, p .- q), raw) < 1e-24
+                end
+                # The ring is a rotation of libh3's order (no reflection).
+                k0 = argmin([sum(abs2, ring[1] .- q) for q in raw])
+                if length(raw) == length(ring)
+                    for (j, p) in enumerate(ring)
+                        q = raw[mod1(k0 + j - 1, length(raw))]
+                        @test p[1] ≈ q[1] atol = 1e-15
+                        @test p[2] ≈ q[2] atol = 1e-15
+                        @test p[3] ≈ q[3] atol = 1e-15
+                    end
                 end
                 # Unit norm, implicitly closed, counter-clockwise from outside.
                 for p in ring
@@ -331,10 +345,12 @@ end
                 @test ring[1] != ring[end]
                 @test DGG.cell_area(grid, c) > 0
 
-                # The exact ring reproduces libh3's own area, which is the
-                # sharpest available statement that no vertex was moved.
+                # At even (class II) levels the ring is libh3's, so its area
+                # reproduces libh3's own: the sharpest statement that no
+                # vertex was moved. At odd levels the straight edge differs
+                # from libh3's bent one by the distortion sliver.
                 err = abs(DGG.cell_area(grid, c) - H3N.cell_area(id))
-                worst_area = max(worst_area, err)
+                iseven(res) && (worst_even = max(worst_even, err))
 
                 # The centroid is libh3's cell centre and is strictly interior.
                 centroid = DGG.cell_centroid(grid, c)
@@ -344,7 +360,26 @@ end
                 @test asind(clamp(centroid[3], -1, 1)) ≈ lat atol = 1e-9
             end
         end
-        @test worst_area < 1e-12
+        @test worst_even < 1e-12
+    end
+
+    # Shared vertices are bit-identical between neighbours, and corner `k`,
+    # corner `k + 1` are the edge shared with Edge-neighbour `k`.
+    @testset "vertices shared bit for bit, edges aligned with the one-ring" begin
+        for res in (1, 2, 3)
+            grid = DGG.levelgrid(S, res)
+            for c in sample_cells(res)
+                ring = DGG.cell_boundary(grid, c)
+                m = length(ring)
+                nbs = DGG.neighbors(grid, c, 1; connectivity=DGG.Edge())
+                @test length(nbs) == m
+                for (k, q) in enumerate(nbs)
+                    other = DGG.cell_boundary(grid, q)
+                    @test ring[k] in other
+                    @test ring[mod1(k + 1, m)] in other
+                end
+            end
+        end
     end
 
     # =======================================================================
@@ -662,10 +697,12 @@ end
 
     # =======================================================================
     @testset "conformance" begin
-        for l in (0, 1, 3)
-            test_grid_interface(DGG.levelgrid(S, l); label="H3 res $l")
+        # Res 1 is class III: GridInterface's `cellat` repairs libh3's location
+        # (by its bent edge) to the straight ring near icosahedron edges.
+        for l in (0, 1)
+            conformance_grid(DGG.levelgrid(S, l); name="H3 res $l")
         end
-        test_hierarchical_system(S)
+        conformance_system(S; levels=(2,), name="H3System")
     end
 end
 

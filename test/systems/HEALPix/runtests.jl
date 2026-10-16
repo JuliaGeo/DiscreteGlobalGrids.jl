@@ -18,8 +18,8 @@
 #      `neighbours`, the level sums in `cell_area`, `the full sphere is
 #      partitioned`, and the border walk's brute-force comparison.
 #
-#   2. CONTRACT. The two conformance suites from
-#      `DiscreteGlobalGridsConformanceTesting`, with default kwargs.
+#   2. CONTRACT. GridInterface's conformance suites (`GridInterfaceConformance`),
+#      with default kwargs.
 #
 #   3. STRUCTURAL. The things the oracle has no opinion about because they are
 #      this package's own design: the exact subtree cap's covering margin, the
@@ -39,7 +39,8 @@ import DiscreteGlobalGrids as DGG
 using DiscreteGlobalGrids: cell_polygon
 const HP = DiscreteGlobalGrids.HEALPix
 
-using DiscreteGlobalGridsConformanceTesting
+include("../../conformance_helpers.jl")
+using .ConformanceHelpers: conformance_grid, conformance_system
 
 import GeometryOps as GO
 const US = GO.UnitSpherical
@@ -873,10 +874,10 @@ end
 # =========================================================================
 
 @testset "conformance" begin
-    for l in (0, 1, 3)
-        test_grid_interface(levelgrid(SYS, l); label = "HEALPix level $l")
+    for l in (0, 1)
+        conformance_grid(levelgrid(SYS, l); name = "HEALPix level $l")
     end
-    test_hierarchical_system(SYS)
+    conformance_system(SYS; levels = (3,), name = "HEALPix")
 end
 
 end # @testset "HEALPix system (T6)"

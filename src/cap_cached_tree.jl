@@ -1,4 +1,4 @@
-# Whole-space destination tree with per-cell work done once, not once per visit.
+# A chunk's tree with per-cell work done once, not once per visit.
 
 """
     CapCachedTree(node, caps)
@@ -149,21 +149,12 @@ function _bucketed(c::HierarchicalGridCursor, bucket_size::Int = _CACHED_BUCKET_
         c.complete_subtree, c.selection)
 end
 
-# The whole-space tree. A system with a cheap analytical cap keeps the original
-# compressed grid and derives caps through a bucketed analytical cursor. Other
-# systems retain the older decoded-grid + cap-vector path.
-function _cachedcelltree(space::DGGSpace)
-    lazy = treeify(space.grid)
-    if lazy isa HierarchicalGridCursor && lazy.selection === nothing &&
-            Fallbacks.cell_cap_is_cheap(lazy.grid) isa Val{true}
-        return _bucketed(lazy, _ANALYTICAL_BUCKET_SIZE)
-    end
-    root = treeify(_decodedgrid(space.grid))
-    (root isa HierarchicalGridCursor && root.selection === nothing) ||
-        return GR.celltree(space)
-    caps = _leafcaps(root.grid, 1:ncells(root.grid))
-    return CapCachedTree(_bucketed(root), caps)
-end
+# The whole-grid sweep tree, `treeify(grid; leaf_capacity = ForSweeps())`, is
+# the engine's: the hierarchy cursor with `leaf_capacity(grid, ForSweeps())`
+# cells per leaf, O(1) to build, its caps derived per visit. No cap vector is
+# kept for a whole grid: that is an O(ncells) fill before the first query, and
+# `ForSweeps` must stay the tree of its integer capacity. Caps are cached per
+# chunk only (`_cachedchunktree`), where the chunk bounds the vector.
 
 # Above this a chunk's cap vector costs more to fill than the revisits it saves
 # (2 MiB of caps at the limit).
@@ -182,21 +173,13 @@ function _cachedchunktree(cursor::HierarchicalGridCursor,
     return CapCachedTree(_bucketed(cursor), caps)
 end
 
-# Decode a compressed id vector once so descent and geometry read O(1) ids.
-_decodedgrid(grid::PartialGrid{<:AbstractHierarchicalGridSystem,<:CellVector}) =
-    PartialGrid(system(grid), level(grid), collect(grid.ids);
-        bucket_size = grid.bucket_size,
-        root = Engine._is_rooted(grid) ? grid.root_id : nothing)
-_decodedgrid(grid::AbstractGrid) = grid
-
 # One tight cap per cell of `inds`; entry `k` is index `first(inds) + k - 1`.
 function _leafcaps(grid::AbstractGrid, inds::AbstractUnitRange{<:Integer})
     n = length(inds)
     n == 0 && return [_cellcap(grid, Int(i)) for i in inds]
     off = Int(first(inds)) - 1
     caps = Vector{typeof(_cellcap(grid, off + 1))}(undef, n)
-    nt = GR._innerthreaded() isa GOCore.True ?
-        min(Threads.nthreads(), max(1, n >> 14)) : 1
+    nt = min(Threads.nthreads(), max(1, n >> 14))
     if nt > 1
         tasks = Vector{Task}(undef, nt)
         for t in 1:nt
@@ -248,10 +231,42 @@ function GridInterface.subtree(grid::HierarchicalLevelGrid, inds::AbstractUnitRa
     window === nothing || return window
     cursor = _rangecursor(grid, inds)
     cursor === nothing || return _cachedchunktree(cursor, inds)
-    return GridInterface._default_subtree(grid, inds)
+    return invoke(GridInterface.subtree, Tuple{Any,AbstractVector{<:Integer}}, grid, inds)
 end
 function GridInterface.subtree(grid::HierarchicalLevelGrid, s::GridInterface.Subset)
     pos = GridInterface.parentpositions(s)
     (parent(s) === grid && pos isa AbstractUnitRange) && return GridInterface.subtree(grid, pos)
     return invoke(GridInterface.subtree, Tuple{Any,GridInterface.Subset}, grid, s)
+end
+# A holding windows its own tree where it can (a Copernicus holding's tile
+# chunks keep the tiled raster cursor); GridInterface's chunk route reaches
+# this through the chunk's position range.
+function GridInterface.subtree(grid::PartialGrid, inds::AbstractUnitRange{<:Integer})
+    window = subcursor(grid, inds)
+    window === nothing || return window
+    return invoke(GridInterface.subtree, Tuple{Any,AbstractVector{<:Integer}}, grid, inds)
+end
+# A rooted chunk of a holding is the holding's hierarchy cursor started at the
+# chunk's root, O(1), with the same cap treatment as a level grid's chunk.
+# (GridInterface roots the cursor only for a grid without a parent.)
+function GridInterface.subtree(grid::PartialGrid, s::GridInterface.Subset)
+    pos = GridInterface.parentpositions(s)
+    if parent(s) === grid && s.root !== nothing && pos isa AbstractUnitRange
+        window = subcursor(grid, pos)
+        window === nothing || return window
+        cursor = _rootedcursor(grid, s.root, pos)
+        cursor === nothing || return _cachedchunktree(cursor, pos)
+    end
+    return invoke(GridInterface.subtree, Tuple{Any,GridInterface.Subset}, grid, s)
+end
+
+function _rootedcursor(grid::AbstractGrid, root_id, inds::AbstractUnitRange{<:Integer})
+    isempty(inds) && return nothing
+    root = treeify(grid)
+    (root isa HierarchicalGridCursor && root.selection === nothing) || return nothing
+    complete_subtree = length(inds) ==
+        length(descendant_range(root.system, root_id, root.leaf_level))
+    return typeof(root)(grid, root.system, root.top_level, root.leaf_level,
+        root.bucket_size, level(root_id), root_id, Int(first(inds)), Int(last(inds)),
+        complete_subtree, nothing)
 end

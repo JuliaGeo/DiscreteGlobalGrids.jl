@@ -61,13 +61,15 @@ here. The grid verbs — `ncells`, `cellindex`, `cell_boundary`, `neighbors`,
 extended here and re-exported; `getcell` is this package's own.
 
 [`regrid`](@ref), [`regrid!`](@ref) and [`plan_regrid`](@ref) are
-`GlobalRegridding`'s own, keywords and all; `src/regridding.jl` adds the target
-resolution that lets a grid, a [`CellVector`](@ref), a [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup), a
-[`MultiOrderCellSet`](@ref), or a bare system spell a destination. The space
-contract `src/regridding.jl` fills in — `nchunks`, `ownedindices`, `chunkat`, `cellcentroid`, `celltree`, `chunkextents`, `chunkindex`,
-`candidatechunks!`, `chunkranges`, `subtree` and `destinationdims` — is
-extended under `GlobalRegridding`'s own name rather than imported;
-`samplesites` is left to that package's own centroid vector.
+`GlobalRegridding`'s own, keywords and all, and a grid of this package is a
+regridding source or destination as it is: that package reads it through the
+GridInterface verbs — `cell_geometry`, `cellat`, `neighbors`, `treeify`,
+`chunks` — and `mockchunks(grid, LevelChunks(l))` names another chunk level.
+`src/regrid_targets.jl` adds the target resolution that lets a
+[`CellVector`](@ref), a [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup), a
+[`MultiOrderCellSet`](@ref), or a bare system spell a destination, and the
+`destinationdims` hook that labels a result with a `Cells` axis; both are
+extended under `GlobalRegridding`'s own name rather than imported.
 """
 module DiscreteGlobalGrids
 
@@ -78,8 +80,6 @@ using GeometryOps: UnitSphericalPoint
 import GeometryOpsCore as GOCore
 import GeoInterface as GI
 import Extents
-# `ConservativeRegridding` stays a dependency for the GlobalRegridding face
-# (`src/regridding.jl` imports it for the regridding plans).
 import GeometryOps: SpatialTreeInterface as STI
 # The tree verbs every DGG cursor answers are SpatialTreeInterface's own.
 import GeometryOps.SpatialTreeInterface: split_weight, subtree_indices
@@ -115,16 +115,15 @@ using DE9IM: DE9IMPredicate,
     Intersects, Disjoint, Contains, Within, Covers, CoveredBy,
     Touches, Crosses, Overlaps, Equals
 
-# `GlobalRegridding` owns the regridding verbs and the space contract, and has no
-# dependency on this package; `src/regridding.jl` implements the contract for the
-# grids here. `cellat` is its binding: this package's `cellat(grid, p)` answers
-# a typed id, as that package's does, where `GridInterface.cellat(grid, p)`
-# answers a position — the same signature with a different answer, so the two
-# cannot be one function, and the GridInterface form is a method on
-# `GridInterface.cellat` (`src/fallbacks/gridinterface.jl`). Every other hook
-# `src/regridding.jl` fills in is extended qualified, so those names stay out
-# of this namespace.
-import GlobalRegridding: cellat, regrid, regrid!, plan_regrid
+# `GlobalRegridding` owns the regridding verbs and has no dependency on this
+# package: it reads the grids here through GridInterface's verbs, and the few
+# hooks `src/regrid_targets.jl` and `CopernicusDEM/point.jl` fill in are
+# extended qualified, so those names stay out of this namespace. This
+# package's own `cellat(grid, p)` answers a typed id where
+# `GridInterface.cellat(grid, p)` answers a position — the same signature with
+# a different answer, so the two cannot be one function, and the GridInterface
+# form is a method on `GridInterface.cellat` (`src/gridinterface.jl`).
+import GlobalRegridding: regrid, regrid!, plan_regrid
 # The method and policy names ride along re-exported: they appear in the verbs'
 # keyword arguments, so a session that can call `regrid` can also spell
 # `method = Conservative()` without a second import.
@@ -247,17 +246,20 @@ include("chunks.jl")
 include("gridinterface.jl")
 
 # Last: the regridding face reads the grids, the compressed collection, and the
-# cube axis alike.
-include("regridding.jl")
+# cube axis alike. The whole-grid sweep tree with its per-cell work cached sits
+# beside the other cursors' tree verbs.
+include("regrid_targets.jl")
+include("cap_cached_tree.jl")
 include("partitioning.jl")
 include("partitioning_backends.jl")
 
-# Copernicus DEM answers point queries from its own row arithmetic. The methods
-# dispatch on the space above, so the file is read into that system's module
-# here rather than where the module is defined.
+# Copernicus DEM answers point queries from its own row arithmetic, as
+# `GlobalRegridding` hook methods on its grids; the file is read into that
+# system's module here, after the regridding face, rather than where the
+# module is defined.
 Base.include(CopernicusDEM, joinpath(@__DIR__, "systems", "CopernicusDEM", "point.jl"))
 
-# After it: a target resolution may be spelled as a raster or a regrid space.
+# After it: a target resolution may be spelled as a raster or any grid.
 include("sizing.jl")
 include("deprecated.jl")
 
@@ -445,11 +447,12 @@ export CopernicusDEMSystem
 public authalic_sphere
 
 # --- Regridding ------------------------------------------------------------
-# The verbs are `GlobalRegridding`'s, extended for this package's targets;
-# `DGGSpace` is the space they resolve to, and the place chunking is tuned.
-# Methods, policies, and storage flavors are re-exported so the verbs' keyword
-# arguments are spellable without importing `GlobalRegridding`.
-export regrid, regrid!, plan_regrid, DGGSpace
+# The verbs are `GlobalRegridding`'s, extended for this package's targets; a
+# grid is its own regridding space, and `mockchunks(grid, LevelChunks(l))`
+# is the place chunking is tuned. Methods, policies, and storage flavors are
+# re-exported so the verbs' keyword arguments are spellable without importing
+# `GlobalRegridding`.
+export regrid, regrid!, plan_regrid
 export Conservative, NearestCell, DirectNearest, BarycentricPoint
 export Weighted, Extensive
 export PerChunk, Spilled

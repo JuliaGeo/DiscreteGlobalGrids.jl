@@ -155,7 +155,7 @@ function tree_covers(space, node, ancestors = ())
 end
 
 function chunks_cover_dense(space)
-    caps = GR.chunkextents(space)
+    caps = chunkextents(space)
     return all(GR.US._contains(caps[c], p)
         for c in 1:nchunks(space)
         for i in ownedindices(space, c)
@@ -195,7 +195,11 @@ end
         no_inverse = RasterGrid(default_array;
             unit_sphere_to_native = nothing)
         @test !hascellchart(no_inverse)
-        @test_throws ArgumentError cellat(no_inverse, geographic_point(0.0, 0.0))
+        # Without an inverse chart a point is located by the structured
+        # grid's lattice walk rather than refused.
+        @test !GrI.location_is_analytic(no_inverse)
+        @test all(cellat(no_inverse, cellcentroid(no_inverse, i)) == i
+                  for i in 1:ncells(no_inverse))
 
         @test_throws ArgumentError RasterGrid(default_array;
             native_to_unit_sphere = GEOGRAPHIC_TO_UNIT_SPHERE,
@@ -278,8 +282,8 @@ end
 
         # Geometry queries never read raster values.
         celltree(space)
-        GR.chunkextents(space)
-        GR.chunkextent(space, 1)
+        chunkextents(space)
+        chunkextent(space, 1)
         GR.chunkindex(space)
         foreach(i -> getcell(space, i), 1:ncells(space))
         @test parent_x.reads == 0
@@ -304,44 +308,44 @@ end
 
         # `chunkat` inverts `ownedindices` without data reads.
         for s in (space, rows, cols, rg_forward())
-            @test all(GR.chunkat(s, i) == c
+            @test all(chunkat(s, i) == c
                       for c in 1:nchunks(s) for i in ownedindices(s, c))
         end
         @test parent_x.reads == 0
-        @test_throws BoundsError GR.chunkat(space, 0)
-        @test_throws BoundsError GR.chunkat(space, ncells(space) + 1)
+        @test_throws BoundsError chunkat(space, 0)
+        @test_throws BoundsError chunkat(space, ncells(space) + 1)
 
         # The point form is `cellat` composed with it, and answers nothing
         # exactly where `cellat` does.
-        @test GR.chunkat(space, cellcentroid(space, 12)) == GR.chunkat(space, 12)
+        @test chunkat(space, cellcentroid(space, 12)) == chunkat(space, 12)
         patch = RasterGrid(DD.DimArray(zeros(4, 2),
             (DD.X(0.0:10.0:30.0), DD.Y(0.0:10.0:10.0))))
-        @test GR.chunkat(patch, geographic_point(0.0, -80.0)) === nothing
+        @test chunkat(patch, geographic_point(0.0, -80.0)) === nothing
 
         # Regional chunk extents cover their cell geometry.
         region = RasterGrid(DD.DimArray(CountingChunked(zeros(8, 4), (4, 2)),
             (DD.X(-35.0:10.0:35.0), DD.Y(-15.0:10.0:15.0))))
-        caps = GR.chunkextents(region)
+        caps = chunkextents(region)
         @test all(GR.US._contains(caps[c], p)
                   for c in 1:nchunks(region)
                   for i in ownedindices(region, c)
                   for p in cellring(region, i))
         @test maximum(cap.radius for cap in caps) < pi / 2
 
-        # Chunk discovery is an implicit CR quadtree over the raster geometry,
-        # while ownership comes from the DiskArrays ranges above. It neither
-        # builds nor queries the old flat chunk tree.
+        # Chunk discovery packs each DiskArrays tile's `grid_extent` (the
+        # raster's analytic block extent) into the generic chunk index, while
+        # ownership comes from the DiskArrays ranges above. It neither builds
+        # nor queries the old flat chunk tree, and reads no data.
         index = GR.chunkindex(space)
-        @test index isa GR.TopDownQuadtreeCursor
-        @test index.grid isa GR.RasterGridView
-        @test index.grid.space === space
+        @test index isa GR.FlexibleRTrees.RTree
+        @test index.data == chunkextents(space)
         whole = SphericalCap(geographic_point(0.0, 0.0), Float64(pi))
         @test GR.candidatechunks!(Int[], index, whole) == collect(1:nchunks(space))
 
         # Any source boundary point reached by a query cap implies that its
         # DiskArrays chunk survived the hierarchy. This is the geometric
         # no-false-negative law, without demanding cap-overcoverage identity.
-        for dcap in GR.chunkextents(space)
+        for dcap in chunkextents(space)
             candidates = GR.candidatechunks!(Int[], index, dcap)
             for s in 1:nchunks(space)
                 touched = any(GR.US._contains(dcap, p)
@@ -363,13 +367,13 @@ end
         @test shiftedspace.native_to_unit_sphere isa GR._TwoArgumentNativeToUnitSphere
         @test shiftedspace.native_to_unit_sphere.f === shifted
         @test cellcentroid(shiftedspace, 1) == shifted(raster_lon()[1], raster_lat()[1])
-        @test GR.facevertex(shiftedindex.grid, 1, 1, 1) ==
+        @test GR.facevertex(shiftedspace, 1, 1, 1) ==
               shifted(shiftedspace.xedges[1], shiftedspace.yedges[1])
         @test !isempty(cellring(shiftedspace, 1))
         @test GR.candidatechunks!(Int[], shiftedindex, whole) ==
               collect(1:nchunks(shiftedspace))
         selective = SphericalCap(cellcentroid(shiftedspace, 1), 0.0)
-        @test GR.chunkat(shiftedspace, 1) in
+        @test chunkat(shiftedspace, 1) in
               GR.candidatechunks!(Int[], shiftedindex, selective)
         @test parent_x.reads == 0
     end
@@ -385,13 +389,10 @@ end
         @test tree_covers(space, celltree(space, 1))
         @test tree_covers(space, celltree(space, [1, 9, 17, 25]))
 
-        # The cursor is a GridInterface quadtree over the view; the view is the space's cells.
+        # The cursor is a GridInterface quadtree over the raster itself.
         tree = celltree(space)
         @test (length(tree.irange), length(tree.jrange)) == GR.rastersize(space)
-        @test GrI.ncells(tree.grid) == ncells(space)
-        @test GrI.cell_geometry(tree.grid, 3) == getcell(space, 3)
-        @test getcell(tree, 3) == getcell(space, 3)
-        @test GOCore.best_manifold(tree.grid) == manifold(space)
+        @test tree.grid === space
 
         # Split weights are the node's own window: children partition the parent.
         @test GrI.split_weight(tree) == ncells(space)
@@ -436,24 +437,20 @@ end
             (DD.Y(raster_lat()), DD.X(raster_lon()))))
 
         for space in (xfast, yfast)
-            whole = GR.subtree(space, 1:ncells(space))
-            @test whole isa GR.TopDownQuadtreeCursor
-            @test whole.grid isa GR.RasterGridView
-            @test whole.grid.space === space
-            @test whole.grid.native_to_unit_sphere === space.native_to_unit_sphere
+            whole = subtree(space, 1:ncells(space))
+            @test whole isa GrS.TopDownQuadtreeCursor
+            @test whole.grid === space
             @test whole.leafsize == (4, 4)
             @test (length(whole.irange), length(whole.jrange)) == GR.rastersize(space)
             @test GrI.split_weight(whole) == ncells(space)
             @test sort!(leafindices!(Int[], whole)) == collect(1:ncells(space))
-            @test GrI.cell_geometry(whole.grid, 3) == getcell(space, 3)
-            @test GOCore.best_manifold(whole.grid) == manifold(space)
 
             # One rectangular DiskArrays chunk keeps the raster's local leaf IDs even
             # though `ncells(cursor)` and split weight describe only its range.
             inds = ownedindices(space, 2)
-            chunk = GR.subtree(space, inds)
-            @test chunk isa GR.TopDownQuadtreeCursor
-            @test chunk.grid.space === space
+            chunk = subtree(space, inds)
+            @test chunk isa GrS.TopDownQuadtreeCursor
+            @test chunk.grid === space
             @test chunk.leafsize == (4, 4)
             @test GrI.split_weight(chunk) == length(inds)
             @test sort!(leafindices!(Int[], chunk)) == sort!(collect(inds))
@@ -464,7 +461,7 @@ end
         @test child_construction_allocated(whole) == 0
 
         # Scattered indices use the common packed fallback.
-        @test GR.subtree(xfast, [1, 4, 9, 25]) isa GR.CellSpaceRTree
+        @test subtree(xfast, [1, 4, 9, 25]) isa GR.FlexibleRTrees.RTree
     end
 
 
@@ -487,8 +484,7 @@ end
                 r, ref = cellring(space, i), reference_cell(space, i)
                 length(r) == length(ref) && all(bitequal(r[k], ref[k]) for k in eachindex(r))
             end
-            @test all(GR.US._contains(
-                    GR._rastercellcap(space, GR.cellsubscript(space, i)...), p)
+            @test all(GR.US._contains(convert(GR.Cap, GrI.cell_extent(space, i)), p)
                 for i in 1:ncells(space) for p in ring_samples(space, i))
         end
 
@@ -509,14 +505,13 @@ end
             ybounds = (-90.0, 90.0))
         @test opaque.tables === nothing
         @test opaque.native_to_unit_sphere isa GR._TwoArgumentNativeToUnitSphere
-        @test GR.chartspacing(opaque) == (deg2rad(45.0), deg2rad(45.0))
-        opaque_grid = GR.RasterGridView(opaque)
-        delegated = GR._curvilinear_range_extent(opaque_grid, 2:7, 2:3)
-        routed = GR.blockextent(opaque_grid, 1, 2:7, 2:3)
+        @test chartspacing(opaque) == (deg2rad(45.0), deg2rad(45.0))
+        delegated = GrS._blockextent(GOCore.best_manifold(opaque),
+            GR._RasterPerimeter(opaque), 1, 2:7, 2:3)
+        routed = GR.blockextent(opaque, 1, 2:7, 2:3)
         @test routed.point == delegated.point
         @test routed.radius == delegated.radius
-        @test all(GR.US._contains(
-                GR._rastercellcap(opaque, GR.cellsubscript(opaque, i)...), p)
+        @test all(GR.US._contains(convert(GR.Cap, GrI.cell_extent(opaque, i)), p)
             for i in 1:ncells(opaque) for p in ring_samples(opaque, i))
     end
 
@@ -525,7 +520,7 @@ end
         bands = RasterGrid(DD.DimArray(zeros(36, 18),
                 (DD.X(-175.0:10.0:175.0), DD.Y(-85.0:10.0:85.0)));
             chunks = ([1:36], [3(k-1)+1:3k for k in 1:6]))
-        caps = GR.chunkextents(bands)
+        caps = chunkextents(bands)
         north = geographic_point(0.0, 90.0)
         south = geographic_point(0.0, -90.0)
 
@@ -549,7 +544,7 @@ end
         straddling = RasterGrid(DD.DimArray(zeros(36, 18),
                 (DD.X(-175.0:10.0:175.0), DD.Y(-85.0:10.0:85.0)));
             chunks = ([1:36], [1:6, 7:12, 13:18]))
-        mid = GR.chunkextents(straddling)[2]
+        mid = chunkextents(straddling)[2]
         @test mid.radius < Float64(pi)
         @test all(GR.US._contains(mid, p)
                   for i in ownedindices(straddling, 2) for p in ring_samples(straddling, i))
@@ -558,7 +553,7 @@ end
         stripes = RasterGrid(DD.DimArray(zeros(36, 18),
                 (DD.X(-175.0:10.0:175.0), DD.Y(-85.0:10.0:85.0)));
             chunks = ([6(k-1)+1:6k for k in 1:6], [1:18]))
-        stripecaps = GR.chunkextents(stripes)
+        stripecaps = chunkextents(stripes)
         @test all(cap.radius < Float64(pi) for cap in stripecaps)
         @test all(GR.US._contains(stripecaps[c], p)
                   for c in 1:nchunks(stripes)
@@ -591,11 +586,10 @@ end
         warped = RasterGrid(DD.DimArray(warped_data,
                 (DD.X(-43.75:12.5:43.75), DD.Y(-15.0:10.0:15.0)));
             native_to_unit_sphere = InjectiveWarp())
-        warped_grid = GR.RasterGridView(warped)
         @test warped.tables === nothing
         nrectangles = 0
         for ilo in 1:8, ihi in ilo:8, jlo in 1:4, jhi in jlo:4
-            cap = GR.blockextent(warped_grid, 1, ilo:ihi, jlo:jhi)
+            cap = GR.blockextent(warped, 1, ilo:ihi, jlo:jhi)
             @test all(GR.US._contains(cap, p)
                 for iy in jlo:jhi, ix in ilo:ihi
                 for p in ring_samples(warped, GR.localindex(warped, ix, iy)))
@@ -607,7 +601,7 @@ end
 
         # A point that escaped the old whole-range cap must not prune its owning
         # DiskArrays chunk from candidate discovery.
-        escaped = GR.facevertex(warped_grid, 1, 2, 5)
+        escaped = GR.facevertex(warped, 1, 2, 5)
         old_fixed_samples = map(0:15) do j
             edge, step = divrem(j, 4)
             u = step / 4
@@ -622,7 +616,7 @@ end
             p -> GR.US.spherical_distance(old_centre, p), old_fixed_samples))
         @test GR.US.spherical_distance(old_centre, escaped) > old_radius
         escaped_query = SphericalCap(escaped, 0.0)
-        owning = GR.chunkat(warped, GR.localindex(warped, 1, 4))
+        owning = chunkat(warped, GR.localindex(warped, 1, 4))
         @test owning in GR.candidatechunks!(Int[], GR.chunkindex(warped), escaped_query)
         @test warped_data.reads == 0
 
@@ -631,16 +625,15 @@ end
         large = RasterGrid(DD.DimArray(zeros(70_000, 2),
                 (DD.X(1.0:70_000.0), DD.Y(-5.0:10.0:5.0)));
             native_to_unit_sphere = LargeIndexChart())
-        large_grid = GR.RasterGridView(large)
-        large_cap = GR.blockextent(large_grid, 1, 65_537:69_999, 1:2)
+        large_cap = GR.blockextent(large, 1, 65_537:69_999, 1:2)
         @test all(GR.US._contains(large_cap, p)
             for ix in (65_537, 67_768, 69_999), iy in 1:2
             for p in ring_samples(large, GR.localindex(large, ix, iy)))
 
         # The earned geographic range path remains allocation-free once
         # compiled; general coverage is delegated even when it is less cheap.
-        geographic_grid = GR.RasterGridView(rg_forward())
-        GR.blockextent(geographic_grid, 1, 2:7, 2:3)
-        @test (@allocated GR.blockextent(geographic_grid, 1, 2:7, 2:3)) == 0
+        geographic = rg_forward()
+        GR.blockextent(geographic, 1, 2:7, 2:3)
+        @test (@allocated GR.blockextent(geographic, 1, 2:7, 2:3)) == 0
     end
 end

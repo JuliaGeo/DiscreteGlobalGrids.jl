@@ -25,8 +25,9 @@ struct Conservative <: AbstractRegriddingMethod end
 
 Give weight 1 to the source cell containing each destination centroid.
 
-Requires `cellcentroid` of the destination space and [`cellat`](@ref)
-of the source space. A destination centroid outside the source's coverage emits
+Requires `GridInterface.cell_centroid` of the destination grid and
+`GridInterface.cellat` of the source grid. A destination centroid outside the
+source's coverage emits
 no entry at all; the missing policy decides what that destination cell becomes.
 
 This method does not preserve integrals.
@@ -44,8 +45,8 @@ Interpolate between source sample sites at each destination sample site.
     triangle are that triangle's barycentric coordinates.
   - Weights are nonnegative and sum to one, so the result lies between the
     source values it came from. Integrals are not preserved.
-  - Requires `cellcentroid` of the destination space and a source space
-    that answers point queries; a destination outside the source's dual complex
+  - Requires `GridInterface.cell_centroid` of the destination grid and a source
+    grid that answers point queries; a destination outside the source's dual complex
     emits no entry at all and the missing policy decides what it becomes.
   - `poles` is the policy where a source's own sample sites stop short of a
     pole: [`NearestCell`](@ref) takes the nearest site of the polemost row with
@@ -189,9 +190,14 @@ end
 
 Base.show(io::IO, row::WeightRow) = print(io, "WeightRow(", length(row), " entries)")
 
-# A zero weight is dropped rather than stored, so a point on an edge or at a
-# node emits only the nodes that carry it.
-@inline function _addentry!(row::WeightRow, i::Integer, w::Float64)
+"""
+    addentry!(row::WeightRow, i, w) -> row
+
+Append source index `i` with weight `w` to a stencil row. A zero weight is
+dropped rather than stored, so a point on an edge or at a node emits only the
+nodes that carry it. What a provider's own [`weightsat!`](@ref) writes with.
+"""
+@inline function addentry!(row::WeightRow, i::Integer, w::Float64)
     w > 0 || return row
     push!(row.indices, Int(i))
     push!(row.weights, w)
@@ -251,23 +257,24 @@ assembles a block of its own; forward [`pairblock`](@ref) as well — and
 build.
 """
 function buildweights!(coo::WeightCOO, method::AbstractRegriddingMethod,
-    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
+    dst_space, dst_inds, src_space, src_inds)
     throw(ArgumentError(
         "buildweights! is not implemented for $(typeof(method)) from " *
         "$(typeof(src_space)) to $(typeof(dst_space))"))
 end
 
 buildweights!(coo::WeightCOO, method::AbstractRegriddingMethod,
-    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds,
-    ::CandidateLocator) =
+    dst_space, dst_inds, src_space, src_inds, ::CandidateLocator) =
     buildweights!(coo, method, dst_space, dst_inds, src_space, src_inds)
 
 """
-    supportradius(method, src_space::RegridSpace) -> Float64
+    supportradius(method, src_grid) -> Float64
 
 Return the maximum angular distance, in radians, that the method's stencil
-extends beyond a source chunk. The default is `0.0`. Overestimates add discovery
-work; underestimates can omit required weights.
+extends beyond a source chunk. The default is `0.0` for every method and
+grid. Overestimates add discovery work; underestimates can omit required
+weights. A package whose grids answer a point method with a stencil of their
+own ([`samplerstate`](@ref)) extends this for those grids.
 
 This is a *bound* on the stencil, not an estimate of it. Chunk discovery is cap
 overlap plus this radius, and cap overlap alone is not a superset of a point
@@ -277,7 +284,7 @@ sample sites whose own cells it never touches. A method that supplies a
 the dependency relation stays a superset of the chunks its tiles read; a chunked
 read refuses a tile whose weights name a chunk the relation does not.
 """
-supportradius(::AbstractRegriddingMethod, ::RegridSpace) = 0.0
+supportradius(::AbstractRegriddingMethod, ::Any) = 0.0
 
 # `build_weights!` and `support_radius` are the old names of `buildweights!`
 # and `supportradius` and forward to them, so a call of an old name answers the
@@ -294,18 +301,18 @@ calls keep their old behaviour exactly.
 function build_weights! end
 
 @deprecate build_weights!(coo::WeightCOO, method::AbstractRegriddingMethod,
-    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds) buildweights!(
+    dst_space, dst_inds, src_space, src_inds) buildweights!(
     coo, method, dst_space, dst_inds, src_space, src_inds) false
 
 """
-    support_radius(method, src_space::RegridSpace) -> Float64
+    support_radius(method, src_grid) -> Float64
 
 Deprecated. Use [`supportradius`](@ref), which this forwards to, so existing
 calls keep their old behaviour exactly.
 """
 function support_radius end
 
-@deprecate support_radius(method::AbstractRegriddingMethod, src_space::RegridSpace) supportradius(
+@deprecate support_radius(method::AbstractRegriddingMethod, src_space) supportradius(
     method, src_space) false
 
 # Missing-data policies

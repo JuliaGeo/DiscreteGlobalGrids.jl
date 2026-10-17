@@ -1,10 +1,15 @@
-# Analytic test spaces and methods.
+# Analytic test grids and methods.
+#
+# A regrid side is a GridInterface grid. `ToyLonLatSpace` is a one-face
+# `Structured` grid whose vertices, chart, sample sites and point location are
+# the toy's own closed-form lon/lat formulas; the wrappers below are
+# `AbstractWrappedGrid`s that count or relabel. The short names after the
+# imports are test-local spellings of the GridInterface verbs and
+# GlobalRegridding's chunk helpers that the suites read a grid through.
 
 using GlobalRegridding
 import GlobalRegridding as GR
-import GlobalRegridding: RegridSpace, AbstractRegriddingMethod, WeightCOO,
-    celltree, chunkextents, ncells, getcell, nchunks, ownedindices,
-    cellcentroid, cellat, hascellchart, manifold,
+import GlobalRegridding: AbstractRegriddingMethod, WeightCOO, ncells,
     buildweights!, addweight!, adddenom!
 
 import GeometryOps as GO
@@ -12,12 +17,41 @@ import GeometryOpsCore as GOCore
 import GeoInterface as GI
 import DimensionalData as DD
 import GridInterface as GrI
+import GridInterface.Structured as GrS
 
 const US = GO.UnitSpherical
-const USPoint = GO.UnitSphericalPoint{Float64}
+const USPoint = GO.UnitSpherical.UnitSphericalPoint{Float64}
 # Generic constructor and concrete annotation aliases.
 const SphericalCap = GO.UnitSpherical.SphericalCap
 const Cap = GO.UnitSpherical.SphericalCap{Float64}
+
+# The verbs a test reads a regrid side through, in the names the suites use.
+# Grid-shaped questions are GridInterface's; chunk questions are
+# GlobalRegridding's private helpers over `chunks(grid)`.
+getcell(space, i::Integer) = GrI.cell_geometry(space, Int(i))
+cellcentroid(space, i::Integer) = GrI.cell_centroid(space, Int(i))
+cellcorners(space, i::Integer) = GrI.cell_corners(space, Int(i))
+cellat(space, p) = GrI.cellat(space, p)
+manifold(space) = GOCore.best_manifold(space)
+cellneighbors(space, i::Integer) = GrI.neighbors(space, Int(i))
+cellcap(space, i::Integer) = convert(Cap, GrI.cell_extent(space, Int(i)))
+hasanalyticlocation(space) = GrI.location_is_analytic(space)
+hascellchart(space) = GR._hascellchart(space)
+hasdualcells(space) = GR._hasdualcells(space)
+nchunks(space) = GR._nchunks(space)
+ownedindices(space, chunk::Integer) = GR._ownedindices(space, Int(chunk))
+chunkextents(space) = GR._chunkextents(space)
+chunkextent(space, chunk::Integer) = GR._chunkextent(space, Int(chunk))
+chunkat(space, i) = GR._chunkat(space, i)
+celltree(space) = GR._celltree(space)
+celltree(space, chunk::Integer) = GR._subtree(space, ownedindices(space, chunk))
+celltree(space, inds::AbstractVector) = GR._subtree(space, inds)
+subtree(space, inds) = GR._subtree(space, inds)
+chartaxes(space) = GR._chartaxes(space)
+chartcoords(space, p) = GR._chartcoords(space, p)
+chartlocalindex(space, ix, iy) = GR._chartlocalindex(space, Int(ix), Int(iy))
+chartperiod(space) = GR._chartperiod(space)
+chartspacing(space) = GR._chartspacing(space)
 
 # Unit-sphere helpers
 
@@ -90,57 +124,21 @@ function toy_bandcap(lat0::Real, lat1::Real, dlon::Real)
     return SphericalCap(centre, radius)
 end
 
-# Flat spatial tree
-
-"""
-    ToyCapTree(space, indices)
-
-A one-node spatial tree with stored caps. Indices are cell indices for cell
-trees and chunk numbers for chunk trees.
-"""
-struct ToyCapTree{S}
-    space::S
-    indices::Vector{Int}
-    caps::Vector{Cap}
-    extent::Cap
-end
-
-function ToyCapTree(space, indices, caps)
-    ix = collect(Int, indices)
-    cs = collect(Cap, caps)
-    extent = isempty(cs) ? TOY_FULL_SPHERE :
-             foldl(GO.Extents.union, cs)
-    return ToyCapTree{typeof(space)}(space, ix, cs, extent)
-end
-
-Base.show(io::IO, tree::ToyCapTree) =
-    print(io, "ToyCapTree(", length(tree.indices), " entries)")
-
-GO.SpatialTreeInterface.isspatialtree(::Type{<:ToyCapTree}) = true
-GO.SpatialTreeInterface.node_extent_is_expensive(::Type{<:ToyCapTree}) = false
-GO.SpatialTreeInterface.isleaf(::ToyCapTree) = true
-GO.SpatialTreeInterface.nchild(::ToyCapTree) = 0
-GO.SpatialTreeInterface.getchild(::ToyCapTree) = ()
-GO.SpatialTreeInterface.node_extent(tree::ToyCapTree) = tree.extent
-GO.SpatialTreeInterface.child_indices_extents(tree::ToyCapTree) =
-    zip(tree.indices, tree.caps)
-
-# Cell-tree access uses the wrapped space's local indices.
-GOCore.best_manifold(tree::ToyCapTree) = manifold(tree.space)
-GR.ncells(tree::ToyCapTree) = ncells(tree.space)
-GR.getcell(tree::ToyCapTree, i::Int) = getcell(tree.space, i)
-GR.getcell(tree::ToyCapTree) = (getcell(tree.space, i) for i in tree.indices)
-GrI.split_weight(tree::ToyCapTree) = length(tree.indices)
-
 # Lon/lat test space
 
 """
     ToyLonLatSpace(nlon, nlat; lon = (-180, 180), lat = (-90, 90), chunks = (nlon, nlat))
 
-A regular `nlon × nlat` geodesic lon/lat grid on the unit sphere. Longitude
-varies fastest. `chunks` gives `(longitude, latitude)` chunk sizes.
+A regular `nlon × nlat` geodesic lon/lat grid on the unit sphere, as a one-face
+`GridInterface.Structured` grid. Longitude varies fastest. `chunks` gives
+`(longitude, latitude)` tile sizes, and `chunks(grid)` is the tile partition.
+
+The vertices, cell polygons, centroids, chart and point location are the toy's
+own closed-form formulas; the seams (a periodic longitude, collapsed poles) are
+a `RegularGrid`'s over the same lattice, and everything else — rings, extents,
+the quadtree, tiles — is derived by `GridInterface.Structured`.
 """
-struct ToyLonLatSpace <: RegridSpace
+struct ToyLonLatSpace{R} <: GrS.AbstractStructuredGrid
     nlon::Int
     nlat::Int
     lon0::Float64
@@ -149,6 +147,7 @@ struct ToyLonLatSpace <: RegridSpace
     lat1::Float64
     chunklon::Int
     chunklat::Int
+    reg::R
 end
 
 function ToyLonLatSpace(nlon::Integer, nlat::Integer;
@@ -160,9 +159,14 @@ function ToyLonLatSpace(nlon::Integer, nlat::Integer;
     lat[1] < lat[2] || throw(ArgumentError("latitude span must be increasing"))
     -90 <= lat[1] && lat[2] <= 90 || throw(ArgumentError("latitude span must lie in [-90, 90]"))
     chunks[1] >= 1 && chunks[2] >= 1 || throw(ArgumentError("chunk sizes must be positive"))
+    lons = range(Float64(lon[1]), Float64(lon[2]); length = Int(nlon) + 1)
+    lats = range(Float64(lat[1]), Float64(lat[2]); length = Int(nlat) + 1)
+    reg = GrS.RegularGrid(GOCore.Spherical(; radius = 1.0), lons, lats;
+        periodic = (lon[2] - lon[1] >= 360, false),
+        collapsed = (lat[1] <= -90, lat[2] >= 90))
     return ToyLonLatSpace(Int(nlon), Int(nlat),
         Float64(lon[1]), Float64(lon[2]), Float64(lat[1]), Float64(lat[2]),
-        min(Int(chunks[1]), Int(nlon)), min(Int(chunks[2]), Int(nlat)))
+        min(Int(chunks[1]), Int(nlon)), min(Int(chunks[2]), Int(nlat)), reg)
 end
 
 Base.show(io::IO, space::ToyLonLatSpace) =
@@ -215,27 +219,62 @@ function graticule_area(space::ToyLonLatSpace, i::Int)
     return deg2rad(dlon(space)) * (sind(lat_hi) - sind(lat_lo))
 end
 
-# `RegridSpace` interface
+# The Structured face: one face, the toy's lattice, its vertices by formula.
 
-ncells(space::ToyLonLatSpace) = space.nlon * space.nlat
+GOCore.best_manifold(::ToyLonLatSpace) = GOCore.Spherical(; radius = 1.0)
+GrS.nfaces(::ToyLonLatSpace) = 1
+GrS.facesize(g::ToyLonLatSpace, f) = (g.nlon, g.nlat)
+GrS.facevertex(g::ToyLonLatSpace, f, a, b) =
+    toy_point(g.lon0 + (a - 1) * dlon(g), g.lat0 + (b - 1) * dlat(g))
+GrS.faceposition(g::ToyLonLatSpace, f, i, j) = localindex(g, i, j)
+GrS.facecell(g::ToyLonLatSpace, k) = (1, cellsubscript(g, Int(k))...)
+GrS.facecross(g::ToyLonLatSpace, f, i, j, s) = GrS.facecross(g.reg, f, i, j, s)
+GrS.facefan(g::ToyLonLatSpace, f, a, b) = GrS.facefan(g.reg, f, a, b)
+GrI.maxneighbors(g::ToyLonLatSpace, c::GrI.Vertex) = GrI.maxneighbors(g.reg, c)
 
-manifold(::ToyLonLatSpace) = GOCore.Spherical(; radius = 1.0)
+# The cell chart: face axes at the lattice's edges, in native degrees, with
+# longitude read on the axes' branch and a period only where the span is global.
+GrS.hasfaceaxes(::ToyLonLatSpace, f) = true
+GrS.faceaxes(g::ToyLonLatSpace, f) =
+    ([g.lon0 + (a - 1) * dlon(g) for a in 1:(g.nlon + 1)],
+        [g.lat0 + (b - 1) * dlat(g) for b in 1:(g.nlat + 1)])
+function GrS.facecoords(g::ToyLonLatSpace, f, p)
+    lon, lat = toy_lonlat(p)
+    return (g.lon0 + mod(lon - g.lon0, 360.0), lat)
+end
+GrS.faceperiod(g::ToyLonLatSpace, f) = (360.0, nothing)
 
-hascellchart(::ToyLonLatSpace) = true
+# The chart's spacing: Δλ bounds adjacent distance along a parallel.
+GR._facespacing(g::ToyLonLatSpace) = (deg2rad(dlon(g)), deg2rad(dlat(g)))
+
+# The toy's cells are synthesized polygons an area method keeps per tile.
+GrI.cell_geometry_is_expensive(::ToyLonLatSpace) = true
+
+# A full-longitude block's perimeter cap is the whole sphere; the bowed
+# latitude band bounds it instead, so row chunks keep bounded extents.
+function GrS.blockextent(g::ToyLonLatSpace, f, ir::UnitRange{Int}, jr::UnitRange{Int})
+    cap = invoke(GrS.blockextent, Tuple{Any,Any,UnitRange{Int},UnitRange{Int}}, g, f, ir, jr)
+    cap.radius < Float64(pi) && return cap
+    return toy_bandcap(g.lat0 + (first(jr) - 1) * dlat(g), g.lat0 + last(jr) * dlat(g),
+        dlon(g))
+end
+
+# The tiles are the toy's `(longitude, latitude)` chunk sizes.
+GrI.chunks(g::ToyLonLatSpace) = GrI.chunks(g, (g.chunklon, g.chunklat))
 
 """
     cellcorners(space::ToyLonLatSpace, i::Int) -> NTuple{4,UnitSphericalPoint}
 
 Return counter-clockwise graticule corners. Polar cells repeat one corner.
 """
-function cellcorners(space::ToyLonLatSpace, i::Int)
-    lon_lo, lon_hi, lat_lo, lat_hi = cellbounds(space, i)
+function GrI.cell_corners(space::ToyLonLatSpace, i::Integer)
+    lon_lo, lon_hi, lat_lo, lat_hi = cellbounds(space, Int(i))
     return (toy_point(lon_lo, lat_lo), toy_point(lon_hi, lat_lo),
         toy_point(lon_hi, lat_hi), toy_point(lon_lo, lat_hi))
 end
 
-getcell(space::ToyLonLatSpace, i::Int) =
-    GI.Polygon([GI.LinearRing(_closed_ring(cellcorners(space, i)))])
+GrI.cell_geometry(space::ToyLonLatSpace, i::Integer) =
+    GI.Polygon([GI.LinearRing(_closed_ring(cellcorners(space, Int(i))))])
 
 # Drop repeated polar corners.
 function _closed_ring(corners)
@@ -248,8 +287,8 @@ function _closed_ring(corners)
     return ring
 end
 
-function cellcentroid(space::ToyLonLatSpace, i::Int)
-    lon_lo, lon_hi, lat_lo, lat_hi = cellbounds(space, i)
+function GrI.cell_centroid(space::ToyLonLatSpace, i::Integer)
+    lon_lo, lon_hi, lat_lo, lat_hi = cellbounds(space, Int(i))
     return toy_point((lon_lo + lon_hi) / 2, (lat_lo + lat_hi) / 2)
 end
 
@@ -259,7 +298,7 @@ end
 Return the cell containing `p`, wrapping global longitude. Return `nothing`
 outside partial coverage. Shared boundaries select the east/north cell.
 """
-function cellat(space::ToyLonLatSpace, p)
+function GrI.cellat(space::ToyLonLatSpace, p)
     lon, lat = toy_lonlat(p)
     wrapped = _wrap_lon(lon, space.lon0, space.lon1)
     wrapped === nothing && return nothing
@@ -275,55 +314,10 @@ function _wrap_lon(lon::Float64, lo::Float64, hi::Float64)
     return wrapped <= hi ? wrapped : nothing
 end
 
-nchunks(space::ToyLonLatSpace) = nchunklon(space) * nchunklat(space)
-
 function chunksubscript(space::ToyLonLatSpace, chunk::Int)
     1 <= chunk <= nchunks(space) || throw(BoundsError(space, chunk))
     cy, cx = fldmod1(chunk, nchunklon(space))
     return (cx, cy)
-end
-
-function ownedindices(space::ToyLonLatSpace, chunk::Int)
-    cx, cy = chunksubscript(space, chunk)
-    ix0 = (cx - 1) * space.chunklon + 1
-    ix1 = min(space.nlon, cx * space.chunklon)
-    iy0 = (cy - 1) * space.chunklat + 1
-    iy1 = min(space.nlat, cy * space.chunklat)
-    # Full-width chunks are contiguous in index order.
-    nchunklon(space) == 1 &&
-        return localindex(space, 1, iy0):localindex(space, space.nlon, iy1)
-    out = Vector{Int}(undef, (ix1 - ix0 + 1) * (iy1 - iy0 + 1))
-    k = 0
-    for iy in iy0:iy1, ix in ix0:ix1
-        out[k += 1] = localindex(space, ix, iy)
-    end
-    return out
-end
-
-celltree(space::ToyLonLatSpace) = ToyCapTree(space, 1:ncells(space))
-
-ToyCapTree(space::ToyLonLatSpace, indices) =
-    ToyCapTree(space, collect(Int, indices),
-        [toy_cap(cellcorners(space, i)) for i in indices])
-
-# The caps directly, one per chunk, falling back to a latitude-band cap when a
-# corner cap becomes non-convex. The generic `chunkindex` packs these.
-function chunkextents(space::ToyLonLatSpace)
-    n = nchunks(space)
-    caps = Vector{Cap}(undef, n)
-    points = USPoint[]
-    for c in 1:n
-        empty!(points)
-        lat0, lat1 = 90.0, -90.0
-        for i in ownedindices(space, c)
-            append!(points, cellcorners(space, i))
-            _, _, a, b = cellbounds(space, i)
-            lat0, lat1 = min(lat0, a), max(lat1, b)
-        end
-        cap = toy_cap(points)
-        caps[c] = cap.radius >= Float64(pi) ? toy_bandcap(lat0, lat1, dlon(space)) : cap
-    end
-    return caps
 end
 
 # Tree-build counting wrapper
@@ -331,61 +325,50 @@ end
 """
     CountingSpace(space)
 
-Wrap a `RegridSpace` and count restricted-tree builds at the `GR.subtree`
-seam, delegating every other space verb unchanged. Read `cs.builds[]`; block
-builders may run on `Threads.@spawn` tasks, hence the atomic counter.
+Wrap a grid and count restricted-tree builds at the `GridInterface.subtree` /
+`treeify` seam GlobalRegridding's `_subtree` reads, delegating every other
+grid verb unchanged. Read `cs.builds[]`; block builders may run on
+`Threads.@spawn` tasks, hence the atomic counter.
 """
-struct CountingSpace{S<:RegridSpace} <: RegridSpace
+struct CountingSpace{S} <: GrI.AbstractWrappedGrid
     space::S
     builds::Threads.Atomic{Int}
 end
 
-CountingSpace(space::RegridSpace) = CountingSpace(space, Threads.Atomic{Int}(0))
+CountingSpace(space) = CountingSpace(space, Threads.Atomic{Int}(0))
+Base.parent(cs::CountingSpace) = cs.space
 
-GR.subtree(cs::CountingSpace, inds) =
-    (Threads.atomic_add!(cs.builds, 1); GR.subtree(cs.space, inds))
-
-ncells(cs::CountingSpace) = ncells(cs.space)
-getcell(cs::CountingSpace, i::Int) = getcell(cs.space, i)
-manifold(cs::CountingSpace) = manifold(cs.space)
-hascellchart(cs::CountingSpace) = hascellchart(cs.space)
-cellcentroid(cs::CountingSpace, i::Int) = cellcentroid(cs.space, i)
-cellat(cs::CountingSpace, p) = cellat(cs.space, p)
-nchunks(cs::CountingSpace) = nchunks(cs.space)
-ownedindices(cs::CountingSpace, chunk::Int) = ownedindices(cs.space, chunk)
-celltree(cs::CountingSpace) = celltree(cs.space)
-chunkextents(cs::CountingSpace) = chunkextents(cs.space)
+GrI.subtree(cs::CountingSpace, inds::AbstractVector{<:Integer}) =
+    (Threads.atomic_add!(cs.builds, 1); GrI.subtree(cs.space, inds))
+GrI.subtree(cs::CountingSpace, s::GrI.Subset) =
+    (Threads.atomic_add!(cs.builds, 1); GrI.subtree(cs.space, s))
+GrI.treeify(cs::CountingSpace; leaf_capacity = GrI.Balanced()) =
+    (Threads.atomic_add!(cs.builds, 1); GrI.treeify(cs.space; leaf_capacity))
+GrI.treeify(cs::CountingSpace, hint::GrI.LeafHint) =
+    (Threads.atomic_add!(cs.builds, 1); GrI.treeify(cs.space, hint))
+GrI.treeify(cs::CountingSpace, n::Integer) =
+    (Threads.atomic_add!(cs.builds, 1); GrI.treeify(cs.space, n))
 
 # One-axis destination wrapper
 
 """
     ToyCellAxisSpace(space)
 
-Wrap a `RegridSpace` and label results over it with one axis — `Dim{:toycell}`
-over the cells' local indices — where the wrapped space labels with its own
-lattice. This is the destination shape a cell collection has: the cells are the
-whole of it, so a result needs no reshape to sit on that axis.
+Wrap a grid and label results over it with one axis — `Dim{:toycell}` over the
+cells' local indices — where the wrapped grid labels with its own lattice.
+This is the destination shape a cell collection has: the cells are the whole of
+it, so a result needs no reshape to sit on that axis.
 """
-struct ToyCellAxisSpace{S<:RegridSpace} <: RegridSpace
+struct ToyCellAxisSpace{S} <: GrI.AbstractWrappedGrid
     space::S
 end
 
+Base.parent(cs::ToyCellAxisSpace) = cs.space
 Base.show(io::IO, cs::ToyCellAxisSpace) =
     print(io, "ToyCellAxisSpace(", cs.space, ")")
 
 GR.destinationdims(cs::ToyCellAxisSpace, ::DD.Lookups.Sampling) =
     (DD.Dim{:toycell}(1:ncells(cs.space)),)
-
-ncells(cs::ToyCellAxisSpace) = ncells(cs.space)
-getcell(cs::ToyCellAxisSpace, i::Int) = getcell(cs.space, i)
-manifold(cs::ToyCellAxisSpace) = manifold(cs.space)
-hascellchart(cs::ToyCellAxisSpace) = hascellchart(cs.space)
-cellcentroid(cs::ToyCellAxisSpace, i::Int) = cellcentroid(cs.space, i)
-cellat(cs::ToyCellAxisSpace, p) = cellat(cs.space, p)
-nchunks(cs::ToyCellAxisSpace) = nchunks(cs.space)
-ownedindices(cs::ToyCellAxisSpace, chunk::Int) = ownedindices(cs.space, chunk)
-celltree(cs::ToyCellAxisSpace) = celltree(cs.space)
-chunkextents(cs::ToyCellAxisSpace) = chunkextents(cs.space)
 
 # Geometry-free test method
 
@@ -413,7 +396,7 @@ const TOY_COUNT_LOCK = ReentrantLock()
 countbuild!(method) = @lock TOY_COUNT_LOCK method.builds += 1
 
 function buildweights!(coo::WeightCOO, method::ToyDiagonalMethod,
-    ::RegridSpace, dst_inds, ::RegridSpace, src_inds)
+    dst, dst_inds, src, src_inds)
     chunklocal_of = Dict{Int,Int}(p => k for (k, p) in enumerate(src_inds))
     for (j, p) in enumerate(dst_inds)
         k = get(chunklocal_of, p, 0)
@@ -444,7 +427,7 @@ WaveFailMethod(bad::Integer, delay::Real) =
     WaveFailMethod(Int(bad), Float64(delay), Threads.Atomic{Int}(0))
 
 function buildweights!(coo::WeightCOO, method::WaveFailMethod,
-    ::RegridSpace, dst_inds, ::RegridSpace, src_inds)
+    dst, dst_inds, src, src_inds)
     Int(first(src_inds)) == method.bad &&
         error("WaveFailMethod: the chunk at index $(method.bad) fails by design")
     sleep(method.delay)
@@ -458,24 +441,3 @@ function buildweights!(coo::WeightCOO, method::WaveFailMethod,
     Threads.atomic_add!(method.finished, 1)
     return coo
 end
-
-# Cell chart hooks used by the chart-stencil and parity tests.
-
-# Cell centres in native degrees.
-GR.chartaxes(space::ToyLonLatSpace) =
-    ([space.lon0 + (ix - 0.5) * dlon(space) for ix in 1:space.nlon],
-        [space.lat0 + (iy - 0.5) * dlat(space) for iy in 1:space.nlat])
-
-# Return longitude on the chart axes' branch.
-function GR.chartcoords(space::ToyLonLatSpace, p)
-    lon, lat = toy_lonlat(p)
-    return (space.lon0 + mod(lon - space.lon0, 360.0), lat)
-end
-
-GR.chartlocalindex(space::ToyLonLatSpace, ix::Int, iy::Int) = localindex(space, ix, iy)
-
-GR.chartperiod(space::ToyLonLatSpace) =
-    (space.lon1 - space.lon0 >= 360 ? 360.0 : nothing, nothing)
-
-# Δλ bounds adjacent distance along a parallel.
-GR.chartspacing(space::ToyLonLatSpace) = (deg2rad(dlon(space)), deg2rad(dlat(space)))

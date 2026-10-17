@@ -2,8 +2,8 @@
 #
 # One destination sample site at a time: find the dual cell of source sample
 # sites that contains it, then weight that cell's nodes with the coordinates its
-# basis names. Nothing here knows about chunks. A row carries the source space's
-# local indices and whoever asked for it partitions them.
+# basis names. Nothing here knows about chunks. A row carries the source grid's
+# positions and whoever asked for it partitions them.
 
 """
     BasisKind
@@ -109,9 +109,15 @@ end
         (1 - u) * (1 - v) * n1[2] + u * (1 - v) * n2[2] + u * v * n3[2] +
         (1 - u) * v * n4[2])
 
-# Roundoff at the edge of the parameter square is the square's edge: a point at
-# a node or on an edge emits exactly the nodes that carry it.
-@inline function _snapunit(t::Float64)
+"""
+    snapunit(t::Float64) -> Float64
+
+Snap a unit-interval coordinate to `0.0` or `1.0` within the rounding margin a
+stencil tolerates: roundoff at the edge of the parameter square is the
+square's edge, so a point at a node or on an edge emits exactly the nodes that
+carry it. What a provider's own [`weightsat!`](@ref) snaps with.
+"""
+@inline function snapunit(t::Float64)
     abs(t) <= COORD_TOL && return 0.0
     abs(t - 1.0) <= COORD_TOL && return 1.0
     return t
@@ -144,7 +150,7 @@ function bilinearweights!(row::WeightRow, indices, nodes, p::NTuple{2,Float64})
 
     hit = _nodehit(nodes, p)
     if hit != 0
-        _addentry!(row, indices[hit], 1.0)
+        addentry!(row, indices[hit], 1.0)
         return WeightsMapped
     end
 
@@ -176,12 +182,12 @@ function bilinearweights!(row::WeightRow, indices, nodes, p::NTuple{2,Float64})
     r = _sub(_q1image(n1, n2, n3, n4, u, v), p)
     _norm2(r) <= NEWTON_RESIDUAL^2 * size2 || return WeightsDegenerate
 
-    u, v = _snapunit(u), _snapunit(v)
+    u, v = snapunit(u), snapunit(v)
     (0.0 <= u <= 1.0 && 0.0 <= v <= 1.0) || return WeightsOutside
-    _addentry!(row, indices[1], (1 - u) * (1 - v))
-    _addentry!(row, indices[2], u * (1 - v))
-    _addentry!(row, indices[3], u * v)
-    _addentry!(row, indices[4], (1 - u) * v)
+    addentry!(row, indices[1], (1 - u) * (1 - v))
+    addentry!(row, indices[2], u * (1 - v))
+    addentry!(row, indices[3], u * v)
+    addentry!(row, indices[4], (1 - u) * v)
     return _normalize!(row)
 end
 
@@ -229,7 +235,7 @@ function meanvalueweights!(row::WeightRow, indices, nodes, p::NTuple{2,Float64})
 
     hit = _nodehit(nodes, p)
     if hit != 0
-        _addentry!(row, indices[hit], 1.0)
+        addentry!(row, indices[hit], 1.0)
         return WeightsMapped
     end
 
@@ -246,8 +252,8 @@ function meanvalueweights!(row::WeightRow, indices, nodes, p::NTuple{2,Float64})
         t = _dot(d, e) / _norm2(e)
         (-COORD_TOL <= t <= 1 + COORD_TOL) || return WeightsOutside
         t = clamp(t, 0.0, 1.0)
-        _addentry!(row, indices[i], 1.0 - t)
-        _addentry!(row, indices[j], t)
+        addentry!(row, indices[i], 1.0 - t)
+        addentry!(row, indices[j], t)
         return _normalize!(row)
     end
 
@@ -270,7 +276,7 @@ function meanvalueweights!(row::WeightRow, indices, nodes, p::NTuple{2,Float64})
         isfinite(t) || (empty!(row); return WeightsDegenerate)
         w = (tprev + t) / r
         (isfinite(w) && w > 0) || (empty!(row); return WeightsDegenerate)
-        _addentry!(row, indices[i], w)
+        addentry!(row, indices[i], w)
         tprev = t
         d, r = dnext, rnext
     end
@@ -382,7 +388,7 @@ end
 
 The polygon of source sample sites a destination point falls in.
 
-`indices` names its nodes' cells by the source space's local index and `nodes`
+`indices` names its nodes' cells by the source grid's position and `nodes`
 gives their coordinates in one two-dimensional chart, both in cyclic order.
 `kind` names the coordinates that weight them, which is the cell's own
 statement and not a reading of its node count.
@@ -431,18 +437,18 @@ end
 # --- samplers --------------------------------------------------------------
 
 """
-    samplesites(space::RegridSpace) -> AbstractVector
+    samplesites(grid) -> AbstractVector
 
-The point each source cell's value is taken to sit at, by local index:
-`samplesites(space)[i] == cellcentroid(space, i)` for every space.
+The point each source cell's value is taken to sit at, by position:
+`samplesites(grid)[i] == GridInterface.cell_centroid(grid, i)` for every grid.
 
-The fallback reads [`cellcentroid`](@ref) on demand and holds nothing. A space
-whose sites are already computed, or which knows a site other than the
-centroid, returns its own vector over `1:ncells(space)`.
+Reads `cell_centroid` on demand and holds nothing: a pure vector that computes
+an entry on read, so preparing a sampler materialises nothing and concurrent
+queries share it.
 """
-samplesites(space::RegridSpace) = CentroidSites(space)
+samplesites(space) = CentroidSites(space)
 
-struct CentroidSites{S<:RegridSpace} <: AbstractVector{USPoint}
+struct CentroidSites{S} <: AbstractVector{USPoint}
     space::S
 end
 
@@ -450,36 +456,45 @@ Base.size(sites::CentroidSites) = (Int(ncells(sites.space)),)
 Base.IndexStyle(::Type{<:CentroidSites}) = Base.IndexLinear()
 Base.@propagate_inbounds function Base.getindex(sites::CentroidSites, i::Int)
     @boundscheck checkbounds(sites, i)
-    return cellcentroid(sites.space, i)
+    return GridInterface.cell_centroid(sites.space, i)
 end
 
 """
-    samplerstate(space::RegridSpace) -> state
+    samplerstate(method, grid) -> state
+    samplerstate(grid)
 
-Immutable query state a [`Sampler`](@ref) over `space` carries: axis locators,
-topology tables, prepared dual cells. Whatever a space returns is read
-concurrently and must not be written during a sweep.
+Immutable query state a [`Sampler`](@ref) over `grid` carries for `method`:
+axis locators, topology tables, prepared dual cells. Whatever is returned is
+read concurrently and must not be written during a sweep.
 
-The fallback prepares a [`ChartState`](@ref) where the space has a cell chart,
-which is what puts it on the fused chart path in [`weightsat!`](@ref), and is
-`nothing` otherwise. A space with a state of its own returns it here and takes
-the path its type names.
+The default prepares a [`ChartState`](@ref) where the grid has a cell chart (a
+one-face `Structured` grid with face axes), which is what puts it on the fused
+chart path in [`weightsat!`](@ref); a [`DualState`](@ref) where the grid is
+conforming, so dual cells are read off its rings and sample sites; and
+`nothing` otherwise. A package with a state of its own for its grids returns
+it here and defines [`weightsat!`](@ref) on the `Sampler` carrying it. A
+transparent wrapper (`GridInterface.AbstractWrappedGrid`) answers for the grid
+it wraps. The one-argument form is the state the point interpolator reads.
 """
-samplerstate(space::RegridSpace) =
-    hascellchart(space) ? ChartState(space) : nothing
+samplerstate(::AbstractRegriddingMethod, grid) =
+    _hascellchart(grid) ? ChartState(grid) : _hasdualcells(grid) ? DualState(grid) : nothing
+samplerstate(method::AbstractRegriddingMethod, g::GridInterface.AbstractWrappedGrid) =
+    samplerstate(method, parent(g))
+samplerstate(grid) = samplerstate(BarycentricPoint(), grid)
 
 """
-    Sampler(space, sites, state, method)
+    Sampler(grid, sites, state, method)
 
-A source space prepared to be asked for weights at points by one method.
+A source grid prepared to be asked for weights at points by one method.
 
-It holds the space, its [`samplesites`](@ref), whatever [`samplerstate`](@ref)
-the space prepared once, and the method that asked for it, so a query reaches
-the method's own settings without being handed them per point. It is immutable
-and read concurrently; per-point scratch belongs to the calling task's
-[`WeightRow`](@ref).
+It holds the grid, its [`samplesites`](@ref), whatever [`samplerstate`](@ref)
+was prepared once, and the method that asked for it, so a query reaches the
+method's own settings without being handed them per point. It is immutable and
+read concurrently; per-point scratch belongs to the calling task's
+[`WeightRow`](@ref). A package that prepares a state of its own dispatches
+`weightsat!` on `Sampler{<:Any,<:AbstractVector,<:ItsState}`.
 """
-struct Sampler{S<:RegridSpace,V<:AbstractVector,T,M}
+struct Sampler{S,V<:AbstractVector,T,M}
     space::S
     sites::V
     state::T
@@ -488,46 +503,40 @@ end
 
 Base.show(io::IO, s::Sampler) = print(io, "Sampler(", s.space, ")")
 
-"""
-    hasdualcells(space::RegridSpace) -> Bool
-
-Whether `space` answers [`dualcellat`](@ref) with dual cells of its own.
-
-`false` by default. A source reporting neither this nor [`hascellchart`](@ref)
-has nothing to interpolate between, and [`sampler`](@ref) refuses it rather than
-preparing a sampler that maps every point to nothing.
-"""
-hasdualcells(::RegridSpace) = false
+# Whether a grid has dual cells to interpolate on: a conforming grid's primal
+# vertices each name the polygon of the sites of the cells meeting there.
+_hasdualcells(grid) = GridInterface.conformity(grid) isa GridInterface.Conforming
 
 """
-    sampler(method, space::RegridSpace) -> Sampler
+    sampler(method, grid) -> Sampler
 
-Prepare `space` to answer `method`'s point queries. This runs once per plan or
-source space, never once per destination.
+Prepare `grid` to answer `method`'s point queries. This runs once per plan or
+source grid, never once per destination.
 
-A source with neither a cell chart nor dual cells is an `ArgumentError` naming
-it: there is no geometry to interpolate between, and a silent field of missing
-values is not the answer.
+A source with neither a cell chart nor dual cells and no state of its own is
+an `ArgumentError` naming it: there is no geometry to interpolate between, and
+a silent field of missing values is not the answer.
 """
-function sampler(method::BarycentricPoint, space::RegridSpace)
-    (hascellchart(space) || hasdualcells(space)) || throw(ArgumentError(
+function sampler(method::BarycentricPoint, space)
+    state = samplerstate(method, space)
+    state === nothing && throw(ArgumentError(
         "BarycentricPoint has nothing to interpolate between on a " *
-        "$(typeof(space)): it reports neither `hascellchart` nor " *
-        "`hasdualcells`, so no dual cell of source sample sites can be built " *
-        "around a destination point"))
-    return Sampler(space, samplesites(space), samplerstate(space), method)
+        "$(typeof(space)): it has neither a cell chart (a one-face Structured " *
+        "grid with face axes) nor dual cells (a conforming grid), so no dual " *
+        "cell of source sample sites can be built around a destination point"))
+    return Sampler(space, samplesites(space), state, method)
 end
 
 """
     chartat(sampler, p) -> Union{NTuple{2,Float64},Nothing}
 
 The coordinates of `p` in the chart the sampler's dual cells are written in, or
-`nothing` where the chart does not reach. The fallback is the source space's
-cell chart, so a space with no chart answers `nothing`.
+`nothing` where the chart does not reach. The fallback is the source grid's
+cell chart, so a grid with no chart answers `nothing`.
 """
 function chartat(s::Sampler, p)
-    hascellchart(s.space) || return nothing
-    c = chartcoords(s.space, p)
+    _hascellchart(s.space) || return nothing
+    c = _chartcoords(s.space, p)
     c === nothing && return nothing
     x, y = Float64(c[1]), Float64(c[2])
     (isfinite(x) && isfinite(y)) || return nothing
@@ -540,11 +549,9 @@ end
 The dual cell of source sample sites containing `p`, or a cell with no nodes
 where none does.
 
-A space either answers here, in the chart its [`chartat`](@ref) uses, or answers
-[`weightsat!`](@ref) whole; either way it declares [`hasdualcells`](@ref). The
-fallback constructs nothing and answers no nodes, which a chart source reaches
-where its chart does not, and which no other source reaches: [`sampler`](@ref)
-refuses a space that declares neither.
+A state either answers here, in the chart its [`chartat`](@ref) uses, or
+answers [`weightsat!`](@ref) whole. The fallback constructs nothing and answers
+no nodes, which a chart source reaches where its chart does not.
 """
 dualcellat(::Sampler, p) = NO_DUALCELL
 
@@ -556,10 +563,10 @@ from, and return what became of it.
 
 The row is cleared on entry, and is left empty for every status but
 `WeightsMapped`. The default locates [`dualcellat`](@ref) and weights its nodes
-with the coordinates the cell's kind names; a source space with a fused
-algorithm of its own replaces this method. Nothing here reads source values,
-and nothing here is told about chunks: `row.indices` are the source space's
-local indices, `1:ncells(space)`.
+with the coordinates the cell's kind names; a state with a fused algorithm of
+its own replaces this method. Nothing here reads source values, and nothing
+here is told about chunks: `row.indices` are the source grid's positions,
+`1:ncells(grid)`.
 """
 function weightsat!(row::WeightRow, s::Sampler, p)
     empty!(row)
@@ -584,7 +591,7 @@ destination the source cannot map emits no entry at all, and the missing policy
 decides what it becomes. Point samples have no coverage denominator.
 """
 function buildweights!(coo::WeightCOO, method::BarycentricPoint,
-    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
+    dst_space, dst_inds, src_space, src_inds)
     smp = sampler(method, src_space)
     sites = samplesites(dst_space)
     indexer = indexmap(src_inds)
@@ -609,9 +616,9 @@ end
 # chart conversion, two bracket searches, and at most four products.
 
 """
-    ChartState(space::RegridSpace)
+    ChartState(grid)
 
-The two prepared chart axes of a space with a cell chart.
+The two prepared chart axes of a grid with a cell chart.
 
 Each axis holds its sample coordinates in ascending order, the lattice
 orientation they arrived in, and the period where the source wraps, so a query
@@ -623,9 +630,9 @@ struct ChartState
     y::_ChartAxis
 end
 
-function ChartState(space::RegridSpace)
-    xs, ys = chartaxes(space)
-    px, py = chartperiod(space)
+function ChartState(space)
+    xs, ys = _chartaxes(space)
+    px, py = _chartperiod(space)
     return ChartState(_ChartAxis(xs, px), _ChartAxis(ys, py))
 end
 
@@ -645,7 +652,7 @@ Base.show(io::IO, st::ChartState) =
 
 Bracket `x` between two of an axis' sample coordinates, without clamping.
 
-`i0` and `i1` are lattice indices as the space numbers the axis, so a descending
+`i0` and `i1` are lattice indices as the grid numbers the axis, so a descending
 axis answers the indices its own lookup order gives; `w0` and `w1` are the two
 linear fractions. A fraction within `$COORD_TOL` of an end of its interval is
 snapped to it, so a sample site reached through roundoff takes that site alone
@@ -681,22 +688,22 @@ outermost sites and the source's boundary — it is `WeightsRim`, and further ou
             return _nobracket(t <= 0.5 ? WeightsRim : WeightsOutside)
         end
         k = min(searchsortedlast(v, x), n - 1)
-        t = _snapunit((x - v[k]) / (v[k+1] - v[k]))
+        t = snapunit((x - v[k]) / (v[k+1] - v[k]))
         return (_latticeindex(ax, k), _latticeindex(ax, k + 1), 1.0 - t, t, WeightsMapped)
     end
     p = period::Float64
     xw = v[1] + mod(x - v[1], p)
     k = max(searchsortedlast(v, xw), 1)
     if k < n
-        t = _snapunit((xw - v[k]) / (v[k+1] - v[k]))
+        t = snapunit((xw - v[k]) / (v[k+1] - v[k]))
         return (_latticeindex(ax, k), _latticeindex(ax, k + 1), 1.0 - t, t, WeightsMapped)
     end
-    t = _snapunit((xw - v[n]) / (v[1] + p - v[n]))
+    t = snapunit((xw - v[n]) / (v[1] + p - v[n]))
     return (_latticeindex(ax, n), _latticeindex(ax, 1), 1.0 - t, t, WeightsMapped)
 end
 
 """
-    weightsat!(row, s::Sampler{<:RegridSpace,<:AbstractVector,ChartState}, p)
+    weightsat!(row, s::Sampler{<:Any,<:AbstractVector,ChartState}, p)
 
 Weight the at most four source sample sites bracketing `p` on the source's cell
 chart.
@@ -716,7 +723,7 @@ boundary is `WeightsRim`, a point beyond it `WeightsOutside`, and neither takes
 weights.
 """
 function weightsat!(row::WeightRow,
-    s::Sampler{<:RegridSpace,<:AbstractVector,ChartState}, p)
+    s::Sampler{<:Any,<:AbstractVector,ChartState}, p)
     empty!(row)
     q = chartat(s, p)
     q === nothing && return WeightsOutside
@@ -730,26 +737,227 @@ function weightsat!(row::WeightRow,
 
         w = wx * wy
         w > 0 || continue
-        _addentry!(row, chartlocalindex(space, ix, iy), w)
+        addentry!(row, _chartlocalindex(space, ix, iy), w)
     end
     return WeightsMapped
 end
 
 """
-    supportradius(::BarycentricPoint, src_space) -> Float64
+    DualState(grid)
+
+What a conforming grid's dual sampler reads: the grid, whose positions name the
+row, and the grid its rings and sample sites are read on. A subset of a grid
+(`gridrelation` is `ParentGrid`) reads them on its parent, so a cell the subset
+does not hold is a missing node — a rim — rather than a ring silently one cell
+shorter. A transparent wrapper reads them on the grid it wraps.
+"""
+struct DualState{G,T}
+    grid::G
+    topo::T
+end
+
+DualState(grid) = DualState(grid, _dualtopology(grid))
+
+function _dualtopology(grid)
+    g = _chartgrid(grid)
+    return GridInterface.gridrelation(g) isa GridInterface.ParentGrid ? parent(g) : g
+end
+
+Base.show(io::IO, st::DualState) = print(io, "DualState(", st.topo, ")")
+
+"""
+    supportradius(::BarycentricPoint, src_grid) -> Float64
 
 The larger chart-axis spacing in radians on a source the method queries through
-its cell chart, and `0.0` on every other source.
+its cell chart, twice the widest chunk cover on a source it queries through its
+dual cells, and `0.0` on every other source.
 
 A chart stencil reaches out to the sample sites bracketing a destination, up to
 one source cell beyond the destination's own extent, so chunk discovery must
-search that far or lose weights. Which sources those are is the state they
-prepare and not their type, the same reading [`weightsat!`](@ref) makes: a
-source answering dual cells of its own bounds them itself, and until it does its
-stencils are found by cap overlap alone.
+search that far or lose weights. A dual cell's nodes are the sites of cells
+touching the point's host cell, so the stencil reaches at most one cell width
+past the point, and every cell lies inside its own chunk's cover. Which
+sources those are is the state they prepare and not their type, the same
+reading [`weightsat!`](@ref) makes; a package whose grids prepare a state of
+their own bounds it by extending this function for those grids, and a
+transparent wrapper of such a grid takes its answer.
 """
-supportradius(::BarycentricPoint, src_space::RegridSpace) =
-    _chartradius(samplerstate(src_space), src_space)
+supportradius(method::BarycentricPoint, src_space) =
+    _samplerreach(method, samplerstate(method, src_space), src_space)
 
-_chartradius(_, ::RegridSpace) = 0.0
-_chartradius(::ChartState, space::RegridSpace) = chartradius(space)
+_samplerreach(::BarycentricPoint, ::ChartState, space) = chartradius(space)
+_samplerreach(::BarycentricPoint, ::Nothing, space) = 0.0
+function _samplerreach(::BarycentricPoint, ::DualState, space)
+    r = 0.0
+    for cap in _chunkextents(space)
+        r = max(r, Float64(cap.radius))
+    end
+    return min(Float64(pi), 2 * r)
+end
+# A state this package did not prepare: the grid that prepared it answers, so a
+# wrapper of such a grid reads through to it and a bare one is unbounded here.
+_samplerreach(method::BarycentricPoint, state, space) =
+    space isa GridInterface.AbstractWrappedGrid ? supportradius(method, parent(space)) : 0.0
+
+# --- dual cells of a conforming grid ---------------------------------------
+#
+# A point method interpolates between source sample sites, and on a conforming
+# cell-centred grid the polygon it interpolates on is the dual cell of a primal
+# vertex: the sites of the cells meeting there. The cells meeting at a vertex of
+# the host cell are all in the host's `Vertex()` one-ring, and the host's
+# `Edge()` one-ring says where one vertex's fan ends and the next begins, so the
+# host's candidates come out of two ring calls and no vertex is ever numbered.
+
+# The most sample sites one dual cell holds: one node per cell meeting at a
+# primal vertex. A longer fan is `WeightsDegenerate`, never a truncated stencil.
+const MAX_DUAL_NODES = 12
+
+# The most cells a host's `Vertex()` one-ring may hold.
+const MAX_DUAL_RING = 12
+
+const DualIndices = SmallVector{MAX_DUAL_NODES,Int}
+const DualNodes = SmallVector{MAX_DUAL_NODES,NTuple{2,Float64}}
+const DualRing = SmallVector{MAX_DUAL_RING,NTuple{2,Float64}}
+
+"""
+    GridDualCell
+
+The [`DualCell`](@ref) a conforming grid answers: fixed capacity in both its
+source indices and its chart coordinates, so locating one reaches no heap.
+"""
+const GridDualCell = DualCell{DualIndices,DualNodes}
+
+# The answer where no dual cell holds the point. Its status says why.
+const NO_GRID_DUALCELL = DualCell(DualIndices(), DualNodes(), MeanValue)
+
+const _DualSampler = Sampler{<:Any,<:AbstractVector,<:DualState}
+
+# The chart a dual cell is written in is the azimuthal-equidistant chart centred
+# on the queried point itself, so the point is the origin and the nodes carry
+# their true geodesic distances and bearings from it.
+chartat(::_DualSampler, p) = (0.0, 0.0)
+
+dualcellat(s::_DualSampler, p) = first(_locatedual(s, p))
+
+function weightsat!(row::WeightRow, s::_DualSampler, p)
+    empty!(row)
+    cell, status = _locatedual(s, p)
+    nodecount(cell) == 0 && return status
+    return dualweights!(row, cell, (0.0, 0.0))
+end
+
+# A position of the sampled grid as a position of its topology grid, and back.
+_topoposition(grid, topo, i::Int) =
+    topo === grid ? i : Int(GridInterface.parentpositions(grid)[i])
+function _gridposition(grid, topo, q)
+    topo === grid && return Int(q)
+    i = GridInterface.localindex(grid, GridInterface.cellindex(topo, Int(q)))
+    return i === nothing ? nothing : Int(i)
+end
+
+# Is `c` one of the cells in `ring`? Rings are shorter than a dozen cells and
+# hold no duplicates, so the scan beats anything with a table behind it.
+@inline function _inring(ring, c)
+    for x in ring
+        x == c && return true
+    end
+    return false
+end
+
+@inline _cyclicnext(k::Int, n::Int) = k == n ? 1 : k + 1
+
+# Ring positions as bits, so a walk carries them in a register. Position `k` is
+# bit `k - 1`.
+@inline _isset(bits::UInt16, k::Int) = (bits >> (k - 1)) & one(UInt16) == one(UInt16)
+@inline _set(bits::UInt16, k::Int) = bits | (one(UInt16) << (k - 1))
+
+# The next set position after `k`, going round. Only called where at least one
+# is set, so the walk always lands.
+@inline function _nextset(bits::UInt16, k::Int, n::Int)
+    j = k
+    for _ in 1:n
+        j = _cyclicnext(j, n)
+        _isset(bits, j) && return j
+    end
+    return k
+end
+
+# The dual cell holding `p` and what became of the search: `p`'s host cell is
+# located once, and the candidates are the dual cells of the host's own primal
+# vertices — one per cell of its `Edge()` one-ring, whose nodes are the host's
+# site followed by the run of its `Vertex()` one-ring that fans around that
+# vertex. The candidate holding `p` supplies the stencil. The kind is always
+# `MeanValue`, which on three nodes is the triangle's barycentric coordinates.
+function _locatedual(s::_DualSampler, p)
+    grid = s.state.grid
+    topo = s.state.topo
+    host = GridInterface.cellat(grid, p)
+    if host === nothing
+        # A point the topology covers but the collection does not: every dual
+        # cell around it needs the host's own site, which this grid has no
+        # position for, so it is a rim rather than a cell built from someone else's.
+        outside = topo === grid || GridInterface.cellat(topo, p) === nothing
+        return (NO_GRID_DUALCELL, outside ? WeightsOutside : WeightsRim)
+    end
+    host = Int(host)
+    hostpos = _topoposition(grid, topo, host)
+    chart = TangentChart(p)
+    hostsite = chartpoint(chart, GridInterface.cell_centroid(topo, hostpos))
+    hostsite === nothing && return (NO_GRID_DUALCELL, WeightsDegenerate)
+
+    fan = GridInterface.neighbors(topo, hostpos; connectivity = GridInterface.Vertex())
+    m = length(fan)
+    m <= MAX_DUAL_RING || return (NO_GRID_DUALCELL, WeightsDegenerate)
+    sites = DualRing()
+    nonlocal = zero(UInt16)
+    for k in 1:m
+        c = chartpoint(chart, GridInterface.cell_centroid(topo, @inbounds fan[k]))
+        c === nothing && (nonlocal = _set(nonlocal, k))
+        sites = SmallCollections.push(sites, c === nothing ? (0.0, 0.0) : c)
+    end
+
+    # Where one vertex's fan ends and the next begins: the cells sharing a whole
+    # edge with the host, in the positions the vertex ring already put them in.
+    cuts = zero(UInt16)
+    edges = GridInterface.neighbors(topo, hostpos; connectivity = GridInterface.Edge())
+    for k in 1:m
+        _inring(edges, @inbounds fan[k]) && (cuts = _set(cuts, k))
+    end
+    count_ones(cuts) >= 2 || return (NO_GRID_DUALCELL, WeightsDegenerate)
+
+    unusable = false
+    for a in 1:m
+        _isset(cuts, a) || continue
+        b = _nextset(cuts, a, m)
+        nodes = DualNodes()
+        nodes = SmallCollections.push(nodes, hostsite)
+        k = a
+        usable = true
+        while true
+            if _isset(nonlocal, k) || length(nodes) == MAX_DUAL_NODES
+                usable = false
+                break
+            end
+            nodes = SmallCollections.push(nodes, @inbounds sites[k])
+            k == b && break
+            k = _cyclicnext(k, m)
+        end
+        usable || (unusable = true; continue)
+        containspoint(nodes, (0.0, 0.0)) || continue
+
+        indices = DualIndices()
+        indices = SmallCollections.push(indices, host)
+        k = a
+        while true
+            i = _gridposition(grid, topo, @inbounds fan[k])
+            # A node the collection does not hold has no position at all, so
+            # this cell cannot be weighted here and nothing stands in for it.
+            i === nothing && return (NO_GRID_DUALCELL, WeightsRim)
+            indices = SmallCollections.push(indices, i)
+            k == b && break
+            k = _cyclicnext(k, m)
+        end
+        return (DualCell(indices, nodes, MeanValue), WeightsMapped)
+    end
+    return (NO_GRID_DUALCELL, unusable ? WeightsDegenerate : WeightsOutside)
+end

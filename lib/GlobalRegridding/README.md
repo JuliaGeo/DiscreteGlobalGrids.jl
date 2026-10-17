@@ -14,8 +14,10 @@ but meant to also support:
 - lazy and cached regridding for reuse across multidimensional datasets.
 
 
-Grids are described by the `RegridSpace` interface.  In here, we define the `RasterGrid`, which assumes longitude and latitude in degrees.
-Other packages like [DiscreteGlobalGrids.jl](../../README.md) define other spaces for their grids.
+A source or destination is any GridInterface grid (`GridInterface.isgrid`): cells, trees, chunks,
+point location and neighbours are read through GridInterface's verbs.  In here, we define the `RasterGrid`, a one-face
+`GridInterface.Structured` grid over a raster's lattice whose chunks are its DiskArrays tiles; it assumes longitude and
+latitude in degrees.  Other packages like [DiscreteGlobalGrids.jl](../../README.md) supply grids of their own.
 
 ## Quick start
 
@@ -65,8 +67,8 @@ and authalic latitude conversion require an explicit chart. Projected CRSs are
 charted through Proj when both Rasters and Proj are loaded. With Rasters alone,
 CRSs requiring Proj interpretation throw an `ArgumentError`. Lookups with no CRS are assumed
 geographic; pass `native_to_unit_sphere` to chart them otherwise. For
-plain arrays, supply a source space with `from`. Put spatial dimensions first,
-in the source space's cell order.
+plain arrays, supply a source grid with `from`. Put spatial dimensions first,
+in the source grid's cell order.
 Dimensional results use the destination's axes and retain non-spatial dimensions,
 such as time.
 
@@ -82,10 +84,19 @@ such as time.
 
 See the [API docstrings](src/api.jl) for all keywords.
 
+A package whose grids need more than the GridInterface verbs extends the
+execution hooks, plain public functions with `Any` defaults whose docstrings
+state their contracts: `chunkranges` and `knownempty` for
+storage reads; `samplerstate`, `weightsat!`, `dualcellat` and `supportradius`
+for point sampling; `chunkindex`, `candidatechunks!`, `overlappairs` and
+`locatecell` for discovery; `destinationdims`, `dimsource`, `rebuildoutput` and
+the missing-value hooks for labelling results; and `_asgrid` for its own `to`
+and `from` spellings.
+
 ## How it works
 
-1. Source and destination spaces describe cell geometry, cell order, and spatial
-   indexes on a common sphere.
+1. Source and destination grids describe cell geometry, cell order, chunks, and
+   spatial indexes on a common sphere through GridInterface's verbs.
 2. The method builds weights from geometry. `Conservative()` uses spherical
    polygon intersection areas; point methods use source samples.
 3. A plan applies these weights to each field or time slice. Eager plans store

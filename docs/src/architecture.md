@@ -245,17 +245,31 @@ Regridding lives in a separate package, `GlobalRegridding`, which owns the verbs
 not depend on this one. The main package implements its contract for DGGS grids by adding
 methods to imported bindings, so a session that loads both sees one function per name.
 
-Its central abstraction is `RegridSpace`: anything with cells, chunks, and a manifold.
-A raster is one; a DGGS grid is another. Six methods are required of a space.
+It has no space abstraction of its own: a source or destination is any GridInterface grid
+(`GridInterface.isgrid`). A raster is one — `RasterGrid`, a one-face `Structured` grid whose
+chunks are its DiskArrays tiles — and a DGGS grid is another. Cells, trees, chunks, point
+location, neighbours and face charts are read through GridInterface's verbs (`cell_geometry`,
+`cellat`, `neighbors`, `cell_extent`, `treeify` and `subtree`, `chunks` and `grid_extent`,
+`Structured.faceaxes`), so a grid that answers them needs no regridding method of its own.
 
-What a DGGS space contributes is the idea that a chunk is a non-empty ancestor subtree,
-chosen at whichever level lands closest to a target cell count. Chunk discovery is then a
-descent of the hierarchy the grid already has, rather than a second spatial index built
-alongside it.
+What a DGGS grid contributes is the idea that a chunk is a non-empty ancestor subtree,
+chosen at whichever level lands closest to a target cell count; `mockchunks(grid,
+LevelChunks(l))` names another level. A chunk's extent is then its root cell's cap, O(1),
+and a chunk's tree is the grid's own hierarchy cursor started at that root. Chunk discovery
+packs the chunk extents in one R-tree per plan, O(chunks log chunks) and nothing per cell.
+
+What a package may still extend is execution, not geometry: plain GlobalRegridding functions
+with `Any` defaults. `chunkranges` and `knownempty` say how storage reads a chunk;
+`samplerstate`, `weightsat!`, `dualcellat` and `supportradius` make a grid point-samplable;
+`chunkindex`, `candidatechunks!`, `overlappairs` and `locatecell` replace discovery;
+`destinationdims`, `dimsource`, `rebuildoutput` and the missing-value hooks label the
+result; `_asgrid` resolves a `to` or `from` spelling into a grid. This package extends
+`_asgrid`, `destinationdims` and `dimsource` in `src/regrid_targets.jl`, and Copernicus DEM
+the point-sampling hooks.
 
 Method, missing-data policy and weight storage are three orthogonal axes, each spelled as a
-singleton tag: `Conservative`, `NearestCell` or `BilinearPoint`; `Weighted` or `Extensive`;
-`PerChunk` or `Spilled`.
+singleton tag: `Conservative`, `NearestCell` or `BarycentricPoint`; `Weighted` or
+`Extensive`; `PerChunk` or `Spilled`.
 
 ## Conformance testing
 

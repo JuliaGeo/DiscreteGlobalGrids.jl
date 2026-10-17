@@ -66,10 +66,10 @@ interior stencil with no rim, seam or boundary policy in it — an independent
 expectation for what a chart source's sampler must produce there.
 """
 function p1_tensorq1(dst, src)
-    xs, ys = GR.chartaxes(src)
+    xs, ys = chartaxes(src)
     W = zeros(Int(ncells(dst)), Int(ncells(src)))
     for i in 1:Int(ncells(dst))
-        x, y = GR.chartcoords(src, cellcentroid(dst, i))
+        x, y = chartcoords(src, cellcentroid(dst, i))
         (xs[1] < x < xs[end] && ys[1] < y < ys[end]) ||
             error("destination $i is not strictly inside the lattice hull")
         ix, iy = searchsortedlast(xs, x), searchsortedlast(ys, y)
@@ -78,7 +78,7 @@ function p1_tensorq1(dst, src)
         for (jx, wx) in ((ix, 1.0 - tx), (ix + 1, tx)),
             (jy, wy) in ((iy, 1.0 - ty), (iy + 1, ty))
 
-            W[i, GR.chartlocalindex(src, jx, jy)] += wx * wy
+            W[i, chartlocalindex(src, jx, jy)] += wx * wy
         end
     end
     return W
@@ -150,11 +150,12 @@ p1_shoelace(ring) = sum(ring[i][1] * ring[mod1(i + 1, length(ring))][2] -
                         ring[mod1(i + 1, length(ring))][1] * ring[i][2]
                         for i in eachindex(ring))
 
-# A source space whose sampler answers one hand-built dual cell: the
+# A source grid whose sampler answers one hand-built dual cell: the
 # quadrilateral of its own four sample sites, held in two chunks so every
-# stencil crosses a source-chunk seam.
-struct P1DualSpace <: RegridSpace
-    space::ToyLonLatSpace
+# stencil crosses a source-chunk seam. Its state is its own, so the generic
+# `dualcellat` path reads it rather than the wrapped grid's chart.
+struct P1DualSpace{S<:ToyLonLatSpace} <: GrI.AbstractWrappedGrid
+    space::S
     cell::GR.DualCell{Vector{Int},Vector{NTuple{2,Float64}}}
 end
 
@@ -163,31 +164,23 @@ function P1DualSpace(space::ToyLonLatSpace, order::Vector{Int}, kind::GR.BasisKi
     return P1DualSpace(space, GR.DualCell(order, nodes, kind))
 end
 
-ncells(s::P1DualSpace) = ncells(s.space)
-getcell(s::P1DualSpace, i::Int) = getcell(s.space, i)
-manifold(s::P1DualSpace) = manifold(s.space)
-cellcentroid(s::P1DualSpace, i::Int) = cellcentroid(s.space, i)
-cellat(s::P1DualSpace, p) = cellat(s.space, p)
-nchunks(s::P1DualSpace) = nchunks(s.space)
-ownedindices(s::P1DualSpace, chunk::Int) = ownedindices(s.space, chunk)
-celltree(s::P1DualSpace) = celltree(s.space)
-chunkextents(s::P1DualSpace) = chunkextents(s.space)
+Base.parent(s::P1DualSpace) = s.space
 
-# The chart the hand-built cell is written in.
-hascellchart(::P1DualSpace) = true
-GR.chartcoords(::P1DualSpace, p) = toy_lonlat(p)
-
-GR.samplerstate(s::P1DualSpace) = s.cell
+GR.samplerstate(::AbstractRegriddingMethod, s::P1DualSpace) = s.cell
 GR.dualcellat(smp::GR.Sampler{<:P1DualSpace}, p) = smp.state
+# The chart the hand-built cell is written in.
+GR.chartat(::GR.Sampler{<:P1DualSpace}, p) = toy_lonlat(p)
 
-# A source with no cell chart, so its sampler prepares no state and it takes the
-# generic dual-cell path with no cells of its own to offer.
-struct P1PlainSpace <: RegridSpace
-    space::ToyLonLatSpace
+# A source with neither a cell chart nor dual cells, so its sampler prepares no
+# state and it has no cells of its own to offer.
+struct P1PlainSpace{S<:ToyLonLatSpace} <: GrI.AbstractGrid
+    space::S
 end
 
-ncells(s::P1PlainSpace) = ncells(s.space)
-cellcentroid(s::P1PlainSpace, i::Int) = cellcentroid(s.space, i)
+GrI.ncells(s::P1PlainSpace) = ncells(s.space)
+GrI.cell_centroid(s::P1PlainSpace, i::Integer) = cellcentroid(s.space, i)
+GOCore.best_manifold(s::P1PlainSpace) = manifold(s.space)
+GrI.conformity(::P1PlainSpace) = GrI.NonConforming()
 
 # One operator from every chunk pair, in the spaces' own local indices.
 function p1_assemble(plan, dst, src)
@@ -504,7 +497,8 @@ end
 
         # A source with neither a cell chart nor dual cells has nothing to
         # interpolate between, and says so instead of mapping nothing.
-        @test !GR.hasdualcells(space)
+        @test !hasdualcells(space)
+        @test !hascellchart(space)
         err = try
             GR.sampler(BarycentricPoint(), space)
             nothing
@@ -513,7 +507,7 @@ end
         end
         @test err isa ArgumentError
         @test occursin("P1PlainSpace", err.msg)
-        @test occursin("hasdualcells", err.msg)
+        @test occursin("dual cells", err.msg)
 
         # A sampler holds the space and its sites, and is built once. A source
         # with a chart prepares that chart's axes.
@@ -536,21 +530,21 @@ end
         @test GR.outputsampling(BarycentricPoint()) === DD.Lookups.Points()
         @test Base.ispublic(GR, :BarycentricPoint)
 
-        # What a source space needs to answer point queries is public and
-        # closed: the three hooks, the two types they dispatch on and build,
-        # the basis kinds a cell names itself by, and the chart hook a space
-        # with no cell chart of its own answers.
+        # What a source grid needs to answer point queries of its own is
+        # public and closed: the state hook, the query hooks, the types they
+        # dispatch on and build, the basis kinds a cell names itself by, the
+        # chart hook a source with no cell chart of its own answers, and the
+        # row a provider's own `weightsat!` writes with.
         @test all(Base.ispublic(GR, n) for n in
-                  (:hasdualcells, :dualcellat, :samplerstate, :Sampler, :DualCell,
-            :BasisKind, :Bilinear, :MeanValue, :chartat))
+                  (:samplerstate, :dualcellat, :weightsat!, :Sampler, :DualCell,
+            :BasisKind, :Bilinear, :MeanValue, :chartat, :WeightRow,
+            :DualState, :ChartState))
 
-        # Nothing else is. The row, the query and the coordinate kernels stay
-        # internal: a space replacing `weightsat!` whole is CopDEM's route, not
-        # a contract anyone outside may rely on yet.
+        # Nothing else is. The sampler, the sites and the coordinate kernels
+        # stay internal.
         @test !any(Base.ispublic(GR, n) for n in
-                   (:WeightRow, :weightsat!, :sampler, :samplesites, :nodecount,
-            :dualweights!, :bilinearweights!, :meanvalueweights!,
-            :TangentChart, :chartpoint, :containspoint))
+                   (:sampler, :samplesites, :nodecount, :dualweights!,
+            :bilinearweights!, :TangentChart, :chartpoint, :containspoint))
     end
 
     @testset "a source space's dual cell reaches the executor" begin
@@ -630,7 +624,7 @@ end
         # The whole Q1 space, not merely affine fields: a stencil that is not a
         # tensor product loses the cross term.
         q1(x, y) = 2.0 + 0.01x + 0.03y + 0.0007x * y
-        chart(space, i) = GR.chartcoords(qsrc, cellcentroid(space, i))
+        chart(space, i) = chartcoords(qsrc, cellcentroid(space, i))
         field = [q1(chart(qsrc, i)...) for i in 1:Int(ncells(qsrc))]
         @test dense * field ≈ [q1(chart(qdst, i)...) for i in 1:Int(ncells(qdst))]
 
@@ -691,7 +685,7 @@ end
         @test GR.weightsat!(row, smp, cellcentroid(outside, 1)) === GR.WeightsOutside
         @test isempty(barybuild(outside))
         west = ToyLonLatSpace(1, 1; lon = (-171.0, -169.0), lat = (-1.0, 1.0))
-        @test GR.chartcoords(patch, cellcentroid(west, 1))[1] ≈ 190.0
+        @test chartcoords(patch, cellcentroid(west, 1))[1] ≈ 190.0
         @test GR.weightsat!(row, smp, cellcentroid(west, 1)) === GR.WeightsOutside
         @test isempty(row)
     end
@@ -730,7 +724,7 @@ end
         # the interpolated value through.
         out = collect(regrid(data; to = dst, method = BarycentricPoint(),
             missingpolicy = Weighted(1), lazy = false))
-        chart(space, i) = GR.chartcoords(src, cellcentroid(space, i))
+        chart(space, i) = chartcoords(src, cellcentroid(space, i))
         @test all(isnan, out[rim])
         @test out[interior] ≈ [q1(chart(dst, i)...) for i in interior]
     end
@@ -766,7 +760,7 @@ end
         mid = RasterGrid(DD.DimArray(zeros(7, 3),
             (DD.X(-135.0:45.0:135.0), DD.Y(-45.0:45.0:45.0))))
         q1(x, y) = 2.0 + 0.01x + 0.03y + 0.0007x * y
-        chart(space, i) = GR.chartcoords(down, cellcentroid(space, i))
+        chart(space, i) = chartcoords(down, cellcentroid(space, i))
         field = [q1(chart(down, j)...) for j in 1:Int(ncells(down))]
         W = Matrix(GR.wholeblock(BarycentricPoint(), mid, down).weights)
         @test all(count(!iszero, view(W, r, :)) == 4 for r in axes(W, 1))
@@ -809,7 +803,7 @@ end
 
         # Eager and chunked values agree, and a differently chunked source gives
         # the same values again.
-        chart(i) = GR.chartcoords(src, cellcentroid(src, i))
+        chart(i) = chartcoords(src, cellcentroid(src, i))
         field = [p1_bilinear(chart(i)) for i in 1:Int(ncells(src))]
         eager = regrid(field; to = dst, from = src, method = BarycentricPoint(),
             lazy = false)
@@ -839,11 +833,11 @@ end
         @test all(isapprox(1.0), sum(offwhole; dims = 2))
         far = localindex(cells, 2, 1)
         @test offwhole[1, far] != 0
-        @test all(!GR.US._contains(GR.chunkextents(cells)[GR.chunkat(cells, far)], p)
+        @test all(!GR.US._contains(chunkextents(cells)[chunkat(cells, far)], p)
                   for p in cellcorners(off, 1))
         offplan = ChunkedPlan(BarycentricPoint(), Weighted(0.5), off, cells;
             storage = PerChunk())
-        @test GR.chunkat(cells, far) in GR.sourcesof(GR.dependencies(offplan), 1)
+        @test chunkat(cells, far) in GR.sourcesof(GR.dependencies(offplan), 1)
         @test p1_assemble(offplan, off, cells) ≈ offwhole
     end
 

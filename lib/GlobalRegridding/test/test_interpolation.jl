@@ -35,10 +35,12 @@ function t4_parent(coarse, fine, i)
     return localindex(coarse, cld(ix, 2), cld(iy, 2))
 end
 
-struct T4NoChartSpace <: RegridSpace end
-
-struct T4BareChartSpace <: RegridSpace end
-GR.hascellchart(::T4BareChartSpace) = true
+# A one-cell grid with neither a cell chart (it is not a Structured grid) nor
+# dual cells (it does not tessellate).
+struct T4NoChartSpace <: GrI.AbstractGrid end
+GrI.ncells(::T4NoChartSpace) = 1
+GOCore.best_manifold(::T4NoChartSpace) = GOCore.Spherical(; radius = 1.0)
+GrI.conformity(::T4NoChartSpace) = GrI.NonConforming()
 
 # Two methods whose sampling is a field, so one method type can carry either
 # sampling. `weightblock` dispatches on the sampling, never on the method type.
@@ -61,7 +63,7 @@ T4SplitMethod(sampling::DD.Lookups.Sampling) =
 GR.outputsampling(method::T4SplitMethod) = method.sampling
 
 function buildweights!(coo::WeightCOO, method::T4SplitMethod,
-    ::RegridSpace, dst_inds, ::RegridSpace, src_inds)
+    dst, dst_inds, src, src_inds)
     Threads.atomic_add!(method.builds, 1)
     chunklocal_of = Dict{Int,Int}(p => k for (k, p) in enumerate(src_inds))
     for (j, p) in enumerate(dst_inds)
@@ -89,8 +91,8 @@ end
 
 GR.outputsampling(method::T4TileMethod) = method.sampling
 
-GR.weightblock(::DD.Lookups.Points, ::T4TileMethod, ::RegridSpace, dst_inds,
-    ::RegridSpace, src_inds) =
+GR.weightblock(::DD.Lookups.Points, ::T4TileMethod, dst, dst_inds,
+    src, src_inds) =
     WeightBlock(fill(0.5, length(dst_inds), length(src_inds)), nothing)
 
 """
@@ -111,11 +113,11 @@ T4PlaceCount() = T4PlaceCount(Threads.Atomic{Int}(0), Threads.Atomic{Int}(0))
 
 GR.outputsampling(::T4PlaceCount) = DD.Lookups.Points()
 
-GR.supportradius(::T4PlaceCount, src_space::RegridSpace) =
+GR.supportradius(::T4PlaceCount, src_space) =
     supportradius(BarycentricPoint(), src_space)
 
 function buildweights!(coo::WeightCOO, method::T4PlaceCount,
-    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
+    dst_space, dst_inds, src_space, src_inds)
     Threads.atomic_add!(method.calls, 1)
     Threads.atomic_add!(method.placed, length(dst_inds))
     return buildweights!(coo, BarycentricPoint(), dst_space, dst_inds, src_space, src_inds)
@@ -172,7 +174,7 @@ T5PlaceCount(; yielding::Bool = false) = T5PlaceCount(Threads.Atomic{Int}(0), yi
 
 GR.outputsampling(::T5PlaceCount) = DD.Lookups.Points()
 
-GR.supportradius(::T5PlaceCount, src_space::RegridSpace) =
+GR.supportradius(::T5PlaceCount, src_space) =
     GR.chartradius(src_space)
 
 GR.sampler(method::T5PlaceCount, space::ToyLonLatSpace) =
@@ -180,7 +182,7 @@ GR.sampler(method::T5PlaceCount, space::ToyLonLatSpace) =
         method.yielding), method)
 
 function GR.weightsat!(row::GR.WeightRow,
-    s::GR.Sampler{<:RegridSpace,<:AbstractVector,T5Bracket}, p)
+    s::GR.Sampler{<:Any,<:AbstractVector,T5Bracket}, p)
     empty!(row)
     state = s.state
     Threads.atomic_add!(state.placed, 1) == 0 && state.yielding && yield()
@@ -194,8 +196,8 @@ end
 
 # The chunk-pair route for the same stencils, which the eager whole domain and
 # an un-cached `buildblock` take.
-function buildweights!(coo::WeightCOO, method::T5PlaceCount, dst_space::RegridSpace,
-    dst_inds, src_space::RegridSpace, src_inds)
+function buildweights!(coo::WeightCOO, method::T5PlaceCount, dst_space,
+    dst_inds, src_space, src_inds)
     smp = GR.sampler(method, src_space)
     sites = GR.samplesites(dst_space)
     indexer = GR.indexmap(src_inds)
@@ -214,32 +216,23 @@ end
 """
     T6LocateCount(space)
 
-Wrap a source space and count [`cellat`](@ref) queries, delegating every other
-space verb unchanged. `located` is therefore the number of point locations a
-build performed, whichever route it took; builds may run on spawned tasks,
-hence the atomic counter.
+Wrap a source grid and count `GridInterface.cellat` queries, delegating every
+other grid verb unchanged. `located` is therefore the number of point
+locations a build performed, whichever route it took; builds may run on
+spawned tasks, hence the atomic counter.
 """
-struct T6LocateCount{S<:RegridSpace} <: RegridSpace
+struct T6LocateCount{S} <: GrI.AbstractWrappedGrid
     space::S
     located::Threads.Atomic{Int}
 end
 
-T6LocateCount(space::RegridSpace) = T6LocateCount(space, Threads.Atomic{Int}(0))
+T6LocateCount(space) = T6LocateCount(space, Threads.Atomic{Int}(0))
+Base.parent(cs::T6LocateCount) = cs.space
 
-function cellat(cs::T6LocateCount, p)
+function GrI.cellat(cs::T6LocateCount, p)
     Threads.atomic_add!(cs.located, 1)
-    return cellat(cs.space, p)
+    return GrI.cellat(cs.space, p)
 end
-
-ncells(cs::T6LocateCount) = ncells(cs.space)
-getcell(cs::T6LocateCount, i::Int) = getcell(cs.space, i)
-manifold(cs::T6LocateCount) = manifold(cs.space)
-hascellchart(cs::T6LocateCount) = hascellchart(cs.space)
-cellcentroid(cs::T6LocateCount, i::Int) = cellcentroid(cs.space, i)
-nchunks(cs::T6LocateCount) = nchunks(cs.space)
-ownedindices(cs::T6LocateCount, chunk::Int) = ownedindices(cs.space, chunk)
-celltree(cs::T6LocateCount) = celltree(cs.space)
-chunkextents(cs::T6LocateCount) = chunkextents(cs.space)
 
 """
     t6_owners(dst, tile, src) -> Vector{Int}
@@ -248,7 +241,7 @@ The source chunks holding the cells `tile`'s destinations sit in, read from
 `cellat` directly so no build takes part in the answer.
 """
 t6_owners(dst, tile, src) =
-    sort(unique(Int(GR.chunkat(src, cellat(src, cellcentroid(dst, Int(i)))))
+    sort(unique(Int(chunkat(src, cellat(src, cellcentroid(dst, Int(i)))))
                 for i in tile))
 
 # One tile's weights, built straight rather than through a plan's storage.
@@ -287,7 +280,7 @@ end
 
 # The source chunks a tile's stencils name, under whatever chunking `src` has.
 t5_owners(dst, tile, src) =
-    sort(unique(GR.chunkat(src, s) for (_, s) in keys(t5_entries(dst, tile, src))))
+    sort(unique(chunkat(src, s) for (_, s) in keys(t5_entries(dst, tile, src))))
 
 @testset "Interpolation weights" begin
 
@@ -389,11 +382,11 @@ t5_owners(dst, tile, src) =
         @test weights * field ≈ [linear(cellcentroid(fdst, i)) for i in fdst_inds]
         @test all(≈(1.0), sum(weights; dims = 2))
 
-        # Chart interpolation requires a complete chart interface.
-        @test_throws "hascellchart" buildweights!(
+        # A source with neither a cell chart nor dual cells is refused by name.
+        @test_throws "T4NoChartSpace" buildweights!(
             WeightCOO(1), BarycentricPoint(), src, [1], T4NoChartSpace(), [1])
-        @test_throws "chartaxes" buildweights!(
-            WeightCOO(1), BarycentricPoint(), src, [1], T4BareChartSpace(), [1])
+        @test_throws "neither a cell chart" buildweights!(
+            WeightCOO(1), BarycentricPoint(), src, [1], T4NoChartSpace(), [1])
     end
 
     @testset "stencils partition across source chunks" begin
@@ -440,7 +433,7 @@ t5_owners(dst, tile, src) =
         @test GR.chartradius(oblong) >= deg2rad(dlat(oblong))
 
         # A source with no chart has no chart spacing to bound.
-        @test_throws "hascellchart" GR.chartradius(T4NoChartSpace())
+        @test_throws "no cell chart" GR.chartradius(T4NoChartSpace())
 
         # Nearest support is zero on a chart source too: the stencil is the
         # cell the destination point is already inside, so it does not follow
@@ -622,7 +615,7 @@ t5_owners(dst, tile, src) =
         @test all(got[key] ≈ expected[key] for key in keys(expected))
         @test count(1:length(tile)) do j
             (a, _), (b, _) = t5_bracket(src, cellcentroid(dst, tile[j]))
-            GR.chunkat(src, a) != GR.chunkat(src, b)
+            chunkat(src, a) != chunkat(src, b)
         end > 0
     end
 
@@ -728,7 +721,7 @@ t5_owners(dst, tile, src) =
         @test a == b && 0 < wa < 1 && wa + wb ≈ 1.0
 
         plan = ChunkedPlan(T5PlaceCount(), Weighted(0.5), dst, src; storage = PerChunk())
-        block = GR.blockfor(plan, (1, GR.chunkat(src, a)), ownedindices(dst, 1)).block
+        block = GR.blockfor(plan, (1, chunkat(src, a)), ownedindices(dst, 1)).block
         @test count(!iszero, block.weights) == 1
         @test sum(block.weights) ≈ 1.0
     end

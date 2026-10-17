@@ -40,7 +40,7 @@ end
 T6CountingMethod(inner) = T6CountingMethod(inner, 0)
 
 function buildweights!(coo::WeightCOO, method::T6CountingMethod,
-    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
+    dst_space, dst_inds, src_space, src_inds)
     countbuild!(method)
     return buildweights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
 end
@@ -215,7 +215,7 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         end
 
         # Everything else is still refused, and still says who resolves it.
-        @test_throws "must be a RegridSpace" regrid(src; to = 1)
+        @test_throws "must be a GridInterface grid" regrid(src; to = 1)
     end
 
     @testset "a cell axis names its own source" begin
@@ -295,7 +295,7 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         @test abs(regrid(src; to = dst, method = NearestCell())[seam]) > 0.08
 
         # Regional rasters do not report a longitude period.
-        @test GR.chartperiod(t6_space(t6_centres(-40, 40, 8),
+        @test chartperiod(t6_space(t6_centres(-40, 40, 8),
             t6_centres(-20, 20, 4))) == (nothing, nothing)
     end
 
@@ -308,7 +308,7 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         @test GR._onbranch(region.xedges, 61.0, 360.0) ≈ 61.0
         @test GR._onbranch(region.xedges, -1.0, nothing) == -1.0
         point = GO.UnitSpherical.UnitSphereFromGeographic()((-1.0, 10.0))
-        @test GR.chartcoords(region, point)[1] ≈ -1.0
+        @test chartcoords(region, point)[1] ≈ -1.0
 
         # The pad columns sit outside the lattice of source sample sites, so
         # they take no weights and the missing policy blanks them rather than
@@ -485,9 +485,152 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
             chunks = ([1:4, 5:8], [1:3, 4:6]))
 
         # Chunk rectangles retain the restricted CR cursor in either orientation.
-        @test all(GR.subtree(space, ownedindices(space, c)) isa
-                  GR.TopDownQuadtreeCursor
+        @test all(subtree(space, ownedindices(space, c)) isa
+                  GrS.TopDownQuadtreeCursor
                   for c in 1:nchunks(space))
-        @test GR.subtree(space, [1, 5, 30]) isa GR.CellSpaceRTree
+        @test subtree(space, [1, 5, 30]) isa GR.FlexibleRTrees.RTree
+    end
+end
+
+# --- every method through the grid path ---------------------------------------
+#
+# What the step-one parity suite compared between a wrapped grid and the space
+# it stood in for, kept as tests of the one path that remains: on toy, raster
+# and DGG level grids, for every method, the blocks a chunked plan's relation
+# names assemble to the eager whole-domain block entry for entry, and a lazy
+# read agrees with the eager regrid.
+
+import DiscreteGlobalGrids as DGG
+import SparseArrays
+import Random
+
+isdefined(@__MODULE__, :ChunkGraphOracles) || include("graphoracles.jl")
+using .ChunkGraphOracles: contributing_pairs, graph_pairs, demanded_pairs,
+    capjoin_pairs, eager_pairs
+
+function t7_raster(nx, ny, cx, cy)
+    dlon, dlat = 360 / nx, 180 / ny
+    array = DD.DimArray(zeros(nx, ny),
+        (DD.X(range(-180 + dlon / 2, 180 - dlon / 2; length = nx)),
+         DD.Y(range(-90 + dlat / 2, 90 - dlat / 2; length = ny))))
+    return RasterGrid(array;
+        chunks = ([lo:min(lo + cx - 1, nx) for lo in 1:cx:nx],
+            [lo:min(lo + cy - 1, ny) for lo in 1:cy:ny]))
+end
+
+t7_data(src) = (Random.seed!(7); rand(Int(ncells(src))))
+t7_data(src::ToyLonLatSpace) = (Random.seed!(7); rand(src.nlon, src.nlat))
+t7_data(src::RasterGrid) = (Random.seed!(7);
+    DD.DimArray(rand(GR._nx(src), GR._ny(src)), (src.xdim, src.ydim)))
+
+t7_values(x::DD.AbstractDimArray) = vec(collect(parent(x)))
+t7_values(x) = vec(collect(x))
+
+# Every block of every pair the plan's relation names, in the grids' own
+# positions, with denominators summed in ascending source-chunk order.
+function t7_assembled(plan)
+    dst, src = plan.dst_space, plan.src_space
+    g = GR.dependencies(plan)
+    I, J, V = Int[], Int[], Float64[]
+    denom = zeros(Int(ncells(dst)))
+    hasdenom = false
+    for d in 1:nchunks(dst)
+        dinds = ownedindices(dst, d)
+        for s in GR.sourcesof(g, d)
+            block = GR.buildblock(plan, d, Int(s))
+            sinds = ownedindices(src, Int(s))
+            W = block.weights
+            for j in axes(W, 2), t in SparseArrays.nzrange(W, j)
+                push!(I, Int(dinds[SparseArrays.rowvals(W)[t]]))
+                push!(J, Int(sinds[j]))
+                push!(V, SparseArrays.nonzeros(W)[t])
+            end
+            if block.denom !== nothing
+                hasdenom = true
+                for (r, i) in enumerate(dinds)
+                    denom[Int(i)] += block.denom[r]
+                end
+            end
+        end
+    end
+    W = SparseArrays.sparse(I, J, V, Int(ncells(dst)), Int(ncells(src)))
+    return W, hasdenom ? denom : nothing
+end
+
+t7_close(a, b) = length(a) == length(b) &&
+    all(isequal(x, y) || isapprox(x, y; rtol = 1e-12) for (x, y) in zip(a, b))
+
+const T7_METHODS = (
+    ("Conservative", Conservative(), Weighted(0.5), TreeLocator()),
+    ("Conservative, Extensive", Conservative(), Extensive(), TreeLocator()),
+    ("NearestCell", NearestCell(), Weighted(0.5), TreeLocator()),
+    ("BarycentricPoint", BarycentricPoint(), Weighted(0.5), TreeLocator()),
+    ("DirectNearest", DirectNearest(), Weighted(0.5), TreeLocator()),
+)
+
+function t7_suite(name, dst, src; analytic::Bool = false)
+    methods = analytic ?
+        (T7_METHODS..., ("Conservative, AnalyticLocator", Conservative(),
+            Weighted(0.5), AnalyticLocator())) : T7_METHODS
+    @testset "$name" begin
+        @test nchunks(dst) > 1 && nchunks(src) > 1
+        data = t7_data(src)
+        for (label, method, policy, locator) in methods
+            @testset "$label" begin
+                whole = GR.wholeblock(method, dst, src, locator)
+                eager = regrid(data; to = dst, from = src, method, missingpolicy = policy,
+                    lazy = false, locator)
+                W, D = t7_assembled(ChunkedPlan(method, policy, dst, src; locator))
+                @test W == whole.weights
+                lazy = regrid(data; to = dst, from = src, method, missingpolicy = policy,
+                    lazy = true, locator)
+                @test t7_close(t7_values(lazy), t7_values(eager))
+            end
+        end
+    end
+end
+
+@testset "every method through the grid path" begin
+    t7_suite("toy 16×8 ← 8×4", ToyLonLatSpace(16, 8; chunks = (4, 4)),
+        ToyLonLatSpace(8, 4; chunks = (4, 2)); analytic = true)
+    src = t7_raster(36, 18, 7, 5)
+    t7_suite("raster 24×12 ← 36×18", t7_raster(24, 12, 5, 4), src; analytic = true)
+    t7_suite("toy 24×12 ← raster 36×18", ToyLonLatSpace(24, 12; chunks = (2, 2)), src)
+
+    hp = DGG.levelgrid(DGG.HEALPixSystem(), 3)
+    i7 = DGG.levelgrid(DGG.IGeo7System(), 2)
+    # A DGG level grid point-samples on its dual cells, and a rooted chunk's
+    # tree is the provider's own hierarchy cursor.
+    @test hasdualcells(hp) && hasdualcells(i7)
+    @test !hascellchart(hp)
+    @test GR.samplerstate(BarycentricPoint(), hp) isa GR.DualState
+    @test subtree(hp, ownedindices(hp, 2)) isa DGG.HierarchicalGridCursor
+    @test GrI.mockchunks(hp, GrI.LevelChunks(1)) |> nchunks == DGG.ncells(DGG.levelgrid(DGG.HEALPixSystem(), 1))
+    t7_suite("HEALPix L3 ← IGeo7 L2", hp, i7; analytic = true)
+    t7_suite("IGeo7 L2 ← HEALPix L3", i7, hp; analytic = true)
+
+    @testset "the four relation oracles agree for grid sources" begin
+        cases = (
+            ("raster source", ToyLonLatSpace(24, 12; chunks = (2, 2)), src, 0.0),
+            ("HEALPix source", ToyLonLatSpace(24, 12; chunks = (2, 2)),
+                DGG.levelgrid(DGG.HEALPixSystem(), 2), 0.0),
+            ("HEALPix source, support", ToyLonLatSpace(24, 12; chunks = (2, 2)),
+                DGG.levelgrid(DGG.HEALPixSystem(), 2), 0.2),
+        )
+        for (name, dst, src, radius) in cases
+            @testset "$name" begin
+                truth = contributing_pairs(dst, src; radius)
+                graph = graph_pairs(GR.chunk_dependency_graph(dst, src; radius))
+                @test !isempty(truth)
+                @test truth ⊆ graph
+                @test graph == demanded_pairs(dst, src; radius)
+                @test graph == capjoin_pairs(dst, src; radius)
+                rows = graph_pairs(GR.dependencies(
+                    ChunkedPlan(GR.Conservative(), Weighted(0.5), dst, src)))
+                eager = eager_pairs(dst, src)
+                @test !isempty(eager)
+                @test eager ⊆ rows
+            end
+        end
     end
 end

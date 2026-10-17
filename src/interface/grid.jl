@@ -590,7 +590,16 @@ Both walks are serial; [`adjacency`](@ref) is the verb that threads.
 """
 border
 
-@doc (@doc border)
+# A docstring of its own, not `@doc (@doc border)`: the copied object keeps
+# the docstrings' own modules, and Documenter then finds none of this
+# package's for `interior`.
+"""
+    interior(region; connectivity = Vertex(), cells = false)
+
+The members of `region` with no neighbour outside it, lazily, in ascending
+local index: the rest of the region once its [`border`](@ref) is taken out.
+The index spaces, the region types and the cost are `border`'s.
+"""
 interior
 
 """

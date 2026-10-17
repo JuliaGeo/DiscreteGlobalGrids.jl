@@ -1086,13 +1086,12 @@ end
     @test length(query(octants, Intersects(small))) == 1
 end
 
-@testset "cellsize: a standalone grid measures an area of interest through its space" begin
+@testset "cellsize: a standalone grid measures an area of interest by probing" begin
     # The octants share one area, so a regional median equals the global one;
-    # the space route reaches it where the grid route has no hierarchy to sample.
+    # with no hierarchy to sample, the grid's cells are found under probe points.
     octants = OctantGrid()
     arctic = Extents.Extent(X = (-180.0, 180.0), Y = (75.0, 90.0))
-    @test cellsize(DGG.DGGSpace(octants); over = arctic) == cellsize(octants)
-    @test_throws "belongs to a grid system" cellsize(octants; over = arctic)
+    @test cellsize(octants; over = arctic) == cellsize(octants)
 end
 
 @testset "query: CentroidCovered" begin

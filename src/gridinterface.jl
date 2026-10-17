@@ -169,18 +169,26 @@ vertex_point(grid::_AuthalicAnalyticVertices, key::VertexKey) =
 
 # --- chunks -------------------------------------------------------------------
 
-# The level whose cells hold about 4096 of the grid's; a partition by that
-# level's ancestor is GridInterface's default chunking of a level grid.
-function _chunk_level(sys::AbstractHierarchicalGridSystem, l::Int)
-    n = Float64(ncells(levelgrid(sys, l)))
-    best, bestd = l, Inf
-    for lc in levels(sys)
-        lc > l && break
-        d = abs(log(n / ncells(levelgrid(sys, lc))) - log(4096))
-        d < bestd && ((best, bestd) = (lc, d))
+# Target cell count for the default chunking. This affects memory use, not
+# accuracy.
+const DEFAULT_CHUNK_CELLS = 4096
+
+# The ancestor level closest to `target` cells per chunk for a grid of `n`
+# cells at level `lvl`; a partition by that level's ancestors is
+# GridInterface's default chunking of a level grid (`chunks(grid)`), and
+# `mockchunks(grid, LevelChunks(l))` names any other level.
+function _chunklevel(sys::AbstractHierarchicalGridSystem, lvl::Int, n::Int, target::Int)
+    best, bestscore = lvl, Inf
+    for a in levels(sys)
+        a > lvl && break
+        score = abs(log(n / ncells(levelgrid(sys, a))) - log(target))
+        score < bestscore && ((best, bestscore) = (a, score))
     end
     return best
 end
+
+_chunk_level(sys::AbstractHierarchicalGridSystem, l::Int) =
+    _chunklevel(sys, l, ncells(levelgrid(sys, l)), DEFAULT_CHUNK_CELLS)
 
 function chunks(grid::AbstractGrid)
     sys = system(grid)
@@ -307,13 +315,13 @@ end
 
 # Trees and chunks: GridInterface's own over the view, which emits set positions.
 treeify(set::MultiOrderCellSet, n::Integer) = _sorted_layout(set) ?
-    treeify(_multilevel_view(set), n) : GridInterface._default_treeify(set, Int(n))
+    treeify(_multilevel_view(set), n) : invoke(treeify, Tuple{Any,Integer}, set, n)
 treeify(set::MultiOrderCellSet, hint::GridInterface.LeafHint) =
     treeify(set, GridInterface.leaf_capacity(set, hint))
 treeify(set::MultiOrderCellSet; leaf_capacity=GridInterface.Balanced()) =
     treeify(set, leaf_capacity)
 subtree(set::MultiOrderCellSet, cells::AbstractVector{<:Integer}) = _sorted_layout(set) ?
-    subtree(_multilevel_view(set), cells) : GridInterface._default_subtree(set, cells)
+    subtree(_multilevel_view(set), cells) : invoke(subtree, Tuple{Any,AbstractVector{<:Integer}}, set, cells)
 GridInterface.hierarchy_chunks(set::MultiOrderCellSet, l::Integer) =
     GridInterface.hierarchy_chunks(_multilevel_view(set), l)
 GridInterface.expand_to_reference(set::MultiOrderCellSet) =

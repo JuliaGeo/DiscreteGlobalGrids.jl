@@ -3,6 +3,7 @@ module PartitioningTests
 using Test
 import DiscreteGlobalGrids as DGG
 import GlobalRegridding as GR
+import GridInterface as GrI
 import DimensionalData as DD
 import Serialization
 
@@ -183,8 +184,8 @@ end
 
 @testset "GlobalRegridding adapters" begin
     system = DGG.S2System()
-    source = DGG.DGGSpace(DGG.levelgrid(system, 1); chunklevel=0)
-    destination = DGG.DGGSpace(DGG.levelgrid(system, 2); chunklevel=1)
+    source = GrI.mockchunks(DGG.levelgrid(system, 1), GrI.LevelChunks(0))
+    destination = GrI.mockchunks(DGG.levelgrid(system, 2), GrI.LevelChunks(1))
     graph = GR.chunk_dependency_graph(destination, source)
     problem = DGG.partitionproblem(graph; sourceids=collect(101:(100 + GR.nsourcechunks(graph))))
     @test problem.ids == collect(1:GR.ndestinationchunks(graph))
@@ -202,9 +203,9 @@ end
         dependencies=graph)
     planproblem = DGG.partitionproblem(plan)
     @test planproblem.weights == Float64[
-        length(GR.ownedindices(destination, row)) for row in 1:GR.ndestinationchunks(graph)]
+        length(GR._ownedindices(destination, row)) for row in 1:GR.ndestinationchunks(graph)]
     @test planproblem.sourceweights == Float64[
-        length(GR.ownedindices(source, row)) for row in 1:GR.nsourcechunks(graph)]
+        length(GR._ownedindices(source, row)) for row in 1:GR.nsourcechunks(graph)]
     bare = GR.ChunkedPlan(GR.NearestCell(), GR.Weighted(1.0), destination, source;
         dependencies=false)
     @test_throws ArgumentError DGG.partitionproblem(bare)

@@ -1,4 +1,5 @@
-# Dimensional-raster implementation of `RegridSpace`.
+# A dimensional raster as a GridInterface grid: a one-face `Structured` grid
+# whose face lattice is the array's storage order.
 
 # Native-coordinate transform interface
 
@@ -167,8 +168,10 @@ _geographic_edge_tables(::US.UnitSphereFromGeographic,
     RasterGrid(A::DimensionalData.AbstractDimArray; kwargs...)
     RasterGrid(dims::Tuple; chunks = nothing, kwargs...)
 
-Build a [`RegridSpace`](@ref) from a dimensional raster or dimension tuple.
-Construction reads no array values. Spatial lookups provide cell edges and
+Build a GridInterface grid from a dimensional raster or dimension tuple: a
+one-face `GridInterface.Structured` grid whose face lattice is the array's
+storage order, so positions are cell indices in that order. Construction reads
+no array values. Spatial lookups provide cell edges and
 array chunking provides spatial chunks. X/Y traits are preferred, then common
 dimension names; `xdim` and `ydim` override detection. Interval lookups use
 their bounds, while point lookups are midpointed. Edge order matches lookup order.
@@ -214,7 +217,7 @@ The forward chart is chosen in this order:
 
 Cells are geodesic quadrilaterals with counter-clockwise exterior rings.
 """
-struct RasterGrid{XD,YD,F,G,T} <: RegridSpace
+struct RasterGrid{XD,YD,F,G,T} <: AbstractStructuredGrid
     xdim::XD
     ydim::YD
     "cell edges along the X dimension, in lookup order, strictly monotone"
@@ -339,7 +342,7 @@ DD.dims(space::RasterGrid) =
     destinationdims(space::RasterGrid, sampling)
 
 Return [`DimensionalData.dims`](@ref) relabelled to carry `sampling`, so
-regrid output echoes the space's construction order. A dimension whose
+regrid output echoes the grid's construction order. A dimension whose
 lookup already samples that way is returned untouched;
 otherwise its lookup is rebuilt, with `Intervals` bounds taken from the cell
 edges and `Points` values from the cell centres.
@@ -485,24 +488,26 @@ function _chunkranges(ranges, n::Int, what)
     return out
 end
 
-# `RegridSpace` interface
+# Cells, in GridInterface's spelling
 
 ncells(space::RasterGrid) = _nx(space) * _ny(space)
 
-manifold(::RasterGrid) = GOCore.Spherical(; radius = 1.0)
+GOCore.best_manifold(::RasterGrid) = GOCore.Spherical(; radius = 1.0)
 
-# Interpolation requires an inverse transform into the cell-centre chart.
-hascellchart(space::RasterGrid) = space.unit_sphere_to_native !== nothing
+# A raster's cells are single rings the engine clips with its convex clipper
+# (see `intersection_area.jl`): not `GeneralCells`, whose general clipper is a
+# different (and, on the sphere, less exact) operation.
+GridInterface.cellshape(::RasterGrid) = GridInterface.SimpleCells()
 
 # A raster locates a point through its inverse chart (`cellat`) and names its
 # neighbours by lattice arithmetic, so an `AnalyticLocator` can walk it.
-hasanalyticlocation(space::RasterGrid) = space.unit_sphere_to_native !== nothing
+GridInterface.location_is_analytic(space::RasterGrid) = space.unit_sphere_to_native !== nothing
 
 """
     LatticeNeighbors
 
 The up-to-eight lattice neighbours of a raster cell, held in a tuple so
-[`cellneighbors`](@ref) allocates nothing.
+[`_latticeneighbors`](@ref) allocates nothing.
 """
 struct LatticeNeighbors
     cells::NTuple{8,Int}
@@ -527,9 +532,16 @@ Base.eltype(::Type{LatticeNeighbors}) = Int
     return (lo, ix, hi, 3)
 end
 
-@inline _xwraps(space::RasterGrid) = first(chartperiod(space)) !== nothing
+@inline _xwraps(space::RasterGrid) = first(_rasterperiod(space)) !== nothing
 
-function cellneighbors(space::RasterGrid, i::Int)
+"""
+    _latticeneighbors(space::RasterGrid, i::Int) -> LatticeNeighbors
+
+The cells sharing at least a vertex with cell `i`: the lattice's eight
+neighbours, wrapped across a periodic X axis. What `GridInterface.neighbors`
+answers for `Vertex()` connectivity.
+"""
+function _latticeneighbors(space::RasterGrid, i::Int)
     ix, iy = cellsubscript(space, i)
     c1, c2, c3, ncols = _neighborcolumns(space, ix)
     cells = ntuple(_ -> 0, Val(8))
@@ -545,16 +557,27 @@ function cellneighbors(space::RasterGrid, i::Int)
     return LatticeNeighbors(cells, n)
 end
 
-function cellcorners(space::RasterGrid, i::Int)
-    ix, iy = cellsubscript(space, i)
+GridInterface.neighbors(space::RasterGrid, i::Integer;
+    connectivity::GridInterface.Connectivity = GridInterface.Vertex()) =
+    connectivity isa GridInterface.Vertex ?
+    SmallVector{8,Int}(_latticeneighbors(space, Int(i))) :
+    invoke(GridInterface.neighbors, Tuple{AbstractStructuredGrid,Integer}, space, Int(i);
+        connectivity)
+GridInterface.neighbors_are_analytic(::RasterGrid) = true
+
+function GridInterface.cell_corners(space::RasterGrid, i::Integer)
+    ix, iy = cellsubscript(space, Int(i))
     return _cellcorners(space, ix, iy)
 end
 
-# The clipper measures the ring `getcell` returns: the four corners with polar
-# duplicates dropped, so the cap over the corners bounds it; the relative margin
-# absorbs rounding in the cap arithmetic.
-function cellcap(space::RasterGrid, i::Int)
-    c = cellcorners(space, i)
+GridInterface.cell_boundary(space::RasterGrid, i::Integer) =
+    _ringpoints(GridInterface.cell_geometry(space, Int(i)))
+
+# The clipper measures the ring `cell_geometry` returns: the four corners with
+# polar duplicates dropped, so the cap over the corners bounds it; the relative
+# margin absorbs rounding in the cap arithmetic.
+function GridInterface.cell_extent(space::RasterGrid, i::Integer)
+    c = GridInterface.cell_corners(space, Int(i))
     cap = SphericalCap(c[1], 0.0)
     for k in 2:4
         cap = Extents.union(cap, SphericalCap(c[k], 0.0))
@@ -562,13 +585,14 @@ function cellcap(space::RasterGrid, i::Int)
     cap.radius > Float64(pi) / 2 && return _WHOLE_SPHERE
     return Extents.grow(cap, 5e-5)
 end
+GridInterface.extent_is_expensive(::RasterGrid) = true
 
 """
     cellsubscript(space::RasterGrid, i::Int) -> (ix, iy)
     localindex(space::RasterGrid, ix::Integer, iy::Integer) -> Int
 
-Convert between the raster's local cell indices and `(ix, iy)` lattice
-coordinates. Index order follows the array's fastest dimension.
+Convert between the raster's cell indices and `(ix, iy)` lattice coordinates.
+Index order follows the array's fastest dimension.
 """
 function cellsubscript(space::RasterGrid, i::Int)
     1 <= i <= ncells(space) || throw(BoundsError(space, i))
@@ -598,8 +622,15 @@ function cellbox(space::RasterGrid, ix::Integer, iy::Integer)
     return (xlo, xhi, ylo, yhi)
 end
 
-function getcell(space::RasterGrid, i::Int)
-    ix, iy = cellsubscript(space, i)
+"""
+    GridInterface.cell_geometry(space::RasterGrid, i) -> GI.Polygon
+
+Cell `i` as a GeoInterface polygon with one explicitly closed ring of
+unit-sphere `(x, y, z)` coordinates, counter-clockwise from outside the sphere,
+its segments great-circle arcs.
+"""
+function GridInterface.cell_geometry(space::RasterGrid, i::Integer)
+    ix, iy = cellsubscript(space, Int(i))
     c = _cellcorners(space, ix, iy)
     ring = _cellring(space.ccw ? c : (c[4], c[3], c[2], c[1]))
     return GI.Polygon([GI.LinearRing(ring)])
@@ -607,7 +638,7 @@ end
 
 # A raster cell is four chart evaluations off two coordinate axes, which costs
 # about as much as reading a stored polygon back and allocates no more.
-expensivecellgeometry(::RasterGrid) = false
+GridInterface.cell_geometry_is_expensive(::RasterGrid) = false
 
 """
     _cellcorners(space::RasterGrid, ix, iy) -> NTuple{4,UnitSphericalPoint}
@@ -667,23 +698,23 @@ end
     return n > 1 && last == c[1] ? n - 1 : n
 end
 
-function cellcentroid(space::RasterGrid, i::Int)
-    ix, iy = cellsubscript(space, i)
+function GridInterface.cell_centroid(space::RasterGrid, i::Integer)
+    ix, iy = cellsubscript(space, Int(i))
     return space.native_to_unit_sphere(((space.xedges[ix] + space.xedges[ix+1]) / 2,
         (space.yedges[iy] + space.yedges[iy+1]) / 2))
 end
 
 """
-    cellat(space::RasterGrid, p) -> Union{Int,Nothing}
+    GridInterface.cellat(space::RasterGrid, p) -> Union{Int,Nothing}
 
 Return the cell containing `p` in `O(log nx + log ny)`, or `nothing` outside
 coverage. Periodic X coordinates wrap into the raster span. Shared edges select
-the larger-native cell; outer edges select the interior cell. Requires an inverse chart.
+the larger-native cell; outer edges select the interior cell. With no inverse
+chart the point is located by the structured grid's lattice walk.
 """
-function cellat(space::RasterGrid, p)
-    space.unit_sphere_to_native === nothing && throw(ArgumentError(
-        "cellat needs a unit-sphere-to-native transform; this RasterGrid was " *
-        "built with `unit_sphere_to_native = nothing`"))
+function GridInterface.cellat(space::RasterGrid, p)
+    space.unit_sphere_to_native === nothing &&
+        return invoke(GridInterface.cellat, Tuple{AbstractStructuredGrid,Any}, space, p)
     x, y = space.unit_sphere_to_native(p)
     ix = _edgeindex(space.xedges, Float64(x), space.xperiod)
     ix === nothing && return nothing
@@ -704,7 +735,9 @@ function _edgeindex(edges::Vector{Float64}, v::Float64, period)
     return clamp(k, 1, n)
 end
 
-nchunks(space::RasterGrid) = length(space.xchunks) * length(space.ychunks)
+# Storage chunks
+
+_nrasterchunks(space::RasterGrid) = length(space.xchunks) * length(space.ychunks)
 
 """
     chunksubscript(space::RasterGrid, chunk::Int) -> (cx, cy)
@@ -712,7 +745,7 @@ nchunks(space::RasterGrid) = length(space.xchunks) * length(space.ychunks)
 Return a chunk's `(cx, cy)` lattice coordinates.
 """
 function chunksubscript(space::RasterGrid, chunk::Int)
-    1 <= chunk <= nchunks(space) || throw(BoundsError(space, chunk))
+    1 <= chunk <= _nrasterchunks(space) || throw(BoundsError(space, chunk))
     if space.xfast
         cy, cx = fldmod1(chunk, length(space.xchunks))
     else
@@ -754,34 +787,22 @@ function _chunkofindex(ranges::Vector{UnitRange{Int}}, k::Int)
 end
 
 # Locate a cell's chunk with one binary search per axis.
-function chunkat(space::RasterGrid, i::Integer)
+function _rasterchunkat(space::RasterGrid, i::Integer)
     ix, iy = cellsubscript(space, Int(i))
     return chunknumber(space, _chunkofindex(space.xchunks, ix),
         _chunkofindex(space.ychunks, iy))
 end
 
-function ownedindices(space::RasterGrid, chunk::Int)
+# The cell indices a storage chunk owns, ascending and lazy: the chunk's block
+# of the face lattice, in storage order.
+function _rasterowned(space::RasterGrid, chunk::Int)
     xr, yr = chunkbox(space, chunk)
-    nx, ny = _nx(space), _ny(space)
-    if space.xfast
-        # Full-width chunks are contiguous in index order.
-        length(xr) == nx && return ((first(yr)-1)*nx+1):(last(yr)*nx)
-        out = Vector{Int}(undef, length(xr) * length(yr))
-        k = 0
-        for iy in yr, ix in xr
-            out[k+=1] = ix + (iy - 1) * nx
-        end
-        return out
-    else
-        length(yr) == ny && return ((first(xr)-1)*ny+1):(last(xr)*ny)
-        out = Vector{Int}(undef, length(xr) * length(yr))
-        k = 0
-        for ix in xr, iy in yr
-            out[k+=1] = iy + (ix - 1) * ny
-        end
-        return out
-    end
+    return TileIndices(space, 1, _fastslow(space, xr, yr)...)
 end
+
+# `chunkbox` is `(X, Y)`; array dimensions follow `xfast` order.
+chunkranges(space::RasterGrid, chunk::Integer, ::NTuple{2,Int}) =
+    space.xfast ? chunkbox(space, Int(chunk)) : reverse(chunkbox(space, Int(chunk)))
 
 # Spherical caps
 
@@ -895,67 +916,22 @@ function _quadsign(t, xlo, xhi, ylo, yhi)
     return nx * cx + ny * cy + nz * cz
 end
 
-# Spatial trees
+# The face: the lattice in array storage order
 
-"""
-    RasterGridView(space)
+# The raster is a one-face `Structured` grid: the face lattice is in array
+# storage order (the fastest spatial dimension first), so positions are the
+# cell indices in that order, and the quadtree cursor over it reports them.
 
-A zero-copy one-face `GridInterface.Structured` grid over a `RasterGrid`.
-Its first index is whichever spatial dimension is fastest in the source array,
-so the `TopDownQuadtreeCursor` over it (column-major positions) reports the
-same linear cell indices as the regridding space. The wrapped space retains the actual
-native-to-unit-sphere transformation; raster storage chunking remains solely
-in `space.xchunks` and `space.ychunks`, populated from `DiskArrays.eachchunk`.
-"""
-struct RasterGridView{M<:GOCore.Manifold,S<:RasterGrid,F} <: AbstractStructuredGrid
-    manifold::M
-    space::S
-    "safe retained chart callable, or a task-owned callable on a private prepared copy"
-    native_to_unit_sphere::F
+nfaces(::RasterGrid) = 1
+facesize(space::RasterGrid, f) = rastersize(space)
+@inline faceposition(space::RasterGrid, f, i, j) = Int(i) + (Int(j) - 1) * _nfast(space)
+@inline function facecell(space::RasterGrid, k)
+    n1 = _nfast(space)
+    return (1, (Int(k) - 1) % n1 + 1, (Int(k) - 1) ÷ n1 + 1)
 end
-
-RasterGridView(space::RasterGrid) =
-    RasterGridView(manifold(space), space, space.native_to_unit_sphere)
-
-# Only short-lived, nonescaping copies receive a task-owned chart wrapper.
-function _task_prepared_raster_view(grid::RasterGridView)
-    transform = _task_prepared_raster_transform(grid.native_to_unit_sphere)
-    transform === grid.native_to_unit_sphere && return grid
-    return RasterGridView(grid.manifold, grid.space, transform)
-end
-
-GOCore.manifold(grid::RasterGridView) = grid.manifold
-GOCore.best_manifold(grid::RasterGridView) = grid.manifold
-
-# The one face: the view's lattice in array storage order, positions column-major
-# (the space's local indices).
-nfaces(::RasterGridView) = 1
-facesize(grid::RasterGridView, f) = rastersize(grid.space)
-@inline faceposition(grid::RasterGridView, f, i, j) = i + (j - 1) * _nfast(grid.space)
-@inline function facecell(grid::RasterGridView, k)
-    n1 = _nfast(grid.space)
-    return (1, (k - 1) % n1 + 1, (k - 1) ÷ n1 + 1)
-end
-GridInterface.ncells(grid::RasterGridView) = ncells(grid.space)
-GridInterface.cell_geometry(grid::RasterGridView, k::Integer) = getcell(grid.space, Int(k))
-# The range cap is computed from the chart rather than read directly from axis
-# coordinates, so the dual search caches child extents.
-GridInterface.extent_is_expensive(::RasterGridView) = true
-
-@inline function _viewsubscript(grid::RasterGridView, i::Int, j::Int)
-    return grid.space.xfast ? (i, j) : (j, i)
-end
-
-function getcell(grid::RasterGridView, i::Int, j::Int)
-    ix, iy = _viewsubscript(grid, i, j)
-    space = grid.space
-    c = _cellcorners(space, ix, iy, grid.native_to_unit_sphere)
-    ring = _cellring(space.ccw ? c : (c[4], c[3], c[2], c[1]))
-    return GI.Polygon([GI.LinearRing(ring)])
-end
-
-@inline facevertex(grid::RasterGridView, f, i::Int, j::Int) =
-    _rastervertex(grid.space, grid.native_to_unit_sphere, i, j)
+@inline facevertex(space::RasterGrid, f, i, j) =
+    _rastervertex(space, _task_prepared_raster_transform(space.native_to_unit_sphere),
+        Int(i), Int(j))
 
 # Lattice vertex `(i, j)` in storage order, through the given chart callable.
 @inline function _rastervertex(space::RasterGrid, native_to_unit_sphere, i::Int, j::Int)
@@ -965,126 +941,78 @@ end
     return _tablecorner(space.tables, ix, iy)
 end
 
-# The structured grid's extent seam (`Structured.blockextent`): every cursor node,
-# leaf cell, scattered-cell cap and DiskArrays chunk extent comes through here.
-function blockextent(grid::RasterGridView, f, irange::UnitRange{Int},
+# The number of cells along the dimension that varies fastest in cell indices.
+_nfast(space::RasterGrid) = space.xfast ? _nx(space) : _ny(space)
+
+# Storage-order pairs from X/Y pairs and back: the swap is its own inverse.
+@inline _fastslow(space::RasterGrid, x, y) = space.xfast ? (x, y) : (y, x)
+
+# The structured grid's extent seam (`Structured.blockextent`): every cursor
+# node, leaf cell, scattered-cell cap and storage chunk extent comes through
+# here. Only the exact built-in geographic chart takes the analytic
+# specialization; every other chart delegates to GridInterface's conservative
+# perimeter walk over the face vertices, on a vertex source that has hoisted
+# the chart once for this task (one TLS lookup per block, not per vertex).
+function blockextent(space::RasterGrid, f, irange::UnitRange{Int},
         jrange::UnitRange{Int})
-    # Threaded CR frontier nodes retain the safe view and cross tasks. Prepare
-    # one ephemeral view for this range calculation, so its perimeter loop does
-    # one TLS lookup rather than one lookup per transformed vertex.
-    localgrid = _task_prepared_raster_view(grid)
-    return _raster_range_extent(localgrid, irange, jrange)
+    tables = space.tables
+    if tables === nothing
+        return GridInterface.Structured._blockextent(GOCore.best_manifold(space),
+            _RasterPerimeter(space), 1, irange, jrange)
+    end
+    xr, yr = _fastslow(space, irange, jrange)
+    return _geographic_range_extent(tables, space, first(xr), last(xr), first(yr), last(yr))
 end
 
-# The one range-extent seam for cursor nodes, leaves, scattered-cell caps, and
-# DiskArrays chunks. Only the exact built-in geographic chart takes the analytic
-# specialization; every other chart delegates to CR's conservative perimeter walk.
-function _raster_range_extent(grid::RasterGridView{M}, irange::UnitRange{Int},
-        jrange::UnitRange{Int}) where {M}
-    tables = grid.space.tables
-    tables === nothing && return _curvilinear_range_extent(grid, irange, jrange)
-    xr, yr = grid.space.xfast ? (irange, jrange) : (jrange, irange)
-    return _geographic_range_extent(tables, grid.space,
-        first(xr), last(xr), first(yr), last(yr))
+# The vertex source the perimeter walk reads for a curvilinear chart: the
+# raster's lattice through a task-prepared chart callable. Ephemeral, never
+# stored, never a grid of its own.
+struct _RasterPerimeter{S<:RasterGrid,F} <: AbstractStructuredGrid
+    space::S
+    native_to_unit_sphere::F
 end
 
-# GridInterface's own conservative perimeter walk over the face vertices,
-# bypassing this RasterGridView specialization. Kept as a named seam so the
-# committed benchmark can compare the earned geographic optimization with the
-# exact delegated path.
-function _curvilinear_range_extent(grid::RasterGridView, irange::UnitRange{Int},
-        jrange::UnitRange{Int})
-    return GridInterface.Structured._blockextent(grid.manifold, grid, 1, irange, jrange)
-end
+_RasterPerimeter(space::RasterGrid) =
+    _RasterPerimeter(space, _task_prepared_raster_transform(space.native_to_unit_sphere))
+
+GOCore.best_manifold(p::_RasterPerimeter) = GOCore.best_manifold(p.space)
+nfaces(::_RasterPerimeter) = 1
+facesize(p::_RasterPerimeter, f) = rastersize(p.space)
+@inline facevertex(p::_RasterPerimeter, f, i, j) =
+    _rastervertex(p.space, p.native_to_unit_sphere, Int(i), Int(j))
+
+# Spatial trees
 
 const _RASTER_CURSOR_LEAFSIZE = (4, 4)
 
-@inline _rasterviewranges(space::RasterGrid, xr::UnitRange{Int}, yr::UnitRange{Int}) =
-    space.xfast ? (xr, yr) : (yr, xr)
-
 function _rastercursor(space::RasterGrid, xr::UnitRange{Int}, yr::UnitRange{Int})
-    ranges = _rasterviewranges(space, xr, yr)
-    return TopDownQuadtreeCursor(
-        RasterGridView(space), 1, ranges...; leafsize = _RASTER_CURSOR_LEAFSIZE)
+    ranges = _fastslow(space, xr, yr)
+    return TopDownQuadtreeCursor(space, 1, ranges...; leafsize = _RASTER_CURSOR_LEAFSIZE)
 end
-
-# A cursor over the view answers the space's cells (the view's positions are the
-# space's local indices).
-getcell(tree::TopDownQuadtreeCursor{<:RasterGridView}, i::Int) = getcell(tree.grid.space, i)
 
 _rastercursor(space::RasterGrid) = _rastercursor(space, 1:_nx(space), 1:_ny(space))
-_rasterchunkcursor(space::RasterGrid) = _rastercursor(space)
 
-function _task_prepared_raster_tree(
-        tree::TopDownQuadtreeCursor{<:RasterGridView})
-    grid = _task_prepared_raster_view(tree.grid)
-    grid === tree.grid && return tree
-    return TopDownQuadtreeCursor(
-        grid, tree.face, tree.irange, tree.jrange; leafsize = tree.leafsize)
-end
-
-_task_prepared_raster_tree(tree) = tree
-
-celltree(space::RasterGrid) = _rastercursor(space)
+# The raster's one tree is its quadtree cursor at every intent and leaf size.
+GridInterface.treeify(space::RasterGrid; leaf_capacity = GridInterface.Balanced()) =
+    _rastercursor(space)
+GridInterface.treeify(space::RasterGrid, ::GridInterface.LeafHint) = _rastercursor(space)
+GridInterface.treeify(space::RasterGrid, ::Integer) = _rastercursor(space)
 
 """
-    celltree(space::RasterGrid, chunk::Int)
-    celltree(space::RasterGrid, indices::AbstractVector{<:Integer})
+    GridInterface.subtree(space::RasterGrid, inds::AbstractVector{<:Integer})
 
-Return a restricted CR quadtree cursor for a chunk or other rectangular cell
-range, and the packed cell-space fallback for scattered indices. Leaves
-always use the space's local indices.
+The restricted quadtree cursor when `inds` form a lattice rectangle, otherwise
+GridInterface's packed R-tree over those cells. Leaves emit the raster's cell
+indices.
 """
-function celltree(space::RasterGrid, chunk::Int)
-    xr, yr = chunkbox(space, chunk)
-    return _rastercursor(space, xr, yr)
-end
-
-function celltree(space::RasterGrid, indices::AbstractVector{<:Integer})
-    rect = _indexrect(space, indices)
+function GridInterface.subtree(space::RasterGrid, inds::AbstractVector{<:Integer})
+    rect = _indexrect(space, inds)
     if rect !== nothing
         ix0, ix1, iy0, iy1 = rect
         return _rastercursor(space, ix0:ix1, iy0:iy1)
     end
-    return CellSpaceRTree(space, indices)
+    return invoke(GridInterface.subtree, Tuple{Any,AbstractVector{<:Integer}}, space, inds)
 end
-
-function _rastercellcap(space::RasterGrid, ix::Integer, iy::Integer)
-    ranges = _rasterviewranges(space, Int(ix):Int(ix), Int(iy):Int(iy))
-    return blockextent(RasterGridView(space), 1, ranges...)
-end
-
-# The caps as values, for the identity stamp and for a consumer that wants a
-# chunk's covering extent. Chunk *queries* go to `_rasterchunkcursor` and never
-# come here.
-function chunkextents(space::RasterGrid)
-    n = nchunks(space)
-    caps = Vector{Cap}(undef, n)
-    for c in 1:n
-        xr, yr = chunkbox(space, c)
-        ranges = _rasterviewranges(space, xr, yr)
-        caps[c] = blockextent(RasterGridView(space), 1, ranges...)
-    end
-    return caps
-end
-
-# One chunk's extent without materializing the whole vector.
-function chunkextent(space::RasterGrid, chunk::Integer)
-    xr, yr = chunkbox(space, Int(chunk))
-    return blockextent(RasterGridView(space), 1,
-        _rasterviewranges(space, xr, yr)...)
-end
-
-"""
-    subtree(space::RasterGrid, inds)
-
-Return a restricted CR quadtree cursor when `inds` form a lattice rectangle,
-otherwise the common packed cell-space fallback.
-"""
-subtree(space::RasterGrid, inds) = celltree(space, inds)
-
-# The number of cells along the dimension that varies fastest in cell indices.
-_nfast(space::RasterGrid) = space.xfast ? _nx(space) : _ny(space)
 
 """
     _indexrect(space::RasterGrid, inds) -> (ix0, ix1, iy0, iy1) or nothing
@@ -1128,25 +1056,37 @@ end
 _lattice(space::RasterGrid, (a0, a1, b0, b1)) =
     space.xfast ? (a0, a1, b0, b1) : (b0, b1, a0, a1)
 
-# Cell chart
+# Cell chart: the face axes
 
-"""
-    chartaxes(space::RasterGrid)
-
-Return cell-centre coordinates in lookup order. Reverse-ordered dimensions
-therefore return descending coordinates.
-"""
-chartaxes(space::RasterGrid) = (_centres(space.xedges), _centres(space.yedges))
+# The face axes are the cell edges in lookup order, which may descend; the
+# chart coordinates are the native ones on the branch nearest the raster's span
+# (`_rastercoords`), and a point's cell is located by the raster's own edge
+# search, which honours a descending axis where the generic ascending floor
+# would not.
+hasfaceaxes(space::RasterGrid, f) = space.unit_sphere_to_native !== nothing
+faceaxes(space::RasterGrid, f) = _fastslow(space, space.xedges, space.yedges)
+function facecoords(space::RasterGrid, f, p)
+    xy = _rastercoords(space, p)
+    xy === nothing && return nothing
+    return _fastslow(space, xy[1], xy[2])
+end
+# The chart's period, whatever the raster's span; the chart wraps only where
+# the axis spans it (`_chartperiod`).
+faceperiod(space::RasterGrid, f) = _fastslow(space, space.xperiod, nothing)
+function facelocalindex(space::RasterGrid, f, a, b)
+    x, y = _fastslow(space, a, b)
+    ix = _edgeindex(space.xedges, Float64(x), space.xperiod)
+    ix === nothing && return nothing
+    iy = _edgeindex(space.yedges, Float64(y), nothing)
+    iy === nothing && return nothing
+    return _fastslow(space, ix, iy)
+end
 
 _centres(e::Vector{Float64}) = [(e[k] + e[k+1]) / 2 for k in 1:(length(e)-1)]
 
-"""
-    chartcoords(space::RasterGrid, p)
-
-Return `p` in native coordinates, or `nothing` without an inverse. Periodic X
-returns the representative nearest the edge span.
-"""
-function chartcoords(space::RasterGrid, p)
+# `p` in native coordinates, or `nothing` without an inverse. Periodic X
+# returns the representative nearest the edge span.
+function _rastercoords(space::RasterGrid, p)
     space.unit_sphere_to_native === nothing && return nothing
     x, y = space.unit_sphere_to_native(p)
     return (_onbranch(space.xedges, Float64(x), space.xperiod), Float64(y))
@@ -1160,140 +1100,55 @@ function _onbranch(edges::Vector{Float64}, v::Float64, period)
     return v - p * round((v - mid) / p)
 end
 
-chartlocalindex(space::RasterGrid, ix::Int, iy::Int) = localindex(space, ix, iy)
-
-"""
-    chartperiod(space::RasterGrid)
-
-Return the X period only when the raster spans the chart's full period. Regional
-rasters do not wrap.
-"""
-function chartperiod(space::RasterGrid)
+# The X period only when the raster spans the chart's full period. Regional
+# rasters do not wrap.
+function _rasterperiod(space::RasterGrid)
     p = space.xperiod
     p === nothing && return (nothing, nothing)
     span = abs(space.xedges[end] - space.xedges[1])
     return (isapprox(span, p; rtol = 1e-9) ? p : nothing, nothing)
 end
 
-"""
-    chartspacing(space::RasterGrid)
-
-Return the largest edge step on each axis in radians of arc.
-"""
-chartspacing(space::RasterGrid) =
+# The largest edge step on each axis in radians of arc.
+_rasterspacing(space::RasterGrid) =
     _spherical_step_bounds_radians(space.native_to_unit_sphere,
         _maxstep(space.xedges), _maxstep(space.yedges))
 
 _maxstep(e::Vector{Float64}) =
     maximum(abs(e[k+1] - e[k]) for k in 1:(length(e)-1))
 
-# RasterGrid as a GridInterface grid
+_facespacing(space::RasterGrid) = _fastslow(space, _rasterspacing(space)...)
 
-# The raster is a one-face `Structured` grid in its own right: the face hooks
-# below are the ones `RasterGridView` answers, on the space itself, and the
-# derived verbs are the space's own answers in GridInterface's spelling, so
-# `GISpace(space)` regrids exactly as `space` does. The face lattice is in array
-# storage order (the fastest spatial dimension first), the same lattice the view
-# and the quadtree cursor use, so positions are the space's local indices.
-
-GridInterface.isgrid(::RasterGrid) = true
-# A raster has the one face its view exposes, so its chart is readable here.
-isstructured(::RasterGrid) = true
-GOCore.best_manifold(space::RasterGrid) = manifold(space)
-
-nfaces(::RasterGrid) = 1
-facesize(space::RasterGrid, f) = rastersize(space)
-@inline faceposition(space::RasterGrid, f, i, j) = Int(i) + (Int(j) - 1) * _nfast(space)
-@inline function facecell(space::RasterGrid, k)
-    n1 = _nfast(space)
-    return (1, (Int(k) - 1) % n1 + 1, (Int(k) - 1) ÷ n1 + 1)
-end
-@inline facevertex(space::RasterGrid, f, i, j) =
-    _rastervertex(space, _task_prepared_raster_transform(space.native_to_unit_sphere),
-        Int(i), Int(j))
-blockextent(space::RasterGrid, f, irange::UnitRange{Int}, jrange::UnitRange{Int}) =
-    blockextent(RasterGridView(space), f, irange, jrange)
-
-# Storage-order pairs from X/Y pairs and back: the swap is its own inverse.
-@inline _fastslow(space::RasterGrid, x, y) = space.xfast ? (x, y) : (y, x)
-
-# The face axes are the cell edges in lookup order, which may descend; the
-# chart coordinates are the native ones on the branch nearest the raster's span
-# (`chartcoords`), and a point's cell is located by the space's own edge search,
-# which honours a descending axis where the generic ascending floor would not.
-hasfaceaxes(space::RasterGrid, f) = space.unit_sphere_to_native !== nothing
-faceaxes(space::RasterGrid, f) = _fastslow(space, space.xedges, space.yedges)
-function facecoords(space::RasterGrid, f, p)
-    xy = chartcoords(space, p)
-    xy === nothing && return nothing
-    return _fastslow(space, xy[1], xy[2])
-end
-# The chart's period, whatever the raster's span; `GISpace` wraps only a chart
-# that spans it, as `chartperiod` does.
-faceperiod(space::RasterGrid, f) = _fastslow(space, space.xperiod, nothing)
-function facelocalindex(space::RasterGrid, f, a, b)
-    x, y = _fastslow(space, a, b)
-    ix = _edgeindex(space.xedges, Float64(x), space.xperiod)
-    ix === nothing && return nothing
-    iy = _edgeindex(space.yedges, Float64(y), nothing)
-    iy === nothing && return nothing
-    return _fastslow(space, ix, iy)
-end
-
-# Derived verbs: the space's own answers, so a `GISpace` over the raster locates
-# points, names neighbours and measures cells exactly as the raster space does.
-_facespacing(space::RasterGrid) = _fastslow(space, chartspacing(space)...)
-
-GridInterface.location_is_analytic(space::RasterGrid) = hasanalyticlocation(space)
-GridInterface.cellat(space::RasterGrid, p) = hasanalyticlocation(space) ?
-    cellat(space, p) : GridInterface.cellat(RasterGridView(space), p)
-GridInterface.cell_centroid(space::RasterGrid, i::Integer) = cellcentroid(space, Int(i))
-GridInterface.cell_corners(space::RasterGrid, i::Integer) = cellcorners(space, Int(i))
-GridInterface.cell_boundary(space::RasterGrid, i::Integer) = _ringpoints(getcell(space, Int(i)))
-GridInterface.cell_extent(space::RasterGrid, i::Integer) = cellcap(space, Int(i))
-GridInterface.extent_is_expensive(::RasterGrid) = true
-GridInterface.cell_geometry_is_expensive(space::RasterGrid) = expensivecellgeometry(space)
-GridInterface.neighbors_are_analytic(::RasterGrid) = true
-GridInterface.neighbors(space::RasterGrid, i::Integer;
-    connectivity::GridInterface.Connectivity = GridInterface.Vertex()) =
-    connectivity isa GridInterface.Vertex ?
-    SmallVector{8,Int}(cellneighbors(space, Int(i))) :
-    GridInterface.neighbors(RasterGridView(space), Int(i); connectivity)
-
-# The raster's one tree is its quadtree cursor at every intent and leaf size,
-# and a restricted tree is the space's own (a lattice rectangle's cursor, the
-# packed fallback for scattered cells).
-GridInterface.treeify(space::RasterGrid; leaf_capacity = GridInterface.Balanced()) =
-    _rastercursor(space)
-GridInterface.treeify(space::RasterGrid, ::GridInterface.LeafHint) = _rastercursor(space)
-GridInterface.treeify(space::RasterGrid, ::Integer) = _rastercursor(space)
-GridInterface.subtree(space::RasterGrid, inds::AbstractVector{<:Integer}) =
-    subtree(space, inds)
+# Storage chunks as GridInterface's chunks
 
 """
     RasterChunks(space::RasterGrid)
 
 The raster's storage chunks as GridInterface's `chunks(space)`: chunk `c` is the
-`Subset` over [`ownedindices`](@ref)`(space, c)` with the chunk number as its
-root, so its extent is the analytic [`chunkextent`](@ref) and its tree the
-chunk's own cursor, both O(1). Lazy: nothing per chunk is stored.
+`Subset` over the chunk's block of the lattice (`Structured.TileIndices`, held
+lazily), with the chunk number as its root. Building one, its extent (the
+analytic range cap, through `blockextent`) and its tree (the chunk's own
+cursor) are all O(1). Lazy: nothing per chunk or per cell is stored.
 """
 struct RasterChunks{S<:RasterGrid} <: AbstractVector{GridInterface.Subset{S}}
     space::S
 end
 
-Base.size(c::RasterChunks) = (nchunks(c.space),)
+Base.size(c::RasterChunks) = (_nrasterchunks(c.space),)
 Base.IndexStyle(::Type{<:RasterChunks}) = IndexLinear()
 function Base.getindex(c::RasterChunks, k::Int)
     @boundscheck checkbounds(c, k)
-    return GridInterface.Subset(c.space, ownedindices(c.space, k); root = k)
+    return GridInterface.Subset(c.space, _rasterowned(c.space, k); root = k)
 end
 
 GridInterface.chunks(space::RasterGrid) = RasterChunks(space)
-GridInterface.chunkat(c::RasterChunks, i::Integer) = chunkat(c.space, Int(i))
+GridInterface.chunkat(c::RasterChunks, i::Integer) = _rasterchunkat(c.space, Int(i))
 
-const RasterChunk{S} = GridInterface.Subset{S,<:AbstractVector{Int},Int}
-
-GridInterface.grid_extent(s::RasterChunk{<:RasterGrid}) = chunkextent(s.parent, s.root)
-GridInterface.subtree(space::RasterGrid, s::RasterChunk{<:RasterGrid}) =
-    s.parent === space ? celltree(space, s.root) : subtree(space, GridInterface.parentpositions(s))
+# A block of the raster's own lattice is the raster's cursor over it, with the
+# raster's leaf size; a chunk's tree comes here through `Structured`'s tile
+# subset method.
+function GridInterface.subtree(space::RasterGrid, t::TileIndices)
+    t.grid === space || return invoke(GridInterface.subtree,
+        Tuple{RasterGrid,AbstractVector{<:Integer}}, space, t)
+    return TopDownQuadtreeCursor(space, 1, t.ir, t.jr; leafsize = _RASTER_CURSOR_LEAFSIZE)
+end

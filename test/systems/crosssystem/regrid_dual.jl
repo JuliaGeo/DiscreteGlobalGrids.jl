@@ -1,4 +1,4 @@
-# Dual cells behind a `DGGSpace`: what a point method interpolates on when the
+# Dual cells of a DGG grid: what a point method interpolates on when the
 # source is a conforming DGGS. The polygon is the dual cell of a primal vertex —
 # the sample sites of the cells meeting there — and it is found from the host
 # cell's one-rings, so the tests below ask three things: that the cells it finds
@@ -10,6 +10,7 @@ module RegridDualTests
 using Test
 import DiscreteGlobalGrids as DGG
 import GlobalRegridding as GR
+import GridInterface as GrI
 import GeometryOps as GO
 using Random
 
@@ -24,17 +25,20 @@ const S2 = DGG.S2System()
 const HEALPIX = DGG.HEALPixSystem()
 const ISEA4R = DGG.ISEA4RSystem()
 
+# A grid chunked by the ancestor level `a`.
+bylevel(g, a) = GrI.mockchunks(g, GrI.LevelChunks(a))
+
 unit(v) = (n = sqrt(sum(abs2, v)); GO.UnitSphericalPoint(v[1] / n, v[2] / n, v[3] / n))
 midpoint(a, b) = unit((a[1] + b[1], a[2] + b[2], a[3] + b[3]))
 
 # A smooth field to interpolate, read at a source cell's own sample site.
 field(q) = 0.3 + 1.7 * q[1] - 0.9 * q[2] + 2.1 * q[3]
-sourcefield(space) = [field(GR.cellcentroid(space, i)) for i in 1:Int(GR.ncells(space))]
+sourcefield(grid) = [field(GrI.cell_centroid(grid, i)) for i in 1:Int(GR.ncells(grid))]
 
 # What the stencil at `p` makes of that field, or `nothing` where `p` is unmapped.
-function interpolate(space, smp, row, p)
+function interpolate(grid, smp, row, p)
     GR.ismapped(GR.weightsat!(row, smp, p)) || return nothing
-    return sum(row.weights[k] * field(GR.cellcentroid(space, row.indices[k]))
+    return sum(row.weights[k] * field(GrI.cell_centroid(grid, row.indices[k]))
                for k in 1:length(row))
 end
 
@@ -44,12 +48,11 @@ end
 # every dual cell there is.
 function alldualcells(sys, lvl)
     grid = DGG.levelgrid(sys, lvl)
-    space = DGG.DGGSpace(grid)
-    smp = GR.sampler(GR.BarycentricPoint(), space)
+    smp = GR.sampler(GR.BarycentricPoint(), grid)
     seen = Set{Set{Int}}()
     unmapped = 0
     kinds = Set{GR.BasisKind}()
-    for i in 1:Int(GR.ncells(space))
+    for i in 1:Int(GR.ncells(grid))
         c = DGG.cellindex(grid, i)
         centre = DGG.cell_centroid(grid, c)
         for v in DGG.cell_boundary(grid, c)
@@ -86,12 +89,12 @@ function incidentcells(grid, host, v, tol)
     return out
 end
 
-# One operator assembled from every chunk pair, in the spaces' local indices.
+# One operator assembled from every chunk pair, in the grids' local indices.
 function assemble(plan, dst, src)
     M = zeros(Float64, Int(GR.ncells(dst)), Int(GR.ncells(src)))
-    for d in 1:GR.nchunks(dst), s in 1:GR.nchunks(src)
+    for d in 1:GR._nchunks(dst), s in 1:GR._nchunks(src)
         block = Matrix(GR.buildblock(plan, d, s).weights)
-        dinds, sinds = GR.ownedindices(dst, d), GR.ownedindices(src, s)
+        dinds, sinds = GR._ownedindices(dst, d), GR._ownedindices(src, s)
         for (r, i) in enumerate(dinds), (c, j) in enumerate(sinds)
             M[Int(i), Int(j)] += block[r, c]
         end
@@ -105,10 +108,10 @@ function stencilpairs(dst, src)
     smp = GR.sampler(GR.BarycentricPoint(), src)
     row = GR.WeightRow()
     pairs = Set{Tuple{Int,Int}}()
-    for d in 1:GR.nchunks(dst), i in GR.ownedindices(dst, d)
-        GR.ismapped(GR.weightsat!(row, smp, GR.cellcentroid(dst, Int(i)))) || continue
+    for d in 1:GR._nchunks(dst), i in GR._ownedindices(dst, d)
+        GR.ismapped(GR.weightsat!(row, smp, GrI.cell_centroid(dst, Int(i)))) || continue
         for k in 1:length(row)
-            push!(pairs, (d, GR.chunkat(src, row.indices[k])))
+            push!(pairs, (d, GR._chunkat(src, row.indices[k])))
         end
     end
     return pairs
@@ -119,22 +122,23 @@ querybytes(row, smp, p) =
 
 @testset "dual cells on a conforming DGGS" begin
 
-    @testset "the space says it has them, and prepares them once" begin
-        space = DGG.DGGSpace(DGG.levelgrid(IGEO7, 2))
-        @test GR.hasdualcells(space)
-        state = @inferred GR.samplerstate(space)
-        @test state isa DGG.DualTopology
-        smp = GR.sampler(GR.BarycentricPoint(), space)
+    @testset "the grid says it has them, and prepares them once" begin
+        grid = DGG.levelgrid(IGEO7, 2)
+        @test GR._hasdualcells(grid)
+        state = @inferred GR.samplerstate(GR.BarycentricPoint(), grid)
+        @test state isa GR.DualState
+        smp = GR.sampler(GR.BarycentricPoint(), grid)
         # A complete grid is its own topology; a subset reads its level's.
-        @test smp.state.grid === space.grid
+        @test smp.state.grid === grid
+        @test smp.state.topo === grid
 
         # The chart is centred on the queried point, so the point is the origin
         # and the sampler's chart says exactly that.
-        p = GR.cellcentroid(space, 7)
+        p = GrI.cell_centroid(grid, 7)
         @test GR.chartat(smp, p) === (0.0, 0.0)
 
         # Both entry points infer concretely, so nothing on the hot path boxes.
-        @test (@inferred GR.dualcellat(smp, p)) isa DGG.GridDualCell
+        @test (@inferred GR.dualcellat(smp, p)) isa GR.GridDualCell
         row = GR.WeightRow()
         @test (@inferred GR.weightsat!(row, smp, p)) === GR.WeightsMapped
     end
@@ -179,13 +183,12 @@ querybytes(row, smp, p) =
             ("HEALPix", HEALPIX, 3), ("ISEA4R", ISEA4R, 3))
             @testset "$name" begin
                 grid = DGG.levelgrid(sys, lvl)
-                space = DGG.DGGSpace(grid)
-                smp = GR.sampler(GR.BarycentricPoint(), space)
+                smp = GR.sampler(GR.BarycentricPoint(), grid)
                 rng = MersenneTwister(11)
-                picks = unique(rand(rng, 1:Int(GR.ncells(space)), 30))
+                picks = unique(rand(rng, 1:Int(GR.ncells(grid)), 30))
                 # Every defect the level has, alongside the sample: a pentagon
                 # or a low-valence corner is where a fan-finding mistake hides.
-                defects = [i for i in 1:Int(GR.ncells(space))
+                defects = [i for i in 1:Int(GR.ncells(grid))
                            if DGG.neighborcount(grid, DGG.cellindex(grid, i)) <
                               DGG.maxneighbors(sys, DGG.Vertex())]
                 checked = 0
@@ -213,8 +216,7 @@ querybytes(row, smp, p) =
             ("HEALPix", HEALPIX, 3), ("ISEA4R", ISEA4R, 3))
             @testset "$name" begin
                 grid = DGG.levelgrid(sys, lvl)
-                space = DGG.DGGSpace(grid)
-                smp = GR.sampler(GR.BarycentricPoint(), space)
+                smp = GR.sampler(GR.BarycentricPoint(), grid)
                 row = GR.WeightRow()
                 rng = MersenneTwister(4)
                 points = [unit((randn(rng), randn(rng), randn(rng))) for _ in 1:2000]
@@ -251,8 +253,8 @@ querybytes(row, smp, p) =
                 # source alone: the site is the chart's own origin, so the row
                 # is one entry of weight one.
                 sites = true
-                for i in 1:Int(GR.ncells(space))
-                    GR.weightsat!(row, smp, GR.cellcentroid(space, i))
+                for i in 1:Int(GR.ncells(grid))
+                    GR.weightsat!(row, smp, GrI.cell_centroid(grid, i))
                     sites &= length(row) == 1 && row.indices[1] == i &&
                              row.weights[1] == 1.0
                 end
@@ -274,8 +276,7 @@ querybytes(row, smp, p) =
             ("ISEA4R", ISEA4R, 3), ("HEALPix", HEALPIX, 3))
             @testset "$name" begin
                 grid = DGG.levelgrid(sys, lvl)
-                space = DGG.DGGSpace(grid)
-                smp = GR.sampler(GR.BarycentricPoint(), space)
+                smp = GR.sampler(GR.BarycentricPoint(), grid)
                 row = GR.WeightRow()
                 rng = MersenneTwister(9)
                 step = 1e-8
@@ -283,7 +284,7 @@ querybytes(row, smp, p) =
                 seams = 0
                 worstseam = 0.0
                 for _ in 1:300
-                    i = rand(rng, 1:Int(GR.ncells(space)))
+                    i = rand(rng, 1:Int(GR.ncells(grid)))
                     c = DGG.cellindex(grid, i)
                     nbrs = collect(DGG.neighbors(grid, c, 1; connectivity = DGG.Edge()))
                     isempty(nbrs) && continue
@@ -291,10 +292,10 @@ querybytes(row, smp, p) =
                     a1, a2 = DGG.cell_centroid(grid, c), DGG.cell_centroid(grid, d)
                     m = midpoint(a1, a2)
                     dir = unit((a2[1] - a1[1], a2[2] - a1[2], a2[3] - a1[3]))
-                    lo = interpolate(space, smp, row,
+                    lo = interpolate(grid, smp, row,
                         unit((m[1] - step * dir[1], m[2] - step * dir[2],
                             m[3] - step * dir[3])))
-                    hi = interpolate(space, smp, row,
+                    hi = interpolate(grid, smp, row,
                         unit((m[1] + step * dir[1], m[2] + step * dir[2],
                             m[3] + step * dir[3])))
                     (lo === nothing || hi === nothing) && continue
@@ -319,10 +320,10 @@ querybytes(row, smp, p) =
 
     @testset "no source chunk boundary changes a stencil" begin
         src = DGG.levelgrid(IGEO7, 3)
-        dst = DGG.DGGSpace(DGG.levelgrid(S2, 3); chunklevel = 2)
-        fine = DGG.DGGSpace(src; chunklevel = 2)
-        coarse = DGG.DGGSpace(src; chunklevel = 1)
-        @test GR.nchunks(fine) != GR.nchunks(coarse)
+        dst = bylevel(DGG.levelgrid(S2, 3), 2)
+        fine = bylevel(src, 2)
+        coarse = bylevel(src, 1)
+        @test GR._nchunks(fine) != GR._nchunks(coarse)
 
         # The same query on two different chunkings of one grid is the same row,
         # entry for entry: chunking is not an input to a stencil.
@@ -331,14 +332,14 @@ querybytes(row, smp, p) =
         a, b = GR.WeightRow(), GR.WeightRow()
         same = true
         for i in 1:Int(GR.ncells(dst))
-            p = GR.cellcentroid(dst, i)
+            p = GrI.cell_centroid(dst, i)
             GR.weightsat!(a, finesmp, p)
             GR.weightsat!(b, coarsesmp, p)
             same &= a.indices == b.indices && a.weights == b.weights
         end
         @test same
 
-        # Weights are geometry: the whole operator is built from the two spaces
+        # Weights are geometry: the whole operator is built from the two grids
         # with no field anywhere near it, and the chunk pairs add back up to it.
         whole = Matrix(GR.wholeblock(GR.BarycentricPoint(), dst, fine).weights)
         @test all(isapprox(1.0), sum(whole; dims = 2))
@@ -374,16 +375,15 @@ querybytes(row, smp, p) =
         # outside it, which have no local index here at all — so the query is a
         # rim rather than a stencil closed over whatever the subtree does hold.
         sub = DGG.subtree(IGEO7, DGG.cellindex(DGG.levelgrid(IGEO7, 1), 3), 3)
-        space = DGG.DGGSpace(sub)
-        smp = GR.sampler(GR.BarycentricPoint(), space)
+        smp = GR.sampler(GR.BarycentricPoint(), sub)
         # Topology is read on the complete level, so a ring is never one cell
         # short where the subtree ends.
-        @test smp.state.grid === sub.complete
+        @test smp.state.topo === sub.complete
         row = GR.WeightRow()
         border = Set(DGG.border(sub))
         rims = Int[]
-        for i in 1:Int(GR.ncells(space))
-            status = GR.weightsat!(row, smp, GR.cellcentroid(space, i))
+        for i in 1:Int(GR.ncells(sub))
+            status = GR.weightsat!(row, smp, GrI.cell_centroid(sub, i))
             status === GR.WeightsRim && push!(rims, i)
             GR.ismapped(status) || @test isempty(row)
         end
@@ -395,9 +395,9 @@ querybytes(row, smp, p) =
         # Every mapped stencil names only cells of this collection, at its own
         # local indices, and never borrows one from outside.
         inside = true
-        for i in 1:Int(GR.ncells(space))
-            GR.ismapped(GR.weightsat!(row, smp, GR.cellcentroid(space, i))) || continue
-            inside &= all(1 <= j <= Int(GR.ncells(space)) for j in row.indices)
+        for i in 1:Int(GR.ncells(sub))
+            GR.ismapped(GR.weightsat!(row, smp, GrI.cell_centroid(sub, i))) || continue
+            inside &= all(1 <= j <= Int(GR.ncells(sub)) for j in row.indices)
         end
         @test inside
 

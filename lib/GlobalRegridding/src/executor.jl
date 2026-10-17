@@ -309,13 +309,13 @@ end
 # Cell areas
 
 """
-    cellarea(space::RegridSpace, i::Integer) -> Float64
+    cellarea(grid, i::Integer) -> Float64
 
-Return cell `i`'s area on the space manifold. The fallback builds the polygon;
-spaces with a closed-form area should specialize it.
+Return cell `i`'s area on the grid's manifold: `GridInterface.cell_area`, which
+a grid with a closed-form area answers directly and every other grid measures
+off its polygon.
 """
-cellarea(space::RegridSpace, i::Integer) =
-    Float64(GO.area(manifold(space), getcell(space, Int(i))))
+cellarea(space, i::Integer) = Float64(GridInterface.cell_area(space, Int(i)))
 
 # N-D shaping
 
@@ -352,7 +352,14 @@ _iscellaxis(d) = dimsource(DD.lookup(d)) !== nothing
 _hascellaxis(::AbstractArray) = false
 _hascellaxis(A::DD.AbstractDimArray) = any(_iscellaxis, DD.dims(A))
 
-# Resolve spatial dimensions against the source space's cell count.
+"""
+    resolvespatialdims(data, nsrc) -> NTuple{N,Int}
+
+The leading dimensions of `data` that flatten to the source grid's `nsrc`
+cells: its cell axis or X/Y dimensions, or the first one or two dimensions of
+a plain array. Throws when no leading set matches `nsrc`. Package integrations
+call this to read a source the way a regrid does.
+"""
 function resolvespatialdims(data::AbstractArray, nsrc::Integer)
     sd = spatialdims(data)
     _spatialsize(data, sd) == nsrc && return _checkleading(data, sd)

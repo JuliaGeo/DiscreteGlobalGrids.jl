@@ -9,6 +9,7 @@ module CopernicusDEMSystemTests
 
 using Test
 import GridInterface
+import GridInterface as GrI
 using Random
 
 using DiscreteGlobalGrids
@@ -202,7 +203,7 @@ function DiskArrays.readblock!(A::CountingCells, out, r::AbstractUnitRange)
 end
 
 function counting_source(space, values)
-    widths = [length(GR.ownedindices(space, k)) for k in 1:GR.nchunks(space)]
+    widths = [length(GR._ownedindices(space, k)) for k in 1:GR._nchunks(space)]
     chunks = DiskArrays.GridChunks(DiskArrays.IrregularChunks(; chunksizes = widths))
     return CountingCells(values, chunks, Int[])
 end
@@ -1221,10 +1222,11 @@ end
 end
 
 # =========================================================================
-# (k2) The chunked source: `GR.subtree` windows the cursor
+# (k2) The chunked source: `GR._subtree` windows the cursor
 # =========================================================================
 
-# `DGGSpace` chunks a Copernicus source by tile and asks for one tree per chunk.
+# A Copernicus source chunked by tile (`mockchunks(grid, LevelChunks(0))`) asks
+# for one tree per chunk of `chunks(grid)`.
 # `subcursor` answers with the index rectangle rather than the bounding-cap
 # fallback, whose row-major bisection prunes nothing on longitude.
 @testset "a source chunk keeps the block cursor" begin
@@ -1247,31 +1249,36 @@ end
 
     # ---- the complete level grid: 97 M cells, none materialized here --------
     g1twin = levelgrid(TWIN, 1)
-    dense = DGG.DGGSpace(g1twin; chunklevel = 0)
-    @test GR.nchunks(dense) == 64_800
+    dense = GrI.mockchunks(g1twin, GrI.LevelChunks(0))
+    @test GR._nchunks(dense) == 64_800
     # A pole tile, a band edge on both sides, the equator, and the south pole.
     for lat_s in (89, 50, 49, 0, -90), lon_w in (-180, 7)
         tile = CD.tilecell(TWIN, lat_s, lon_w)
-        k = GR.chunkat(dense, localindex(g1twin, CD.pixelcell(TWIN, tile, 0, 0)))
-        inds = GR.ownedindices(dense, k)
+        k = GR._chunkat(dense, localindex(g1twin, CD.pixelcell(TWIN, tile, 0, 0)))
+        inds = GR._ownedindices(dense, k)
+        @test inds == GrI.parentpositions(GrI.chunks(dense)[k])
         @test length(inds) == Int(CD.lat_intervals(TWIN)) * Int(CD.ncols_at(TWIN, lat_s))
-        tree = GR.subtree(dense, inds)
+        tree = GR._subtree(dense, inds)
         @test tree isa CD.MemoBlockCursor
         # The window is the chunk exactly — no cell of another tile leaks in.
         @test leafindices(tree) == collect(inds)
     end
 
     # Any window of whole raster rows is a rectangle too; a mid-row window is
-    # not one, and takes the bounding-cap fallback.
-    r = GR.ownedindices(dense, GR.chunkat(dense,
+    # not one, and takes GridInterface's restricted hierarchy cursor.
+    r = GR._ownedindices(dense, GR._chunkat(dense,
         localindex(g1twin, CD.pixelcell(TWIN, CD.tilecell(TWIN, 12, 40), 0, 0))))
     nc = Int(CD.ncols_at(TWIN, 12))
     rows = (first(r) + nc):(first(r) + 3nc - 1)
-    @test GR.subtree(dense, rows) isa CD.MemoBlockCursor
-    @test leafindices(GR.subtree(dense, rows)) == collect(rows)
-    @test GR.subtree(dense, (first(r) + 1):(first(r) + nc)) isa GR.CellSpaceRTree
+    @test GR._subtree(dense, rows) isa CD.MemoBlockCursor
+    @test leafindices(GR._subtree(dense, rows)) == collect(rows)
+    midrow = (first(r) + 1):(first(r) + nc)
+    @test GR._subtree(dense, midrow) isa GrI.HierarchyCursor
+    @test leafindices(GR._subtree(dense, midrow)) == collect(midrow)
     # And a run spanning two tiles is not one rectangle either.
-    @test GR.subtree(dense, (last(r) - 1):(last(r) + 1)) isa GR.CellSpaceRTree
+    span = (last(r) - 1):(last(r) + 1)
+    @test GR._subtree(dense, span) isa GrI.HierarchyCursor
+    @test leafindices(GR._subtree(dense, span)) == collect(span)
 
     # ---- a sparse holding: a scattered `PartialGrid`, one tile per chunk ----
     tiles = [CD.tilecell(TWIN, 89, 10),     # polemost band, 3 columns
@@ -1280,8 +1287,8 @@ end
     ids = sort!(reduce(vcat, [collect(children(TWIN, t)) for t in tiles]))
     holding = PartialGrid(TWIN, 1, ids)
     @test treeify(holding) isa DGG.TiledRasterCursor
-    src = DGG.DGGSpace(holding; chunklevel = 0)
-    @test GR.nchunks(src) == length(tiles)
+    src = GrI.mockchunks(holding, GrI.LevelChunks(0))
+    @test GR._nchunks(src) == length(tiles)
 
     # One destination covering the three tiles, at a level fine enough that most
     # of its cells take weight from the source.
@@ -1291,19 +1298,21 @@ end
     sys7 = DGG.IGeo7System()
     dstgrid = PartialGrid(sys7, 7, sort!(unique(reduce(vcat,
         [query(sys7, Intersects(tilebox(t)); level = 7) for t in tiles]))))
-    dsttree = GR.subtree(DGG.DGGSpace(dstgrid), 1:ncells(dstgrid))
+    dsttree = GR._subtree(dstgrid, 1:ncells(dstgrid))
 
     op = CR.DefaultIntersectionOperator(MANIFOLD)
-    for k in 1:GR.nchunks(src)
-        inds = GR.ownedindices(src, k)
-        tree = GR.subtree(src, inds)
+    for k in 1:GR._nchunks(src)
+        inds = GR._ownedindices(src, k)
+        tree = GR._subtree(src, inds)
         @test tree isa DGG.TiledRasterCursor
         @test leafindices(tree) == collect(inds)
-        # The weights are the fallback's, entry for entry.
-        fast = CR.intersection_areas(MANIFOLD, GOCore.False(), dstgrid, src;
+        # The weights are the packed fallback R-tree's, entry for entry.
+        rtree = GR._subtree(holding, collect(inds))
+        @test rtree isa GO.FlexibleRTrees.RTree
+        fast = CR.intersection_areas(MANIFOLD, GOCore.False(), dstgrid, holding;
             dst_tree = dsttree, src_tree = tree, intersection_operator = op)
-        slow = CR.intersection_areas(MANIFOLD, GOCore.False(), dstgrid, src;
-            dst_tree = dsttree, src_tree = GR.CellSpaceRTree(src, inds), intersection_operator = op)
+        slow = CR.intersection_areas(MANIFOLD, GOCore.False(), dstgrid, holding;
+            dst_tree = dsttree, src_tree = rtree, intersection_operator = op)
         @test length(fast.nzval) > 0
         @test (k, fast == slow) == (k, true)
     end
@@ -2474,7 +2483,7 @@ end
     for (sys, draws) in ((TWIN, 40_000), (GLO90, 4_000), (GLO30, 4_000))
         n = CD.lat_intervals(sys)
         st = CD._pointstate(sys)
-        space = DGG.DGGSpace(levelgrid(sys, 1))
+        space = levelgrid(sys, 1)
         smp = GR.sampler(POINT_NOPOLAR, space)
         sites = GR.samplesites(space)
         row = GR.WeightRow()
@@ -2537,7 +2546,7 @@ end
 @testset "a band edge is a triangle or a shared-edge trapezoid" begin
     st = CD._pointstate(TWIN)
     n = CD.lat_intervals(TWIN)
-    space = DGG.DGGSpace(levelgrid(TWIN, 1))
+    space = levelgrid(TWIN, 1)
     smp = GR.sampler(POINT, space)
     row = GR.WeightRow()
     rng = MersenneTwister(11)
@@ -2587,7 +2596,7 @@ end
 
 @testset "the antimeridian and a tile seam are ordinary strips" begin
     st = CD._pointstate(TWIN)
-    space = DGG.DGGSpace(levelgrid(TWIN, 1))
+    space = levelgrid(TWIN, 1)
     smp = GR.sampler(POINT, space)
     row = GR.WeightRow()
     g1 = levelgrid(TWIN, 1)
@@ -2628,7 +2637,7 @@ end
 
 @testset "a destination at a post takes that post" begin
     for sys in (TWIN, GLO90)
-        space = DGG.DGGSpace(levelgrid(sys, 1))
+        space = levelgrid(sys, 1)
         smp = GR.sampler(POINT, space)
         sites = GR.samplesites(space)
         row = GR.WeightRow()
@@ -2655,9 +2664,9 @@ end
 @testset "a holding without a post is a rim, never a substitute" begin
     st = CD._pointstate(TWIN)
     grid = DGG.PartialGrid(TWIN, 1, tilepixels(TWIN, [(46, 10)]))
-    space = DGG.DGGSpace(grid; chunklevel = 0)
+    space = GrI.mockchunks(grid, GrI.LevelChunks(0))
     smp = GR.sampler(POINT, space)
-    complete = DGG.DGGSpace(levelgrid(TWIN, 1))
+    complete = levelgrid(TWIN, 1)
     csmp = GR.sampler(POINT, complete)
     row = GR.WeightRow()
     crow = GR.WeightRow()
@@ -2671,7 +2680,7 @@ end
         status = GR.weightsat!(row, smp, p)
         GR.ismapped(GR.weightsat!(crow, csmp, p)) ||
             (note!(bad, "the complete lattice did not map ($lon, $lat)"); continue)
-        held = [DGG.localindex(grid, cellindex(complete.grid, i)) for i in crow.indices]
+        held = [DGG.localindex(grid, cellindex(complete, i)) for i in crow.indices]
         if GR.ismapped(status)
             mapped += 1
             # The stencil is the complete lattice's, translated, and nothing
@@ -2736,8 +2745,8 @@ DGG.Helpers.strictly_increasing(::LazyTilePixels) = true
     grid = DGG.PartialGrid(sys, 1, ids)
     @test ncells(grid) == length(ids) ==
           sum(length(DGG.descendant_range(sys, CD.tilecell(sys, t...), 1)) for t in tiles)
-    space = DGG.DGGSpace(grid; chunklevel = 0)
-    @test GR.nchunks(space) == length(tiles)
+    space = GrI.mockchunks(grid, GrI.LevelChunks(0))
+    @test GR._nchunks(space) == length(tiles)
     GR.sampler(POINT, space)
     @test @allocated(GR.sampler(POINT, space)) < 4096
     smp = GR.sampler(POINT, space)
@@ -2748,7 +2757,7 @@ DGG.Helpers.strictly_increasing(::LazyTilePixels) = true
 
     # Every post a query names is found by its tile chunk, and the answer is
     # the holding's own local index; a post of an unlisted tile is a rim.
-    complete = DGG.DGGSpace(levelgrid(sys, 1))
+    complete = levelgrid(sys, 1)
     csmp = GR.sampler(POINT, complete)
     row, crow = GR.WeightRow(), GR.WeightRow()
     rng = MersenneTwister(2026_08_26)
@@ -2766,7 +2775,7 @@ DGG.Helpers.strictly_increasing(::LazyTilePixels) = true
         status = GR.weightsat!(row, smp, p)
         GR.ismapped(GR.weightsat!(crow, csmp, p)) ||
             (note!(bad, "the complete lattice did not map ($lon, $lat)"); continue)
-        held = [DGG.localindex(grid, cellindex(complete.grid, i)) for i in crow.indices]
+        held = [DGG.localindex(grid, cellindex(complete, i)) for i in crow.indices]
         if GR.ismapped(status)
             mapped += 1
             length(row) == 1 && (polar += 1)
@@ -2799,9 +2808,10 @@ end
 
 @testset "a post is found by its tile chunk or by the holding's ids alike" begin
     # The same holding four ways: tiles as chunks over lazy and over listed
-    # ids, pixels as chunks, and a chunk short of one pixel of its tile, which
-    # sends that tile's posts to the search of the ids. All four answer the
-    # complete lattice's stencil translated, entry for entry.
+    # ids, pixels as chunks (`mockchunks`; the sampler reads the grid's own tile
+    # windows, so the chunking changes no route), and a tile short of one pixel,
+    # which sends that tile's posts to the search of the ids. All four answer
+    # the complete lattice's stencil translated, entry for entry.
     sys = TWIN
     tiles = [(46, 10), (46, 11), (49, 10), (50, 10)]
     listed = tilepixels(sys, tiles)
@@ -2810,21 +2820,24 @@ end
     dropped = CD.pixelcell(sys, CD.tilecell(sys, 46, 11), 7, 7)
     holey = filter(!=(dropped), listed)
     spaces = (
-        DGG.DGGSpace(DGG.PartialGrid(sys, 1, lazy); chunklevel = 0),
-        DGG.DGGSpace(DGG.PartialGrid(sys, 1, listed); chunklevel = 0),
-        DGG.DGGSpace(DGG.PartialGrid(sys, 1, listed); chunklevel = 1),
-        DGG.DGGSpace(DGG.PartialGrid(sys, 1, holey); chunklevel = 0))
-    @test GR.nchunks(spaces[1]) == GR.nchunks(spaces[2]) == GR.nchunks(spaces[4]) == 4
-    @test GR.nchunks(spaces[3]) == length(listed)
+        GrI.mockchunks(DGG.PartialGrid(sys, 1, lazy), GrI.LevelChunks(0)),
+        GrI.mockchunks(DGG.PartialGrid(sys, 1, listed), GrI.LevelChunks(0)),
+        GrI.mockchunks(DGG.PartialGrid(sys, 1, listed), GrI.LevelChunks(1)),
+        GrI.mockchunks(DGG.PartialGrid(sys, 1, holey), GrI.LevelChunks(0)))
+    @test GR._nchunks(spaces[1]) == GR._nchunks(spaces[2]) == GR._nchunks(spaces[4]) == 4
+    @test GR._nchunks(spaces[3]) == length(listed)
     # What the tile route rests on: a tile chunk's window is its tile's pixel
     # count exactly when it holds the whole tile, in id order.
-    whole(space, k) = length(space.ranges[k]) ==
-                      length(DGG.descendant_range(sys, space.chunkids[k], 1))
+    function whole(space, k)
+        pos = GrI.parentpositions(GrI.chunks(space)[k])
+        tile = DGG.ancestor(sys, cellindex(parent(space), first(pos)), 0)
+        return length(pos) == length(DGG.descendant_range(sys, tile, 1))
+    end
     @test all(whole(spaces[1], k) for k in 1:4)
     @test all(whole(spaces[2], k) for k in 1:4)
     @test count(whole(spaces[4], k) for k in 1:4) == 3
     samplers = map(space -> GR.sampler(POINT, space), spaces)
-    complete = DGG.DGGSpace(levelgrid(sys, 1))
+    complete = levelgrid(sys, 1)
     csmp = GR.sampler(POINT, complete)
     rows = [GR.WeightRow() for _ in spaces]
     crow = GR.WeightRow()
@@ -2838,7 +2851,7 @@ end
         GR.ismapped(GR.weightsat!(crow, csmp, p)) || continue
         for (k, (space, smp)) in enumerate(zip(spaces, samplers))
             status = GR.weightsat!(rows[k], smp, p)
-            held = [DGG.localindex(space.grid, cellindex(complete.grid, i))
+            held = [DGG.localindex(parent(space), cellindex(complete, i))
                     for i in crow.indices]
             if GR.ismapped(status)
                 mapped[k] += 1
@@ -2864,7 +2877,7 @@ end
 @testset "a pole region takes the nearest post of the polemost row" begin
     st = CD._pointstate(TWIN)
     n = CD.lat_intervals(TWIN)
-    space = DGG.DGGSpace(levelgrid(TWIN, 1))
+    space = levelgrid(TWIN, 1)
     sites = GR.samplesites(space)
     smp = GR.sampler(POINT, space)
     unmapped = GR.sampler(POINT_NOPOLAR, space)
@@ -2920,7 +2933,7 @@ end
 
 @testset "the declared reach bounds every post a stencil names" begin
     for sys in (TWIN, GLO90, GLO30)
-        space = DGG.DGGSpace(levelgrid(sys, 1))
+        space = levelgrid(sys, 1)
         radius = GR.supportradius(POINT, space)
         smp = GR.sampler(POINT, space)
         sites = GR.samplesites(space)
@@ -2945,7 +2958,7 @@ end
 
 @testset "a warm query allocates nothing and infers" begin
     sys = TWIN
-    space = DGG.DGGSpace(levelgrid(sys, 1))
+    space = levelgrid(sys, 1)
     @test (@inferred CD._pointstate(sys)) isa CD.PointState{30}
     smp = GR.sampler(POINT, space)
     row = GR.WeightRow()
@@ -2983,12 +2996,12 @@ end
         ([(46, 10), (46, 11), (46, 12)], [(46, 11)]))
 
         srcgrid = DGG.PartialGrid(src, 1, tilepixels(src, srctiles))
-        srcspace = DGG.DGGSpace(srcgrid; chunklevel = 0)
+        srcspace = GrI.mockchunks(srcgrid, GrI.LevelChunks(0))
         dstgrid = DGG.PartialGrid(dst, 1, tilepixels(dst, dsttiles))
-        dstspace = DGG.DGGSpace(dstgrid; chunklevel = 0)
+        dstspace = GrI.mockchunks(dstgrid, GrI.LevelChunks(0))
         ssites = GR.samplesites(srcspace)
         values = [saddle(CD.FROM_SPHERE(ssites[i])...) for i in 1:ncells(srcgrid)]
-        starts = [first(GR.ownedindices(srcspace, k)) for k in 1:GR.nchunks(srcspace)]
+        starts = [first(GR._ownedindices(srcspace, k)) for k in 1:GR._nchunks(srcspace)]
 
         eager = GR.regrid(counting_source(srcspace, values); to = dstspace,
             from = srcspace, method = POINT, missingpolicy = DGG.Weighted(1),
@@ -3004,16 +3017,16 @@ end
         dsites = GR.samplesites(dstspace)
         out = similar(parent(eager))
         bad = String[]
-        for d in 1:GR.nchunks(dstspace)
+        for d in 1:GR._nchunks(dstspace)
             empty!(lazysrc.reads)
-            cells = GR.ownedindices(dstspace, d)
+            cells = GR._ownedindices(dstspace, d)
             out[cells] = lazy[cells]
             read = sort(unique(findfirst(==(s), starts) for s in lazysrc.reads))
             owning = Set{Int}()
             for i in cells
                 GR.ismapped(GR.weightsat!(row, smp, dsites[i])) || continue
                 for j in row.indices
-                    push!(owning, GR.chunkat(srcspace, j))
+                    push!(owning, GR._chunkat(srcspace, j))
                 end
             end
             # Law 6: the chunks read are the chunks owning the tile's entries.
@@ -3039,9 +3052,9 @@ end
     src = CD.CopernicusDEMSystem{30}()
     dst = CD.CopernicusDEMSystem{60}()
     srcgrid = DGG.PartialGrid(src, 1, tilepixels(src, [(89, 10), (89, 11), (89, 12)]))
-    srcspace = DGG.DGGSpace(srcgrid; chunklevel = 0)
+    srcspace = GrI.mockchunks(srcgrid, GrI.LevelChunks(0))
     dstgrid = DGG.PartialGrid(dst, 1, tilepixels(dst, [(89, 10), (89, 11)]))
-    dstspace = DGG.DGGSpace(dstgrid; chunklevel = 0)
+    dstspace = GrI.mockchunks(dstgrid, GrI.LevelChunks(0))
     ssites = GR.samplesites(srcspace)
     values = [saddle(CD.FROM_SPHERE(ssites[i])...) for i in 1:ncells(srcgrid)]
 
@@ -3062,8 +3075,8 @@ end
         missingpolicy = DGG.Weighted(1))
     eager = parent(GR.regrid(values; args..., lazy = false))
     lazy = collect(parent(GR.regrid(values; args..., lazy = true)))
-    fine = DGG.DGGSpace(srcgrid; chunklevel = 1)
-    @test GR.nchunks(fine) != GR.nchunks(srcspace)
+    fine = GrI.mockchunks(srcgrid, GrI.LevelChunks(1))
+    @test GR._nchunks(fine) != GR._nchunks(srcspace)
     rechunked = parent(GR.regrid(values; to = dstspace, from = fine,
         method = POINT, missingpolicy = DGG.Weighted(1), lazy = false))
     @test isequal(eager, lazy)

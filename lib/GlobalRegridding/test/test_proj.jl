@@ -9,7 +9,7 @@ tuple_isapprox(a, b) = all(isapprox(x, y) for (x, y) in zip(a, b))
 function projected_snapshot(space, querycap)
     centre = cellcentroid(space, 5)
     ring = Tuple.(GI.getpoint(GI.getexterior(getcell(space, 5))))
-    native = GR.chartcoords(space, centre)
+    native = chartcoords(space, centre)
     located = cellat(space, centre)
     candidates = GR.candidatechunks!(Int[], GR.chunkindex(space), querycap)
     return (; centre = Tuple(centre), ring, native, located, candidates)
@@ -52,47 +52,35 @@ end
     prepared_forward = GR._task_prepared_raster_transform(space.native_to_unit_sphere)
     @test prepared_forward.transformation === pair.forward
 
-    # Shared indexes retain the safe TLS chart. Synchronous traversal and
-    # serial conservative traversal prepare only private cursor copies.
+    # The grid itself keeps the safe TLS chart: its chunk index is packed from
+    # per-tile extents and its cursors are rooted at the grid, so nothing
+    # stored holds a task-local clone. Every vertex walk prepares the chart
+    # once per block on an ephemeral perimeter view instead.
     retained = GR.chunkindex(space)
-    @test retained.grid.native_to_unit_sphere === space.native_to_unit_sphere
-    localcursor = GR._task_prepared_raster_tree(retained)
-    @test localcursor !== retained
-    @test localcursor.grid !== retained.grid
-    @test localcursor.grid.native_to_unit_sphere.transformation === pair.forward
-    @test retained.grid.native_to_unit_sphere === space.native_to_unit_sphere
-    prepared_vertex = GR.facevertex(localcursor.grid, 1, 1, 1)
-    @test tuple_isapprox(Tuple(prepared_vertex),
-        Tuple(GR.facevertex(retained.grid, 1, 1, 1)))
-    prepared_vertex_allocated =
-        @allocated(GR.facevertex(localcursor.grid, 1, 1, 1))
+    @test retained isa GR.FlexibleRTrees.RTree
+    @test celltree(space).grid === space
+    @test space.native_to_unit_sphere isa GRProjExt._NativeToUnitSphere
+    perimeter = GR._RasterPerimeter(space)
+    @test perimeter.space === space
+    @test perimeter.native_to_unit_sphere.transformation === pair.forward
+    @test space.native_to_unit_sphere isa GRProjExt._NativeToUnitSphere
+    prepared_vertex = GR.facevertex(perimeter, 1, 1, 1)
+    @test tuple_isapprox(Tuple(prepared_vertex), Tuple(GR.facevertex(space, 1, 1, 1)))
+    prepared_vertex_allocated = @allocated(GR.facevertex(perimeter, 1, 1, 1))
     @test prepared_vertex_allocated == 0
 
-    serial_dst, serial_src = GR._task_prepared_intersection_trees(
-        GOCore.False(), retained, retained)
-    @test serial_dst.grid.native_to_unit_sphere.transformation === pair.forward
-    @test serial_src.grid.native_to_unit_sphere.transformation === pair.forward
-    threaded_dst, threaded_src = GR._task_prepared_intersection_trees(
-        GOCore.True(), retained, retained)
-    @test threaded_dst === retained
-    @test threaded_src === retained
-
-    # A prepared destination retains its restricted tree across block tasks, so
-    # that stored tree keeps the safe chart, and a serial build still prepares
-    # a private cursor from it.
+    # A prepared destination retains its restricted tree across block tasks;
+    # that stored tree is rooted at the grid and so keeps the safe chart.
     cache = GR.DestinationCache(space, 1:ncells(space))
-    @test cache.tree.grid.native_to_unit_sphere === space.native_to_unit_sphere
-    prepared_tile = GR._task_prepared_raster_tree(cache.tree)
-    @test prepared_tile !== cache.tree
-    @test prepared_tile.grid.native_to_unit_sphere.transformation === pair.forward
-    @test cache.tree.grid.native_to_unit_sphere === space.native_to_unit_sphere
+    @test cache.tree.grid === space
+    @test space.native_to_unit_sphere isa GRProjExt._NativeToUnitSphere
 
     to_sphere = GO.UnitSpherical.UnitSphereFromGeographic()
-    xaxis, yaxis = GR.chartaxes(space)
+    xaxis, yaxis = chartaxes(space)
     x, y = first(xaxis), first(yaxis)
     expected = to_sphere(template((x, y)))
     @test tuple_isapprox(Tuple(cellcentroid(space, 1)), Tuple(expected))
-    @test tuple_isapprox(GR.chartcoords(space, expected), (x, y))
+    @test tuple_isapprox(chartcoords(space, expected), (x, y))
     @test all(cellat(space, cellcentroid(space, i)) == i for i in 1:ncells(space))
     @test data.reads == 0
 

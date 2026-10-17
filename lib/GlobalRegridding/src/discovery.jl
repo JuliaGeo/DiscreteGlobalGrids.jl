@@ -1,6 +1,7 @@
-# Discover connected source and destination chunks through each space's native
-# spatial index. Unlike cell trees, chunk indexes need not expose one common
-# node-extent representation.
+# Discover connected source and destination chunks: the source grid's chunk
+# extents (`grid_extent` of each chunk, read lazily) packed in an R-tree and
+# tested against each destination chunk's extent dilated by the method's
+# support radius.
 
 """
     DilatedIntersects(radius)
@@ -25,7 +26,7 @@ end
     Extents.intersects(_dilatedcap(a, p.radius), b)
 
 # --------------------------------------------------------------------------
-# Chunk-candidate index implementations
+# The chunk index
 # --------------------------------------------------------------------------
 
 struct EmptyChunkIndex end
@@ -34,24 +35,38 @@ function _packedchunkindex(caps::AbstractVector{<:SphericalCap})
     isempty(caps) && return EmptyChunkIndex()
     data = collect(Cap, caps)
     boxes = map(cap -> convert(Extents.Extent, cap), data)
-    return FlexibleRTrees.RTree(FlexibleRTrees.HPR(), data; extents = boxes)
+    return RTree(HPR(), data; extents = boxes)
 end
 
-chunkindex(space::RegridSpace) = _packedchunkindex(chunkextents(space))
-chunkindex(space::RasterGrid) = _rasterchunkcursor(space)
+"""
+    chunkindex(grid) -> index
+
+The source-chunk query object [`candidatechunks!`](@ref) searches: the extents
+of `chunks(grid)` (`grid_extent` of each chunk) packed in a GeometryOps
+`FlexibleRTree`. Built per plan, never stored on the grid.
+"""
+chunkindex(grid) = _packedchunkindex(_chunkextents(grid))
 
 @inline function _dilatedcap(cap::Cap, radius::Float64)
     radius == 0.0 && return cap
     return SphericalCap(cap.point, min(Float64(pi), cap.radius + radius))
 end
 
+"""
+    candidatechunks!(out::Vector{Int}, index, dstcap; radius = 0.0) -> out
+
+Replace `out` with ascending unique chunk numbers from `index` that may lie
+within `radius` radians of `dstcap`: the chunks whose extent meets the
+dilated cap exactly, so the relation is the cap join. False positives are
+allowed; false negatives are not.
+"""
 function candidatechunks!(out::Vector{Int}, ::EmptyChunkIndex, ::Cap;
         radius::Real = 0.0)
     empty!(out)
     return out
 end
 
-function candidatechunks!(out::Vector{Int}, index::FlexibleRTrees.RTree, dstcap::Cap;
+function candidatechunks!(out::Vector{Int}, index::RTree, dstcap::Cap;
         radius::Real = 0.0)
     r = Float64(radius)
     empty!(out)
@@ -66,57 +81,7 @@ function candidatechunks!(out::Vector{Int}, index::FlexibleRTrees.RTree, dstcap:
     return out
 end
 
-# A RasterGridView is indexed in array storage order. Convert its cursor ranges
-# back to X/Y before looking up the owning DiskArrays chunks.
-@inline function _rastercursorbox(node::TopDownQuadtreeCursor{<:RasterGridView})
-    a, b = node.irange, node.jrange
-    return node.grid.space.xfast ? (a, b) : (b, a)
-end
-
-@inline function _rasterchunkspan(node::TopDownQuadtreeCursor{<:RasterGridView})
-    space = node.grid.space
-    xr, yr = _rastercursorbox(node)
-    return (_chunkofindex(space.xchunks, first(xr)),
-        _chunkofindex(space.xchunks, last(xr)),
-        _chunkofindex(space.ychunks, first(yr)),
-        _chunkofindex(space.ychunks, last(yr)))
-end
-
-function _rastercandidates!(out::Vector{Int},
-        node::TopDownQuadtreeCursor{<:RasterGridView}, intersects)
-    intersects(STI.node_extent(node)) || return out
-    cx0, cx1, cy0, cy1 = _rasterchunkspan(node)
-    space = node.grid.space
-    if cx0 == cx1 && cy0 == cy1
-        push!(out, chunknumber(space, cx0, cy0))
-    elseif STI.isleaf(node)
-        for cy in cy0:cy1, cx in cx0:cx1
-            push!(out, chunknumber(space, cx, cy))
-        end
-    else
-        for child in STI.getchild(node)
-            _rastercandidates!(out, child, intersects)
-        end
-    end
-    return out
-end
-
-function candidatechunks!(out::Vector{Int},
-        index::TopDownQuadtreeCursor{<:RasterGridView}, dstcap::Cap;
-        radius::Real = 0.0)
-    empty!(out)
-    # `index` may be retained by a LazyRegridArray. Traverse a private cursor
-    # copy so a task-owned chart wrapper never escapes into shared index state.
-    privateindex = _task_prepared_raster_tree(index)
-    _rastercandidates!(out, privateindex,
-        Base.Fix1(DilatedIntersects(Float64(radius)), dstcap))
-    sort!(out)
-    unique!(out)
-    return out
-end
-
-# Compatibility fallback for existing extension trees. New structured indexes
-# specialize `candidatechunks!` directly and need not impersonate cap trees.
+# Any other SpatialTreeInterface tree over chunk numbers with cap extents.
 function candidatechunks!(out::Vector{Int}, index, dstcap::Cap; radius::Real = 0.0)
     empty!(out)
     predicate = Base.Fix1(DilatedIntersects(Float64(radius)), dstcap)
@@ -128,8 +93,6 @@ function candidatechunks!(out::Vector{Int}, index, dstcap::Cap; radius::Real = 0
     return out
 end
 
-chunkextent(space::RegridSpace, chunk::Integer) = chunkextents(space)[Int(chunk)]
-
 # Where the chunk-to-chunk relation is spelled:
 #
 #   - one destination chunk's sources: `sourcesof(dependencies(plan), d)`, or
@@ -140,6 +103,6 @@ chunkextent(space::RegridSpace, chunk::Integer) = chunkextents(space)[Int(chunk)
 #     the seam all of the above are built from and the only query implementation
 #     that defines a graph edge.
 #
-# `chunkextents` answers none of them: it hands out the caps as *values*, for
-# `spacestamp`, `_builddependencies`, `subspace_dependencies` and the generic
+# `_chunkextents` answers none of them: it hands out the caps as *values*, for
+# `spacestamp`, `_builddependencies`, `subspace_dependencies` and the
 # `chunkindex` that packs them.

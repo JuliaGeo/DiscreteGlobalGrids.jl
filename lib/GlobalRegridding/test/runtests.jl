@@ -117,4 +117,5 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
     include("test_lazy.jl")
     include("test_directnearest.jl")
     include("test_integration.jl")
+    include("test_gispace_parity.jl")
 end

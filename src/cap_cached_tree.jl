@@ -219,3 +219,39 @@ function _fillcaps!(caps::Vector, grid::AbstractGrid, off::Int, lo::Int, hi::Int
     end
     return nothing
 end
+
+# --- GridInterface's `subtree` on a rooted chunk of a level grid ---------------
+# `chunks(grid)` hands out rooted subsets whose positions are one ancestor's
+# descendant range. Their tree is this package's hierarchy cursor started at
+# that ancestor (O(1)), with the leaf shape and cap treatment the regridding
+# face measured (`_cachedchunktree`); the leaves emit the level grid's positions.
+# Any other range gets GridInterface's default.
+function _rangecursor(grid::HierarchicalLevelGrid, inds::AbstractUnitRange{<:Integer})
+    sys = system(grid)
+    (isempty(inds) || !has_sorted_subtrees(sys)) && return nothing
+    root = treeify(grid)
+    (root isa HierarchicalGridCursor && root.selection === nothing) || return nothing
+    c = cellindex(grid, Int(first(inds)))
+    for l in levels(sys)
+        l > root.leaf_level && break
+        a = ancestor(sys, c, l)
+        r = descendant_range(sys, a, root.leaf_level)
+        (Int(first(r)) == Int(first(inds)) && Int(last(r)) == Int(last(inds))) || continue
+        return typeof(root)(grid, sys, root.top_level, root.leaf_level, root.bucket_size,
+            l, a, Int(first(inds)), Int(last(inds)), true, nothing)
+    end
+    return nothing
+end
+
+function GridInterface.subtree(grid::HierarchicalLevelGrid, inds::AbstractUnitRange{<:Integer})
+    window = subcursor(grid, inds)      # dispatch-only; CopernicusDEM answers it
+    window === nothing || return window
+    cursor = _rangecursor(grid, inds)
+    cursor === nothing || return _cachedchunktree(cursor, inds)
+    return GridInterface._default_subtree(grid, inds)
+end
+function GridInterface.subtree(grid::HierarchicalLevelGrid, s::GridInterface.Subset)
+    pos = GridInterface.parentpositions(s)
+    (parent(s) === grid && pos isa AbstractUnitRange) && return GridInterface.subtree(grid, pos)
+    return invoke(GridInterface.subtree, Tuple{Any,GridInterface.Subset}, grid, s)
+end

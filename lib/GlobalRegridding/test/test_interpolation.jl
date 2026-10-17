@@ -3,25 +3,6 @@
 
 import DimensionalData as DD
 
-# Cell centres in native degrees.
-GR.chartaxes(space::ToyLonLatSpace) =
-    ([space.lon0 + (ix - 0.5) * dlon(space) for ix in 1:space.nlon],
-        [space.lat0 + (iy - 0.5) * dlat(space) for iy in 1:space.nlat])
-
-# Return longitude on the chart axes' branch.
-function GR.chartcoords(space::ToyLonLatSpace, p)
-    lon, lat = toy_lonlat(p)
-    return (space.lon0 + mod(lon - space.lon0, 360.0), lat)
-end
-
-GR.chartlocalindex(space::ToyLonLatSpace, ix::Int, iy::Int) = localindex(space, ix, iy)
-
-GR.chartperiod(space::ToyLonLatSpace) =
-    (space.lon1 - space.lon0 >= 360 ? 360.0 : nothing, nothing)
-
-# Δλ bounds adjacent distance along a parallel.
-GR.chartspacing(space::ToyLonLatSpace) = (deg2rad(dlon(space)), deg2rad(dlat(space)))
-
 # Helpers
 
 function t4_build(method, dst, dst_inds, src, src_inds)

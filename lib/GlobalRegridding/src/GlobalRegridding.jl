@@ -30,7 +30,12 @@ import ConservativeRegridding
 import GridInterface
 import GridInterface: ncells
 using GridInterface.Structured: AbstractStructuredGrid, TopDownQuadtreeCursor
+import GridInterface.Structured: isstructured
 import GridInterface.Structured: nfaces, facesize, facevertex, faceposition, facecell, blockextent
+import GridInterface.Structured: hasfaceaxes, faceaxes, facecoords, faceperiod, facelocalindex
+# Dual-cell answers are fixed-capacity, as GridInterface's rings are.
+import SmallCollections
+using SmallCollections: SmallVector
 import GeometryOpsCore: manifold
 
 import DimensionalData as DD
@@ -65,6 +70,9 @@ include("chunkgraph.jl")
 include("plans.jl")
 include("executor.jl")
 include("lazy.jl")
+# `gispace.jl` reads the chart and dual machinery above and the chunk defaults
+# below it; nothing before it dispatches on the type.
+include("gispace.jl")
 include("api.jl")
 # The weightless nearest-cell spike: it specializes `eagerplan` from `api.jl`
 # and `_readdestination!` from `lazy.jl`, so it comes after both.
@@ -80,6 +88,8 @@ export cellindices
 
 # Included spaces
 export RasterGrid
+# Any GridInterface grid as a space.
+export GISpace
 
 # Methods
 export AbstractRegriddingMethod
@@ -134,6 +144,7 @@ public chunkextents, chunkextent, chunkindex, candidatechunks!
 # chart says which plane its nodes are written in.
 public hasdualcells, dualcellat, samplerstate
 public Sampler, DualCell, BasisKind, Bilinear, MeanValue, chartat
+public DualState
 public chunkranges
 public chartaxes, chartcoords, chartlocalindex, chartperiod, chartspacing
 public _asspace

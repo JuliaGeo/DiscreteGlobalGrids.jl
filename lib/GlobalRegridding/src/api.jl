@@ -333,11 +333,12 @@ function _asspace(ds::Tuple{Vararg{DD.Dimension}}, name::AbstractString)
 end
 
 function _asspace(space, name)
-    space isa RegridSpace || throw(ArgumentError(
-        "`$name` must be a RegridSpace, a dimensional raster or a tuple of " *
-        "dimensions, got $(typeof(space)). A package that supplies spaces " *
-        "resolves its own target spellings into one."))
-    return space
+    space isa RegridSpace && return space
+    GridInterface.isgrid(space) && return GISpace(space)
+    throw(ArgumentError(
+        "`$name` must be a RegridSpace, a GridInterface grid, a dimensional " *
+        "raster or a tuple of dimensions, got $(typeof(space)). A package that " *
+        "supplies spaces resolves its own target spellings into one."))
 end
 
 _asspace(space, name, src_space) = _asspace(space, name)

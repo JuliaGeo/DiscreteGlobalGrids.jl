@@ -68,12 +68,12 @@ end
 
 # A RasterGridView is indexed in array storage order. Convert its cursor ranges
 # back to X/Y before looking up the owning DiskArrays chunks.
-@inline function _rastercursorbox(node::Trees.TopDownQuadtreeCursor{<:RasterGridView})
-    a, b = node.leafranges
+@inline function _rastercursorbox(node::TopDownQuadtreeCursor{<:RasterGridView})
+    a, b = node.irange, node.jrange
     return node.grid.space.xfast ? (a, b) : (b, a)
 end
 
-@inline function _rasterchunkspan(node::Trees.TopDownQuadtreeCursor{<:RasterGridView})
+@inline function _rasterchunkspan(node::TopDownQuadtreeCursor{<:RasterGridView})
     space = node.grid.space
     xr, yr = _rastercursorbox(node)
     return (_chunkofindex(space.xchunks, first(xr)),
@@ -83,7 +83,7 @@ end
 end
 
 function _rastercandidates!(out::Vector{Int},
-        node::Trees.TopDownQuadtreeCursor{<:RasterGridView}, intersects)
+        node::TopDownQuadtreeCursor{<:RasterGridView}, intersects)
     intersects(STI.node_extent(node)) || return out
     cx0, cx1, cy0, cy1 = _rasterchunkspan(node)
     space = node.grid.space
@@ -102,7 +102,7 @@ function _rastercandidates!(out::Vector{Int},
 end
 
 function candidatechunks!(out::Vector{Int},
-        index::Trees.TopDownQuadtreeCursor{<:RasterGridView}, dstcap::Cap;
+        index::TopDownQuadtreeCursor{<:RasterGridView}, dstcap::Cap;
         radius::Real = 0.0)
     empty!(out)
     # `index` may be retained by a LazyRegridArray. Traverse a private cursor

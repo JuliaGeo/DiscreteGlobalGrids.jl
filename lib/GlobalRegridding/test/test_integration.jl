@@ -486,7 +486,7 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
 
         # Chunk rectangles retain the restricted CR cursor in either orientation.
         @test all(GR.subtree(space, ownedindices(space, c)) isa
-                  CR.Trees.TopDownQuadtreeCursor
+                  GR.TopDownQuadtreeCursor
                   for c in 1:nchunks(space))
         @test GR.subtree(space, [1, 5, 30]) isa GR.CellSpaceRTree
     end

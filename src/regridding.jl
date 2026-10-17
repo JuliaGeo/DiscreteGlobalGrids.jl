@@ -127,16 +127,14 @@ end
 
 # `RegridSpace` interface
 #
-# GlobalRegridding's `ncells`/`getcell` are ConservativeRegridding's `Trees`
-# functions, not GridInterface's: a DGG space answers both spellings, and the
-# GridInterface spelling answers for every GlobalRegridding space (the raster
-# grids) so this package's own code can ask either kind of space the same way.
+# GlobalRegridding's `ncells` is GridInterface's (this package's own binding);
+# its `getcell` is its own, so a DGG space answers both `getcell` spellings and
+# this package's spelling answers for every GlobalRegridding space (the raster
+# grids), so this package's own code can ask either kind of space the same way.
 
 ncells(space::DGGSpace) = ncells(space.grid)
 getcell(space::DGGSpace, i::Int) = getcell(space.grid, i)
-GR.ncells(space::DGGSpace) = ncells(space.grid)
 GR.getcell(space::DGGSpace, i::Int) = getcell(space.grid, i)
-ncells(space::GR.RegridSpace) = GR.ncells(space)
 getcell(space::GR.RegridSpace, i::Int) = GR.getcell(space, i)
 
 GOCore.manifold(space::DGGSpace) = GOCore.best_manifold(space.grid)
@@ -358,35 +356,7 @@ include("dual_cells.jl")
 # verbs live beside the other cursors', so it is read here.
 include("cap_cached_tree.jl")
 
-# --- ConservativeRegridding's tree surface ---------------------------------
-#
-# `CR.Regridder` reads the cell count, the polygons and the task weight of the
-# trees this package hands it through `ConservativeRegridding.Trees`, which are
-# that package's own functions. Every cursor here answers the same three
-# questions in this package's vocabulary — `ncells` of the grid, `getcell`, and
-# SpatialTreeInterface's `split_weight` — so the CR names forward to those.
-# This is the one place outside `dual_cells.jl` that names `Trees`, and Phase 8
-# of the GridInterface plan removes it with the rest of the GR face.
-const _CRTree = Union{HierarchicalGridCursor,Engine.IndexTreeNode,TiledRasterCursor,
-    CopernicusDEM.BlockCursor,CopernicusDEM.MemoBlockCursor,CapCachedTree}
-
-# `CR.Regridder(dst, src)` on a grid of this package normalises it with
-# `Trees.treeify(manifold, grid)`: that is this package's manifold form, and a
-# tree of this package is already normalised.
-ConservativeRegridding.Trees.treeify(m::GOCore.Manifold, grid::AbstractGrid; kwargs...) =
-    treeify(m, grid)
-ConservativeRegridding.Trees.treeify(::GOCore.Manifold, tree::_CRTree; kwargs...) = tree
-ConservativeRegridding.Trees.ncells(t::_CRTree) = _tree_ncells(t)
-ConservativeRegridding.Trees.getcell(t::_CRTree, i::Int) = getcell(t, i)
-ConservativeRegridding.Trees.getcell(t::_CRTree) = getcell(t)
-ConservativeRegridding.Trees.split_weight(t::_CRTree) = split_weight(t)
-
-# The root cursor's window is the whole grid, so one definition serves both the
-# tree-level (`1:ncells(tree)`) and node-level index spaces; every other tree
-# addresses leaves by grid index at every node.
-_tree_ncells(t::HierarchicalGridCursor) = Engine._stored_count(t)
-_tree_ncells(t::Engine.IndexTreeNode) = ncells(t.tree.grid)
-_tree_ncells(t::TiledRasterCursor) = ncells(t.tree.grid)
-_tree_ncells(t::CopernicusDEM.BlockCursor) = ncells(t.grid)
-_tree_ncells(t::CopernicusDEM.MemoBlockCursor) = _tree_ncells(t.node)
-_tree_ncells(t::CapCachedTree) = _tree_ncells(t.node)
+# `CR.Regridder(dst, src)` on a grid of this package reads it as the
+# GridInterface grid it is (`ncells`, `cell_geometry`, `cell_area`) and sweeps
+# `treeify(grid; leaf_capacity = ForSweeps())`, this package's own cursors,
+# whose task weight is SpatialTreeInterface's `split_weight`: no forwarding.

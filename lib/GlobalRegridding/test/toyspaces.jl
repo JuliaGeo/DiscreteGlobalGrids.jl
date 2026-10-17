@@ -11,7 +11,7 @@ import GeometryOps as GO
 import GeometryOpsCore as GOCore
 import GeoInterface as GI
 import DimensionalData as DD
-import ConservativeRegridding: Trees
+import GridInterface as GrI
 
 const US = GO.UnitSpherical
 const USPoint = GO.UnitSphericalPoint{Float64}
@@ -127,9 +127,10 @@ GO.SpatialTreeInterface.child_indices_extents(tree::ToyCapTree) =
 
 # Cell-tree access uses the wrapped space's local indices.
 GOCore.best_manifold(tree::ToyCapTree) = manifold(tree.space)
-Trees.ncells(tree::ToyCapTree) = ncells(tree.space)
-Trees.getcell(tree::ToyCapTree, i::Int) = getcell(tree.space, i)
-Trees.getcell(tree::ToyCapTree) = (getcell(tree.space, i) for i in tree.indices)
+GR.ncells(tree::ToyCapTree) = ncells(tree.space)
+GR.getcell(tree::ToyCapTree, i::Int) = getcell(tree.space, i)
+GR.getcell(tree::ToyCapTree) = (getcell(tree.space, i) for i in tree.indices)
+GrI.split_weight(tree::ToyCapTree) = length(tree.indices)
 
 # Lon/lat test space
 

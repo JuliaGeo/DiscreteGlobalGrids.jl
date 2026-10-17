@@ -1183,7 +1183,7 @@ end
     # ---- the index space ----------------------------------------------------
     # Tree and leaf indices both use the grid's own index space.
     root = CD.BlockCursor(levelgrid(TWIN, 0))
-    @test CR.Trees.ncells(root) == ncells(TWIN, 0)
+    @test STI.split_weight(root) == ncells(TWIN, 0)
     for i in (1, 2, ncells(TWIN, 0) ÷ 3, ncells(TWIN, 0))
         @test getcell(root, i) ==
               cell_polygon(levelgrid(TWIN, 0), cellindex(levelgrid(TWIN, 0), i))
@@ -1196,11 +1196,11 @@ end
           levelgrid(DGG.HEALPixSystem(), 2)),)
 
         reference = CR.Regridder(MANIFOLD, dst,
-            DGG.HierarchicalGridCursor(src)).intersections
+            GridInterface.GridAndTree(src, DGG.HierarchicalGridCursor(src))).intersections
         @test length(reference.nzval) > 0
         for strategy in (CD.Blocked{3}(), CD.Bisected())
             blocked = CR.Regridder(MANIFOLD, dst,
-                CD.BlockCursor(src; strategy)).intersections
+                GridInterface.GridAndTree(src, CD.BlockCursor(src; strategy))).intersections
             @test (label, string(typeof(strategy)), blocked == reference) ==
                   (label, string(typeof(strategy)), true)
         end
@@ -1213,9 +1213,9 @@ end
          ("two twin tiles -> HEALPix 5", two_tiles, levelgrid(DGG.HEALPixSystem(), 5)))
 
         reference = CR.Regridder(MANIFOLD, dst,
-            DGG.HierarchicalGridCursor(src)).intersections
+            GridInterface.GridAndTree(src, DGG.HierarchicalGridCursor(src))).intersections
         @test length(reference.nzval) > 0
-        tiled = CR.Regridder(MANIFOLD, dst, treeify(src)).intersections
+        tiled = CR.Regridder(MANIFOLD, dst, GridInterface.GridAndTree(src, treeify(src))).intersections
         @test (label, tiled == reference) == (label, true)
     end
 end
@@ -1300,10 +1300,10 @@ end
         @test tree isa DGG.TiledRasterCursor
         @test leafindices(tree) == collect(inds)
         # The weights are the fallback's, entry for entry.
-        fast = CR.intersection_areas(MANIFOLD, GOCore.False(), dsttree, tree;
-            intersection_operator = op)
-        slow = CR.intersection_areas(MANIFOLD, GOCore.False(), dsttree,
-            GR.CellSpaceRTree(src, inds); intersection_operator = op)
+        fast = CR.intersection_areas(MANIFOLD, GOCore.False(), dstgrid, src;
+            dst_tree = dsttree, src_tree = tree, intersection_operator = op)
+        slow = CR.intersection_areas(MANIFOLD, GOCore.False(), dstgrid, src;
+            dst_tree = dsttree, src_tree = GR.CellSpaceRTree(src, inds), intersection_operator = op)
         @test length(fast.nzval) > 0
         @test (k, fast == slow) == (k, true)
     end
@@ -1442,14 +1442,14 @@ end
               collect(STI.getchild(tree))
         @test_throws BoundsError STI.getchild(tree, STI.nchild(tree) + 1)
         @test_throws ArgumentError STI.child_indices_extents(tree)
-        @test CR.Trees.ncells(tree) == ncells(g)
+        @test STI.split_weight(tree) == ncells(g)
         @test getcell(tree, 7) == cell_polygon(g, cellindex(g, 7))
-        @test CR.Trees.split_weight(tree) == ncells(g)
+        @test STI.split_weight(tree) == ncells(g)
         @test GOCore.best_manifold(tree) == GOCore.best_manifold(g)
         @test treeify(tree) === tree
         # A node's weight is the pixels beneath it, and the children partition them.
-        @test sum(CR.Trees.split_weight(c) for c in STI.getchild(tree)) ==
-              CR.Trees.split_weight(tree)
+        @test sum(STI.split_weight(c) for c in STI.getchild(tree)) ==
+              STI.split_weight(tree)
         # The memo answers what the hooks answer, whoever asks and in what order.
         node = STI.getchild(STI.getchild(tree, 1), 1)
         want = STI.node_extent(node)
@@ -1472,7 +1472,7 @@ end
         for node in (tree, packed, raster, leaf)
             @test @inferred(STI.isleaf(node)) isa Bool
             @test @inferred(STI.nchild(node)) isa Int
-            @test @inferred(CR.Trees.split_weight(node)) isa Int
+            @test @inferred(STI.split_weight(node)) isa Int
             @test @inferred(STI.node_extent(node)) isa US.SphericalCap
         end
         for node in (tree, packed, raster)
@@ -1534,8 +1534,8 @@ end
         g = holding(spec)
         dst = levelgrid(DGG.HEALPixSystem(), 5)
         reference = CR.Regridder(MANIFOLD, dst,
-            DGG.HierarchicalGridCursor(g)).intersections
-        tiled = CR.Regridder(MANIFOLD, dst, treeify(g)).intersections
+            GridInterface.GridAndTree(g, DGG.HierarchicalGridCursor(g))).intersections
+        tiled = CR.Regridder(MANIFOLD, dst, GridInterface.GridAndTree(g, treeify(g))).intersections
         @test length(reference.nzval) > 0
         @test (length(spec), tiled == reference) == (length(spec), true)
     end
@@ -1570,9 +1570,9 @@ end
     @test [c.node for c in STI.getchild(memoroot)] ==
           [STI.getchild(bareroot, k) for k in 1:STI.nchild(bareroot)]
     @test STI.getchild(memoroot, 2).node == STI.getchild(bareroot, 2)
-    @test CR.Trees.ncells(memoroot) == CR.Trees.ncells(bareroot)
+    @test STI.split_weight(memoroot) == STI.split_weight(bareroot)
     @test getcell(memoroot, first(tilerange)) == getcell(bareroot, first(tilerange))
-    @test CR.Trees.split_weight(memoroot) == CR.Trees.split_weight(bareroot)
+    @test STI.split_weight(memoroot) == STI.split_weight(bareroot)
     @test GOCore.best_manifold(memoroot) == GOCore.best_manifold(bareroot)
     @test treeify(memoroot) === memoroot
     @test sprint(show, memoroot) == "Memo" * sprint(show, bareroot)
@@ -1779,10 +1779,10 @@ end
 
     # Holding against holding: two `TiledRasterCursor`s.
     let dstgrid = holding([(46, 10), (46, 11)]), srcgrid = holding([(46, 10)])
-        fast = CR.intersection_areas(MANIFOLD, GOCore.False(), treeify(dstgrid),
-            treeify(srcgrid); intersection_operator = op)
-        slow = CR.intersection_areas(MANIFOLD, GOCore.False(),
-            DGG.HierarchicalGridCursor(dstgrid), DGG.HierarchicalGridCursor(srcgrid);
+        fast = CR.intersection_areas(MANIFOLD, GOCore.False(), dstgrid, srcgrid;
+            dst_tree = treeify(dstgrid), src_tree = treeify(srcgrid), intersection_operator = op)
+        slow = CR.intersection_areas(MANIFOLD, GOCore.False(), dstgrid, srcgrid;
+            dst_tree = DGG.HierarchicalGridCursor(dstgrid), src_tree = DGG.HierarchicalGridCursor(srcgrid),
             intersection_operator = op)
         @test length(fast.nzval) > 0
         @test fast == slow
@@ -1798,10 +1798,10 @@ end
         srctree = DGG.subcursor(pixels, first(pix):last(pix))
         @test dsttree isa CD.MemoBlockCursor
         @test srctree isa CD.MemoBlockCursor
-        fast = CR.intersection_areas(MANIFOLD, GOCore.False(), dsttree, srctree;
-            intersection_operator = op)
-        slow = CR.intersection_areas(MANIFOLD, GOCore.False(), dsttree.node,
-            srctree.node; intersection_operator = op)
+        fast = CR.intersection_areas(MANIFOLD, GOCore.False(), tiles, pixels;
+            dst_tree = dsttree, src_tree = srctree, intersection_operator = op)
+        slow = CR.intersection_areas(MANIFOLD, GOCore.False(), tiles, pixels;
+            dst_tree = dsttree.node, src_tree = srctree.node, intersection_operator = op)
         @test length(fast.nzval) > 0
         @test fast == slow
     end

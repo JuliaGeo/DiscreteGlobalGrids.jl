@@ -204,8 +204,7 @@ getcell(grid::AbstractGrid, i::Int) = cell_polygon(grid, cellindex(grid, i))
 cell_corners(grid::AbstractGrid, c::AbstractCellIndex) = cell_boundary(grid, c)
 cell_corners(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex) = cell_boundary(sys, c)
 
-# `Trees` addresses a grid as a tree source too, and its lazy all-cells form is
-# part of the surface every grid gets.
+# The lazy all-cells form is part of the surface every grid gets.
 getcell(grid::AbstractGrid) = (getcell(grid, i) for i in 1:ncells(grid))
 
 """

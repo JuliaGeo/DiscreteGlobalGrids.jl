@@ -3,6 +3,7 @@
 import DimensionalData as DD
 import DiskArrays
 import ConservativeRegridding as CR
+import GridInterface as GrI
 import GeometryOps: SpatialTreeInterface as STI
 
 const GEOGRAPHIC_TO_UNIT_SPHERE = GO.UnitSpherical.UnitSphereFromGeographic()
@@ -331,7 +332,7 @@ end
         # while ownership comes from the DiskArrays ranges above. It neither
         # builds nor queries the old flat chunk tree.
         index = GR.chunkindex(space)
-        @test index isa CR.Trees.TopDownQuadtreeCursor
+        @test index isa GR.TopDownQuadtreeCursor
         @test index.grid isa GR.RasterGridView
         @test index.grid.space === space
         whole = SphericalCap(geographic_point(0.0, 0.0), Float64(pi))
@@ -362,7 +363,7 @@ end
         @test shiftedspace.native_to_unit_sphere isa GR._TwoArgumentNativeToUnitSphere
         @test shiftedspace.native_to_unit_sphere.f === shifted
         @test cellcentroid(shiftedspace, 1) == shifted(raster_lon()[1], raster_lat()[1])
-        @test CR.Trees.getvertex(shiftedindex.grid, 1, 1) ==
+        @test GR.facevertex(shiftedindex.grid, 1, 1, 1) ==
               shifted(shiftedspace.xedges[1], shiftedspace.yedges[1])
         @test !isempty(cellring(shiftedspace, 1))
         @test GR.candidatechunks!(Int[], shiftedindex, whole) ==
@@ -384,23 +385,24 @@ end
         @test tree_covers(space, celltree(space, 1))
         @test tree_covers(space, celltree(space, [1, 9, 17, 25]))
 
-        # `ConservativeRegridding` addresses a cell tree as a cell source.
+        # The cursor is a GridInterface quadtree over the view; the view is the space's cells.
         tree = celltree(space)
-        @test Trees.ncells(tree) == GR.rastersize(space)
-        @test Trees.cell_index_count(tree) == ncells(space)
-        @test Trees.getcell(tree, 3) == getcell(space, 3)
-        @test GOCore.best_manifold(tree) == manifold(space)
+        @test (length(tree.irange), length(tree.jrange)) == GR.rastersize(space)
+        @test GrI.ncells(tree.grid) == ncells(space)
+        @test GrI.cell_geometry(tree.grid, 3) == getcell(space, 3)
+        @test getcell(tree, 3) == getcell(space, 3)
+        @test GOCore.best_manifold(tree.grid) == manifold(space)
 
         # Split weights are the node's own window: children partition the parent.
-        @test Trees.split_weight(tree) == ncells(space)
-        @test sum(Trees.split_weight, STI.getchild(tree)) == Trees.split_weight(tree)
-        @test all(c -> Trees.split_weight(c) < Trees.split_weight(tree), STI.getchild(tree))
-        @test Trees.split_weight(celltree(space, [1, 9, 17, 25])) == 4
+        @test GrI.split_weight(tree) == ncells(space)
+        @test sum(GrI.split_weight, STI.getchild(tree)) == GrI.split_weight(tree)
+        @test all(c -> GrI.split_weight(c) < GrI.split_weight(tree), STI.getchild(tree))
+        @test GrI.split_weight(celltree(space, [1, 9, 17, 25])) == 4
 
         # Tree intersections account for every fine cell exactly once.
         coarse = RasterGrid(DD.DimArray(zeros(4, 2), (DD.X(-135.0:90.0:135.0), DD.Y(-45.0:90.0:45.0))))
-        areas = CR.intersection_areas(manifold(space), GOCore.False(),
-            celltree(coarse), celltree(space); progress = false)
+        areas = CR.intersection_areas(manifold(space), GOCore.False(), coarse, space;
+            dst_tree = celltree(coarse), src_tree = celltree(space), progress = false)
         @test size(areas) == (ncells(coarse), ncells(space))
         @test sum(areas) ≈ 4pi
         @test all(≈(4pi / ncells(coarse)), sum(areas; dims = 2))
@@ -410,8 +412,8 @@ end
         # And unchanged when the source's latitude lookup runs the other way.
         flipped = RasterGrid(DD.DimArray(zeros(8, 4),
             (DD.X(raster_lon()), DD.Y(reverse(raster_lat())))))
-        flipped_areas = CR.intersection_areas(manifold(space), GOCore.False(),
-            celltree(coarse), celltree(flipped); progress = false)
+        flipped_areas = CR.intersection_areas(manifold(space), GOCore.False(), coarse, flipped;
+            dst_tree = celltree(coarse), src_tree = celltree(flipped), progress = false)
         @test sum(flipped_areas) ≈ 4pi
         @test all(≈(4pi / ncells(coarse)), sum(flipped_areas; dims = 2))
     end
@@ -435,28 +437,25 @@ end
 
         for space in (xfast, yfast)
             whole = GR.subtree(space, 1:ncells(space))
-            @test whole isa Trees.TopDownQuadtreeCursor
+            @test whole isa GR.TopDownQuadtreeCursor
             @test whole.grid isa GR.RasterGridView
             @test whole.grid.space === space
             @test whole.grid.native_to_unit_sphere === space.native_to_unit_sphere
             @test whole.leafsize == (4, 4)
-            @test Trees.ncells(whole) == GR.rastersize(space)
-            @test Trees.cell_index_count(whole) == ncells(space)
-            @test Trees.split_weight(whole) == ncells(space)
+            @test (length(whole.irange), length(whole.jrange)) == GR.rastersize(space)
+            @test GrI.split_weight(whole) == ncells(space)
             @test sort!(leafindices!(Int[], whole)) == collect(1:ncells(space))
-            @test Trees.getcell(whole, 3) == getcell(space, 3)
-            @test GOCore.best_manifold(whole) == manifold(space)
+            @test GrI.cell_geometry(whole.grid, 3) == getcell(space, 3)
+            @test GOCore.best_manifold(whole.grid) == manifold(space)
 
             # One rectangular DiskArrays chunk keeps the raster's local leaf IDs even
             # though `ncells(cursor)` and split weight describe only its range.
             inds = ownedindices(space, 2)
             chunk = GR.subtree(space, inds)
-            @test chunk isa Trees.TopDownQuadtreeCursor
+            @test chunk isa GR.TopDownQuadtreeCursor
             @test chunk.grid.space === space
             @test chunk.leafsize == (4, 4)
-            @test prod(Trees.ncells(chunk)) == length(inds)
-            @test Trees.cell_index_count(chunk) == ncells(space)
-            @test Trees.split_weight(chunk) == length(inds)
+            @test GrI.split_weight(chunk) == length(inds)
             @test sort!(leafindices!(Int[], chunk)) == sort!(collect(inds))
         end
 
@@ -513,7 +512,7 @@ end
         @test GR.chartspacing(opaque) == (deg2rad(45.0), deg2rad(45.0))
         opaque_grid = GR.RasterGridView(opaque)
         delegated = GR._curvilinear_range_extent(opaque_grid, 2:7, 2:3)
-        routed = Trees.cell_range_extent(opaque_grid, 2:7, 2:3)
+        routed = GR.blockextent(opaque_grid, 1, 2:7, 2:3)
         @test routed.point == delegated.point
         @test routed.radius == delegated.radius
         @test all(GR.US._contains(
@@ -596,7 +595,7 @@ end
         @test warped.tables === nothing
         nrectangles = 0
         for ilo in 1:8, ihi in ilo:8, jlo in 1:4, jhi in jlo:4
-            cap = Trees.cell_range_extent(warped_grid, ilo:ihi, jlo:jhi)
+            cap = GR.blockextent(warped_grid, 1, ilo:ihi, jlo:jhi)
             @test all(GR.US._contains(cap, p)
                 for iy in jlo:jhi, ix in ilo:ihi
                 for p in ring_samples(warped, GR.localindex(warped, ix, iy)))
@@ -608,7 +607,7 @@ end
 
         # A point that escaped the old whole-range cap must not prune its owning
         # DiskArrays chunk from candidate discovery.
-        escaped = Trees.getvertex(warped_grid, 2, 5)
+        escaped = GR.facevertex(warped_grid, 1, 2, 5)
         old_fixed_samples = map(0:15) do j
             edge, step = divrem(j, 4)
             u = step / 4
@@ -633,7 +632,7 @@ end
                 (DD.X(1.0:70_000.0), DD.Y(-5.0:10.0:5.0)));
             native_to_unit_sphere = LargeIndexChart())
         large_grid = GR.RasterGridView(large)
-        large_cap = Trees.cell_range_extent(large_grid, 65_537:69_999, 1:2)
+        large_cap = GR.blockextent(large_grid, 1, 65_537:69_999, 1:2)
         @test all(GR.US._contains(large_cap, p)
             for ix in (65_537, 67_768, 69_999), iy in 1:2
             for p in ring_samples(large, GR.localindex(large, ix, iy)))
@@ -641,7 +640,7 @@ end
         # The earned geographic range path remains allocation-free once
         # compiled; general coverage is delegated even when it is less cheap.
         geographic_grid = GR.RasterGridView(rg_forward())
-        Trees.cell_range_extent(geographic_grid, 2:7, 2:3)
-        @test (@allocated Trees.cell_range_extent(geographic_grid, 2:7, 2:3)) == 0
+        GR.blockextent(geographic_grid, 1, 2:7, 2:3)
+        @test (@allocated GR.blockextent(geographic_grid, 1, 2:7, 2:3)) == 0
     end
 end

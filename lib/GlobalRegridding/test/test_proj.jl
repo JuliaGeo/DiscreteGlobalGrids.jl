@@ -61,11 +61,11 @@ end
     @test localcursor.grid !== retained.grid
     @test localcursor.grid.native_to_unit_sphere.transformation === pair.forward
     @test retained.grid.native_to_unit_sphere === space.native_to_unit_sphere
-    prepared_vertex = CR.Trees.getvertex(localcursor.grid, 1, 1)
+    prepared_vertex = GR.facevertex(localcursor.grid, 1, 1, 1)
     @test tuple_isapprox(Tuple(prepared_vertex),
-        Tuple(CR.Trees.getvertex(retained.grid, 1, 1)))
+        Tuple(GR.facevertex(retained.grid, 1, 1, 1)))
     prepared_vertex_allocated =
-        @allocated(CR.Trees.getvertex(localcursor.grid, 1, 1))
+        @allocated(GR.facevertex(localcursor.grid, 1, 1, 1))
     @test prepared_vertex_allocated == 0
 
     serial_dst, serial_src = GR._task_prepared_intersection_trees(

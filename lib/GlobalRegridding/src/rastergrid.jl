@@ -900,14 +900,14 @@ end
 """
     RasterGridView(space)
 
-A zero-copy `ConservativeRegridding` curvilinear-grid view of a `RasterGrid`.
+A zero-copy one-face `GridInterface.Structured` grid over a `RasterGrid`.
 Its first index is whichever spatial dimension is fastest in the source array,
-so the existing `TopDownQuadtreeCursor` reports the same linear cell indices
-as the regridding space. The wrapped space retains the actual
+so the `TopDownQuadtreeCursor` over it (column-major positions) reports the
+same linear cell indices as the regridding space. The wrapped space retains the actual
 native-to-unit-sphere transformation; raster storage chunking remains solely
 in `space.xchunks` and `space.ychunks`, populated from `DiskArrays.eachchunk`.
 """
-struct RasterGridView{M<:GOCore.Manifold,S<:RasterGrid,F} <: Trees.AbstractCurvilinearGrid{M}
+struct RasterGridView{M<:GOCore.Manifold,S<:RasterGrid,F} <: AbstractStructuredGrid
     manifold::M
     space::S
     "safe retained chart callable, or a task-owned callable on a private prepared copy"
@@ -925,18 +925,28 @@ function _task_prepared_raster_view(grid::RasterGridView)
 end
 
 GOCore.manifold(grid::RasterGridView) = grid.manifold
+GOCore.best_manifold(grid::RasterGridView) = grid.manifold
 
-Trees.ncells(grid::RasterGridView, dim::Int) = if grid.space.xfast
-    dim == 1 ? _nx(grid.space) : dim == 2 ? _ny(grid.space) : throw(BoundsError(grid, dim))
-else
-    dim == 1 ? _ny(grid.space) : dim == 2 ? _nx(grid.space) : throw(BoundsError(grid, dim))
+# The one face: the view's lattice in array storage order, positions column-major
+# (the space's local indices).
+nfaces(::RasterGridView) = 1
+facesize(grid::RasterGridView, f) = rastersize(grid.space)
+@inline faceposition(grid::RasterGridView, f, i, j) = i + (j - 1) * _nfast(grid.space)
+@inline function facecell(grid::RasterGridView, k)
+    n1 = _nfast(grid.space)
+    return (1, (k - 1) % n1 + 1, (k - 1) ÷ n1 + 1)
 end
+GridInterface.ncells(grid::RasterGridView) = ncells(grid.space)
+GridInterface.cell_geometry(grid::RasterGridView, k::Integer) = getcell(grid.space, Int(k))
+# The range cap is computed from the chart rather than read directly from axis
+# coordinates, so the dual search caches child extents.
+GridInterface.extent_is_expensive(::RasterGridView) = true
 
 @inline function _viewsubscript(grid::RasterGridView, i::Int, j::Int)
     return grid.space.xfast ? (i, j) : (j, i)
 end
 
-function Trees.getcell(grid::RasterGridView, i::Int, j::Int)
+function getcell(grid::RasterGridView, i::Int, j::Int)
     ix, iy = _viewsubscript(grid, i, j)
     space = grid.space
     c = _cellcorners(space, ix, iy, grid.native_to_unit_sphere)
@@ -944,7 +954,7 @@ function Trees.getcell(grid::RasterGridView, i::Int, j::Int)
     return GI.Polygon([GI.LinearRing(ring)])
 end
 
-function Trees.getvertex(grid::RasterGridView, i::Int, j::Int)
+@inline function facevertex(grid::RasterGridView, f, i::Int, j::Int)
     ix, iy = _viewsubscript(grid, i, j)
     space = grid.space
     if space.tables === nothing
@@ -953,7 +963,9 @@ function Trees.getvertex(grid::RasterGridView, i::Int, j::Int)
     return _tablecorner(space.tables, ix, iy)
 end
 
-function Trees.cell_range_extent(grid::RasterGridView, irange::UnitRange{Int},
+# The structured grid's extent seam (`Structured.blockextent`): every cursor node,
+# leaf cell, scattered-cell cap and DiskArrays chunk extent comes through here.
+function blockextent(grid::RasterGridView, f, irange::UnitRange{Int},
         jrange::UnitRange{Int})
     # Threaded CR frontier nodes retain the safe view and cross tasks. Prepare
     # one ephemeral view for this range calculation, so its perimeter loop does
@@ -974,20 +986,14 @@ function _raster_range_extent(grid::RasterGridView{M}, irange::UnitRange{Int},
         first(xr), last(xr), first(yr), last(yr))
 end
 
-# Call the method owned by ConservativeRegridding, bypassing this RasterGridView
-# specialization. Kept as a named seam so the committed benchmark can compare
-# the earned geographic optimization with the exact delegated path.
-function _curvilinear_range_extent(grid::RasterGridView{M}, irange::UnitRange{Int},
-        jrange::UnitRange{Int}) where {M}
-    return invoke(Trees.cell_range_extent,
-        Tuple{Trees.AbstractCurvilinearGrid{M},UnitRange{Int},UnitRange{Int}},
-        grid, irange, jrange)
+# GridInterface's own conservative perimeter walk over the face vertices,
+# bypassing this RasterGridView specialization. Kept as a named seam so the
+# committed benchmark can compare the earned geographic optimization with the
+# exact delegated path.
+function _curvilinear_range_extent(grid::RasterGridView, irange::UnitRange{Int},
+        jrange::UnitRange{Int})
+    return GridInterface.Structured._blockextent(grid.manifold, grid, 1, irange, jrange)
 end
-
-# The range cap is computed from the chart rather than read directly from axis
-# coordinates. This lets ConservativeRegridding's own traversal policy cache
-# child extents when it is used in a dual search.
-Trees.extent_is_expensive(::Type{<:RasterGridView}) = true
 
 const _RASTER_CURSOR_LEAFSIZE = (4, 4)
 
@@ -996,19 +1002,23 @@ const _RASTER_CURSOR_LEAFSIZE = (4, 4)
 
 function _rastercursor(space::RasterGrid, xr::UnitRange{Int}, yr::UnitRange{Int})
     ranges = _rasterviewranges(space, xr, yr)
-    return Trees.TopDownQuadtreeCursor(
-        RasterGridView(space), ranges; leafsize = _RASTER_CURSOR_LEAFSIZE)
+    return TopDownQuadtreeCursor(
+        RasterGridView(space), 1, ranges...; leafsize = _RASTER_CURSOR_LEAFSIZE)
 end
+
+# A cursor over the view answers the space's cells (the view's positions are the
+# space's local indices).
+getcell(tree::TopDownQuadtreeCursor{<:RasterGridView}, i::Int) = getcell(tree.grid.space, i)
 
 _rastercursor(space::RasterGrid) = _rastercursor(space, 1:_nx(space), 1:_ny(space))
 _rasterchunkcursor(space::RasterGrid) = _rastercursor(space)
 
 function _task_prepared_raster_tree(
-        tree::Trees.TopDownQuadtreeCursor{<:RasterGridView})
+        tree::TopDownQuadtreeCursor{<:RasterGridView})
     grid = _task_prepared_raster_view(tree.grid)
     grid === tree.grid && return tree
-    return Trees.TopDownQuadtreeCursor(
-        grid, tree.leafranges; leafsize = tree.leafsize)
+    return TopDownQuadtreeCursor(
+        grid, tree.face, tree.irange, tree.jrange; leafsize = tree.leafsize)
 end
 
 _task_prepared_raster_tree(tree) = tree
@@ -1039,7 +1049,7 @@ end
 
 function _rastercellcap(space::RasterGrid, ix::Integer, iy::Integer)
     ranges = _rasterviewranges(space, Int(ix):Int(ix), Int(iy):Int(iy))
-    return Trees.cell_range_extent(RasterGridView(space), ranges...)
+    return blockextent(RasterGridView(space), 1, ranges...)
 end
 
 # The caps as values, for the identity stamp and for a consumer that wants a
@@ -1051,7 +1061,7 @@ function chunkextents(space::RasterGrid)
     for c in 1:n
         xr, yr = chunkbox(space, c)
         ranges = _rasterviewranges(space, xr, yr)
-        caps[c] = Trees.cell_range_extent(RasterGridView(space), ranges...)
+        caps[c] = blockextent(RasterGridView(space), 1, ranges...)
     end
     return caps
 end
@@ -1059,7 +1069,7 @@ end
 # One chunk's extent without materializing the whole vector.
 function chunkextent(space::RasterGrid, chunk::Integer)
     xr, yr = chunkbox(space, Int(chunk))
-    return Trees.cell_range_extent(RasterGridView(space),
+    return blockextent(RasterGridView(space), 1,
         _rasterviewranges(space, xr, yr)...)
 end
 

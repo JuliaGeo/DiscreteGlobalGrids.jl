@@ -33,7 +33,6 @@ import GeometryOps as GO
 import GeoInterface as GI
 import Extents
 import GeometryOps: SpatialTreeInterface as STI
-import ConservativeRegridding: Trees
 
 const A5 = DGG.A5
 const A5N = A5.A5Native
@@ -926,14 +925,14 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
             tree = DGG.treeify(grid)
             @test tree isa DGG.HierarchicalGridCursor
             @test tree.selection isa Vector{Int}      # the selection path, not a window
-            @test Trees.ncells(tree) == DGG.ncells(grid)
+            @test STI.split_weight(tree) == DGG.ncells(grid)
             # Full leaf coverage, exactly once each, and leaf index i is
             # index i of the grid.
             @test sort(STI.depth_first_search(Returns(true), tree)) == collect(1:DGG.ncells(grid))
-            @test all(i -> ring_points(Trees.getcell(tree, i)) ==
+            @test all(i -> ring_points(DGG.getcell(tree, i)) ==
                            ring_points(DGG.cell_polygon(grid, DGG.cellindex(grid, i))),
                 1:min(DGG.ncells(grid), 40))
-            @test_throws BoundsError Trees.getcell(tree, DGG.ncells(grid) + 1)
+            @test_throws BoundsError DGG.getcell(tree, DGG.ncells(grid) + 1)
         end
 
         # A partial grid — the shape the selection cursor actually exists for.
@@ -942,7 +941,7 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
             grid = DGG.PartialGrid(S, DGG.level(first(ids)), ids; bucket_size=bucket)
             tree = DGG.treeify(grid)
             @test tree.selection isa Vector{Int}
-            @test Trees.ncells(tree) == length(ids)
+            @test STI.split_weight(tree) == length(ids)
             @test sort(STI.depth_first_search(Returns(true), tree)) == collect(1:length(ids))
         end
 
@@ -951,7 +950,7 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
         chunk = DGG.subtree(S, RES1[20], 4)
         chunk_tree = DGG.treeify(chunk)
         @test DGG.Engine.node_cell(chunk_tree) == RES1[20]
-        @test Trees.ncells(chunk_tree) == 64
+        @test STI.split_weight(chunk_tree) == 64
         @test sort(STI.depth_first_search(Returns(true), chunk_tree)) == collect(1:64)
         for child in STI.getchild(chunk_tree)
             @test DGG.level(DGG.Engine.node_cell(child)) == 2
@@ -962,7 +961,7 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
         empty_tree = DGG.treeify(DGG.PartialGrid(S, 3, A5.A5Cell[]))
         @test STI.isleaf(empty_tree)
         @test isempty(STI.child_indices_extents(empty_tree))
-        @test Trees.ncells(empty_tree) == 0
+        @test STI.split_weight(empty_tree) == 0
     end
 
     @testset "query through the selection cursor" begin

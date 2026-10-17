@@ -55,6 +55,13 @@ the sphere and its segments are great-circle arcs. Densify non-geodesic edges.
 Throw `BoundsError` for an invalid index.
 """
 function getcell end
+# The GridInterface spelling: `ConservativeRegridding`'s engine reads a space's
+# cells through it when the space stands in for a grid.
+GridInterface.cell_geometry(space::RegridSpace, i::Integer) = getcell(space, Int(i))
+# A space's cells are single rings the engine clips with its convex clipper, as it
+# always has (see `intersection_area.jl`): not `GeneralCells`, whose general clipper
+# is a different (and, on the sphere, less exact) operation.
+GridInterface.cellshape(::RegridSpace) = GridInterface.SimpleCells()
 
 """
     expensivecellgeometry(space::RegridSpace) -> Bool

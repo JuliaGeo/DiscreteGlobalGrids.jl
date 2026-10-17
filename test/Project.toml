@@ -32,6 +32,7 @@ Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
 
 [sources]
 DiscreteGlobalGrids = {path = ".."}
+ConservativeRegridding = {path = "../../ConservativeRegridding.jl"}
 GeometryOps = {path = "/home/anshul/.julia/dev/geo/GeometryOps-split"}
 GeometryOpsCore = {path = "/home/anshul/.julia/dev/geo/GeometryOps-split/GeometryOpsCore"}
 GlobalRegridding = {path = "../lib/GlobalRegridding"}

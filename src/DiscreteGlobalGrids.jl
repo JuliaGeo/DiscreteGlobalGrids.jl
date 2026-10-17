@@ -78,9 +78,8 @@ using GeometryOps: UnitSphericalPoint
 import GeometryOpsCore as GOCore
 import GeoInterface as GI
 import Extents
-# `ConservativeRegridding` stays a dependency for the GlobalRegridding face:
-# `src/regridding.jl` imports it and is the only file that names its `Trees`
-# module.
+# `ConservativeRegridding` stays a dependency for the GlobalRegridding face
+# (`src/regridding.jl` imports it for the regridding plans).
 import GeometryOps: SpatialTreeInterface as STI
 # The tree verbs every DGG cursor answers are SpatialTreeInterface's own.
 import GeometryOps.SpatialTreeInterface: split_weight, subtree_indices

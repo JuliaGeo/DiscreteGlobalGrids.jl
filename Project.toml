@@ -33,6 +33,7 @@ Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
 
 [sources]
 GlobalRegridding = {path = "lib/GlobalRegridding"}
+ConservativeRegridding = {path = "../ConservativeRegridding.jl"}
 GridInterface = {path = "../GridInterface.jl"}
 GeometryOps = {path = "/home/anshul/.julia/dev/geo/GeometryOps-split"}
 GeometryOpsCore = {path = "/home/anshul/.julia/dev/geo/GeometryOps-split/GeometryOpsCore"}
@@ -57,7 +58,7 @@ MakieExt = ["Makie"]
 Rasters = "0.14, 0.15"
 Statistics = "1"
 Tables = "1"
-ConservativeRegridding = "0.2.10"
+ConservativeRegridding = "0.2.17"
 DE9IM = "0.1"
 DiskArrays = "0.4"
 Extents = "0.1"

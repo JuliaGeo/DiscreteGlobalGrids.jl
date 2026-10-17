@@ -24,9 +24,13 @@ import GeoInterface as GI
 import GeometryOps: SpatialTreeInterface as STI
 
 import ConservativeRegridding
-import ConservativeRegridding: Trees
-# Extend the original bindings so spaces work with `ConservativeRegridding`.
-import ConservativeRegridding.Trees: ncells, getcell
+# `ncells` is GridInterface's binding (what `ConservativeRegridding` reads);
+# `getcell` is this package's own, and `GridInterface.cell_geometry` of a space
+# answers it.
+import GridInterface
+import GridInterface: ncells
+using GridInterface.Structured: AbstractStructuredGrid, TopDownQuadtreeCursor
+import GridInterface.Structured: nfaces, facesize, facevertex, faceposition, facecell, blockextent
 import GeometryOpsCore: manifold
 
 import DimensionalData as DD

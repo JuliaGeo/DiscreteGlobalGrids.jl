@@ -1,6 +1,7 @@
 # Conservative weight construction.
 
 import ConservativeRegridding as CR
+import GridInterface as GrI
 import DimensionalData as DD
 import DiscreteGlobalGrids as DGG
 import GeometryOps: SpatialTreeInterface as STI
@@ -283,8 +284,9 @@ end
         fine = ToyLonLatSpace(8, 4)
         dst_inds, src_inds = ownedindices(coarse, 1), ownedindices(fine, 1)
         block = conservative_block(coarse, dst_inds, fine, src_inds)
-        areas = CR.intersection_areas(manifold(coarse), GOCore.False(),
-            GR.subtree(coarse, dst_inds), GR.subtree(fine, src_inds); progress = false)
+        areas = CR.intersection_areas(manifold(coarse), GOCore.False(), coarse, fine;
+            dst_tree = GR.subtree(coarse, dst_inds), src_tree = GR.subtree(fine, src_inds),
+            progress = false)
         @test block.weights == areas
         # Denominators use the same stored entries.
         @test block.denom == vec(sum(areas; dims = 2))
@@ -340,8 +342,8 @@ end
             GR.indexmap(1:ndst), GR.indexmap(1:nsrc))
         assemble(threaded) = WeightBlock(
             GR._fillcoo!(WeightCOO(ndst),
-                CR.intersection_areas(m, threaded,
-                    GR.subtree(dst, 1:ndst), GR.subtree(src, 1:nsrc);
+                CR.intersection_areas(m, threaded, dst, src;
+                    dst_tree = GR.subtree(dst, 1:ndst), src_tree = GR.subtree(src, 1:nsrc),
                     intersection_operator = blockop(), progress = false)),
             ndst, nsrc)
         reference = assemble(GOCore.False())
@@ -354,7 +356,7 @@ end
         end
         buffers = (cache.candidate_pairs, cache.rows, cache.cols, cache.vals)
         production = GR._intersectionareas(m,
-            GR.subtree(dst, 1:ndst), GR.subtree(src, 1:nsrc), blockop())
+            dst, GR.subtree(dst, 1:ndst), src, GR.subtree(src, 1:nsrc), blockop())
         @test all(isempty, buffers)
         @test buffers === (cache.candidate_pairs, cache.rows, cache.cols, cache.vals)
         @test cache === GR._with_sparse_assembly_cache(identity, Float64)
@@ -692,7 +694,8 @@ end
             return sort!(out)
         end
 
-        other = celltree(ToyLonLatSpace(16, 8))
+        other_space = ToyLonLatSpace(16, 8)
+        other = celltree(other_space)
         reference_pairs = nothing
         reference_weights = nothing
         for capacity in (2, 3, 16)
@@ -700,15 +703,14 @@ end
             @test tree.space === space
             @test tree.indices == inds
             @test sort!(leafindices!(Int[], tree)) == sort(inds)
-            @test CR.Trees.ncells(tree) == length(inds)
-            @test CR.Trees.cell_index_count(tree) == ncells(space)
-            @test CR.Trees.split_weight(tree) == length(inds)
-            STI.isleaf(tree) || @test sum(CR.Trees.split_weight, STI.getchild(tree)) ==
-                                      CR.Trees.split_weight(tree)
+            @test GR.ncells(tree) == length(inds)
+            @test GrI.split_weight(tree) == length(inds)
+            STI.isleaf(tree) || @test sum(GrI.split_weight, STI.getchild(tree)) ==
+                                      GrI.split_weight(tree)
 
             pairs = candidates(tree, other)
-            weights = CR.intersection_areas(manifold(space), GOCore.False(), other, tree;
-                progress = false)
+            weights = CR.intersection_areas(manifold(space), GOCore.False(), other_space, space;
+                dst_tree = other, src_tree = tree, progress = false)
             if reference_pairs === nothing
                 reference_pairs = pairs
                 reference_weights = weights
@@ -727,12 +729,12 @@ end
         fallback_src = GR.CellSpaceRTree(src, 1:ncells(src); nodecapacity = 2)
 
         m = manifold(dst)
-        reference = CR.intersection_areas(m, GOCore.False(), native_dst, native_src;
-            progress = false)
-        serial = CR.intersection_areas(m, GOCore.False(), fallback_dst, fallback_src;
-            progress = false)
-        threaded = CR.intersection_areas(m, GOCore.True(), fallback_dst, fallback_src;
-            progress = false)
+        reference = CR.intersection_areas(m, GOCore.False(), dst, src;
+            dst_tree = native_dst, src_tree = native_src, progress = false)
+        serial = CR.intersection_areas(m, GOCore.False(), dst, src;
+            dst_tree = fallback_dst, src_tree = fallback_src, progress = false)
+        threaded = CR.intersection_areas(m, GOCore.True(), dst, src;
+            dst_tree = fallback_dst, src_tree = fallback_src, progress = false)
         @test serial == reference
         @test threaded == serial
     end
@@ -741,14 +743,13 @@ end
         space = ToyLonLatSpace(16, 8)
         memo = GR._cellmemo(space, 1:ncells(space))
         @test memo isa GR.CellMemo
-        tree = GR.subtree(space, 1:ncells(space))
-        a = GR._memocell(memo, tree, 5)
-        @test a == CR.Trees.getcell(tree, 5)
+        a = GR._memocell(memo, space, 5)
+        @test a == getcell(space, 5)
         # A hit returns the stored object; a colliding key rebuilds.
-        @test GR._memocell(memo, tree, 5) === a
-        b = GR._memocell(memo, tree, 5 + length(memo.keys))
-        @test b == CR.Trees.getcell(tree, 5 + length(memo.keys))
-        @test GR._memocell(memo, tree, 5) == a
+        @test GR._memocell(memo, space, 5) === a
+        b = GR._memocell(memo, space, 5 + length(memo.keys))
+        @test b == getcell(space, 5 + length(memo.keys))
+        @test GR._memocell(memo, space, 5) == a
         # The memo-free operator spelling still assembles (covered above by the
         # threaded-vs-serial testset, whose reference uses it).
         @test GR.BlockAreaOperator(1, 2, 3).srcmemo === nothing

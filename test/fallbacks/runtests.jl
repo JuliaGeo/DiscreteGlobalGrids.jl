@@ -33,7 +33,6 @@ import GeometryOpsCore as GOCore
 import GeoInterface as GI
 import Extents
 import ConservativeRegridding
-import ConservativeRegridding: Trees
 import GridInterface
 import GeometryOps: SpatialTreeInterface as STI
 
@@ -91,6 +90,10 @@ function DGG.levelgrid(sys::MockSystem, l::Integer)
 end
 
 DGG.system(g::MockGrid) = g.system
+# Every mock cell is a geodesic quadrilateral at most 90 x 45 degrees: convex, as
+# the real systems declare their shapes. Undeclared, it would be `GeneralCells`
+# and ConservativeRegridding would clip it with the general clipper.
+GridInterface.cellshape(::MockGrid) = GridInterface.ConvexCells()
 DGG.level(g::MockGrid) = g.level
 DGG.ncells(g::MockGrid) = mock_ncells(g.level)
 
@@ -569,7 +572,7 @@ end
     @test tree isa DGG.HierarchicalGridCursor
     @test STI.isspatialtree(typeof(tree))
     @test STI.node_extent_is_expensive(typeof(tree))
-    @test Trees.ncells(tree) == ncells(grid)
+    @test STI.split_weight(tree) == ncells(grid)
     @test GOCore.best_manifold(tree) == GO.Spherical(; radius=1.0)
 
     # The tree's leaves are exactly the grid's indices, once each.
@@ -614,14 +617,13 @@ end
     @test cap == FB.cell_cap(grid, cellindex(grid, index))
     @test_throws ArgumentError STI.child_indices_extents(tree)
 
-    # `Trees.getcell` addresses the same index space at the root.
-    @test collect(GI.getpoint(GI.getexterior(Trees.getcell(tree, 5)))) ==
+    # `getcell` addresses the same index space at the root.
+    @test collect(GI.getpoint(GI.getexterior(DGG.getcell(tree, 5)))) ==
           collect(GI.getpoint(GI.getexterior(getcell(grid, 5))))
-    @test_throws BoundsError Trees.getcell(tree, ncells(grid) + 1)
-    # The frontier's work estimate is the node's own leaf window, not the
-    # whole grid `Trees.ncells` answers for.
-    @test Trees.split_weight(tree) == ncells(grid)
-    @test Trees.split_weight(leaf) == 1
+    @test_throws BoundsError DGG.getcell(tree, ncells(grid) + 1)
+    # The frontier's work estimate is the node's own leaf window.
+    @test STI.split_weight(tree) == ncells(grid)
+    @test STI.split_weight(leaf) == 1
 end
 
 @testset "cursor: selection mode" begin
@@ -717,7 +719,7 @@ end
     grid = PartialGrid(SORTED, 4, ids)
     tree = treeify(grid)
     @test tree isa DGG.HierarchicalGridCursor
-    @test Trees.ncells(tree) == 6
+    @test STI.split_weight(tree) == 6
     @test leaf_indices(tree) == collect(1:6)
 
     # Every node's window is a slice of the id vector, and children partition it.
@@ -788,7 +790,7 @@ end
     @test tree isa EN.IndexTreeNode
     @test STI.isspatialtree(typeof(tree))
     @test !STI.node_extent_is_expensive(typeof(tree))
-    @test Trees.ncells(tree) == 8
+    @test STI.split_weight(tree) == 8
     @test leaf_indices(tree) == collect(1:8)
     @test system(grid) === nothing && level(grid) === nothing
 

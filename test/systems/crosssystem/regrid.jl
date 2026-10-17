@@ -15,7 +15,7 @@ import Extents
 import GeometryOps as GO
 using GeometryOps: SpatialTreeInterface as STI
 import ConservativeRegridding as CR
-import ConservativeRegridding: Trees
+import GridInterface as GrI
 import GeometryOpsCore as GOCore
 
 const SYS = DGG.S2System()
@@ -613,7 +613,7 @@ end
             va, vb = STI.child_indices_extents(a), collect(STI.child_indices_extents(b))
             length(va) == length(vb) || return false
             all(x[1] == y[1] && samecap(x[2], y[2]) for (x, y) in zip(va, vb)) || return false
-            return all(Trees.getcell(a, i) == Trees.getcell(b, i) for (i, _) in va)
+            return all(DGG.getcell(a, i) == DGG.getcell(b, i) for (i, _) in va)
         end
         return all(checktree(x, y) for (x, y) in zip(STI.getchild(a), STI.getchild(b)))
     end
@@ -630,7 +630,7 @@ end
         cached = GR.subtree(space, 1:n)
         @test cached isa DGG.CapCachedTree
         cursor = GR.celltree(space)
-        @test Trees.ncells(cached) == Trees.ncells(cursor) == n
+        @test GrI.split_weight(cached) == GrI.split_weight(cursor) == n
         raw = DGG.treeify(DGG._decodedgrid(space.grid))
         @test checktree(cached, reshape_leaves(raw))
 
@@ -652,8 +652,10 @@ end
         m = GR.manifold(space)
         op = CR.DefaultIntersectionOperator(m)
         src = GR.subtree(SRC, 1:GR.ncells(SRC))
-        wa = CR.intersection_areas(m, GOCore.False(), cached, src; intersection_operator = op)
-        wb = CR.intersection_areas(m, GOCore.False(), cursor, src; intersection_operator = op)
+        wa = CR.intersection_areas(m, GOCore.False(), space, SRC;
+            dst_tree = cached, src_tree = src, intersection_operator = op)
+        wb = CR.intersection_areas(m, GOCore.False(), space, SRC;
+            dst_tree = cursor, src_tree = src, intersection_operator = op)
         @test wa == wb
     end
 
@@ -668,7 +670,7 @@ end
             @test length(cached.caps) == length(inds)
             @test axes(cached.caps, 1) == inds
             # `checktree` covers extents, leaf entries and polygons; a chunk
-            # tree's `Trees.ncells` is its own count while its leaf indices are
+            # tree's `split_weight` is its own count while its leaf indices are
             # global, so weights only come out of a block build's index maps.
             @test checktree(cached, reshape_leaves(DGG._chunkcursor(space, inds)))
         end

@@ -33,12 +33,12 @@ Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
 
 [sources]
 GlobalRegridding = {path = "lib/GlobalRegridding"}
-ConservativeRegridding = {path = "../ConservativeRegridding.jl"}
-GridInterface = {path = "../GridInterface.jl"}
-GeometryOps = {path = "/home/anshul/.julia/dev/geo/GeometryOps-split"}
-GeometryOpsCore = {path = "/home/anshul/.julia/dev/geo/GeometryOps-split/GeometryOpsCore"}
-SpatialTreeInterface = {path = "/home/anshul/.julia/dev/geo/GeometryOps-split/SpatialTreeInterface"}
-UnitSphericalGeometryCore = {path = "/home/anshul/.julia/dev/geo/GeometryOps-split/UnitSphericalGeometryCore"}
+ConservativeRegridding = {url = "https://github.com/JuliaGeo/ConservativeRegridding.jl.git", rev = "gridinterface"}
+GridInterface = {url = "https://github.com/JuliaGeo/GridInterface.jl.git", rev = "gridinterface"}
+GeometryOps = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "as/split-unitsphericalgeometrycore"}
+GeometryOpsCore = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "as/split-unitsphericalgeometrycore", subdir = "GeometryOpsCore"}
+SpatialTreeInterface = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "as/split-unitsphericalgeometrycore", subdir = "SpatialTreeInterface"}
+UnitSphericalGeometryCore = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "as/split-unitsphericalgeometrycore", subdir = "UnitSphericalGeometryCore"}
 
 # The split GeometryOps sub-packages GridInterface is built on; listed so their
 # `[sources]` entries above are honoured while they are unregistered.
@@ -58,7 +58,7 @@ MakieExt = ["Makie"]
 Rasters = "0.14, 0.15"
 Statistics = "1"
 Tables = "1"
-ConservativeRegridding = "0.2.17"
+ConservativeRegridding = "0.2.18"
 DE9IM = "0.1"
 DiskArrays = "0.4"
 Extents = "0.1"

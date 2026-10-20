@@ -18,9 +18,9 @@ SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [sources]
-ConservativeRegridding = {path = "../../../../ConservativeRegridding.jl"}
+ConservativeRegridding = {url = "https://github.com/JuliaGeo/ConservativeRegridding.jl.git", rev = "gridinterface"}
 DiscreteGlobalGrids = {path = "../../.."}
-GeometryOps = {path = "/home/anshul/.julia/dev/geo/GeometryOps-split"}
-GeometryOpsCore = {path = "/home/anshul/.julia/dev/geo/GeometryOps-split/GeometryOpsCore"}
+GeometryOps = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "as/split-unitsphericalgeometrycore"}
+GeometryOpsCore = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "as/split-unitsphericalgeometrycore", subdir = "GeometryOpsCore"}
 GlobalRegridding = {path = ".."}
-GridInterface = {path = "../../../../GridInterface.jl"}
+GridInterface = {url = "https://github.com/JuliaGeo/GridInterface.jl.git", rev = "gridinterface"}

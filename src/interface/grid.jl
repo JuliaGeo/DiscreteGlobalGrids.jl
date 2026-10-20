@@ -714,21 +714,6 @@ The one-argument form picks the manifold with `best_manifold(grid)`.
 """
 treeify
 
-"""
-    subcursor(grid::AbstractGrid, inds::AbstractUnitRange) -> tree or `nothing`
-
-The [`treeify`](@ref) tree restricted to the grid indices `inds`, with leaf
-indices still in `grid`'s own index space, or `nothing` (the default) when
-this grid cannot express that restriction. The result must cover exactly the
-cells at `inds`, no more.
-
-Implemented by grids whose tree is a lattice rectangle rather than a cell
-hierarchy; a hierarchical grid needs no method.
-"""
-function subcursor end
-
-subcursor(::AbstractGrid, ::AbstractUnitRange{<:Integer}) = nothing
-
 # ---------------------------------------------------------------------------
 # Grids whose cells are raster tiles
 # ---------------------------------------------------------------------------

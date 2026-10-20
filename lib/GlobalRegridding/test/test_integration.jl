@@ -599,12 +599,12 @@ end
 
     hp = DGG.levelgrid(DGG.HEALPixSystem(), 3)
     i7 = DGG.levelgrid(DGG.IGeo7System(), 2)
-    # A DGG level grid point-samples on its dual cells, and a rooted chunk's
-    # tree is the provider's own hierarchy cursor.
+    # A DGG level grid point-samples on its dual cells, and a chunk's tree is
+    # the grid's own cursor restricted to it.
     @test hasdualcells(hp) && hasdualcells(i7)
     @test !hascellchart(hp)
     @test GR.samplerstate(BarycentricPoint(), hp) isa GR.DualState
-    @test subtree(hp, ownedindices(hp, 2)) isa DGG.HierarchicalGridCursor
+    @test subtree(hp, ownedindices(hp, 2)) isa GrI.MaskedCursor{<:DGG.HierarchicalGridCursor}
     @test GrI.mockchunks(hp, GrI.LevelChunks(1)) |> nchunks == DGG.ncells(DGG.levelgrid(DGG.HEALPixSystem(), 1))
     t7_suite("HEALPix L3 ← IGeo7 L2", hp, i7; analytic = true)
     t7_suite("IGeo7 L2 ← HEALPix L3", i7, hp; analytic = true)

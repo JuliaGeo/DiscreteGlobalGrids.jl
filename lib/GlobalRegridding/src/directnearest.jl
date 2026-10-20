@@ -228,7 +228,8 @@ function _readdestination!(out::AbstractMatrix,
     hold = SourceHold(_emptybuffer(A), databudget(plan.budget), A.stats)
     srcchunks = Int[]
     srcranges = NTuple{NS,UnitRange{Int}}[]
-    slots = zeros(Int, Int(_nchunks(src_space)))
+    ch = plan.held.src_chunks
+    slots = zeros(Int, Int(_nchunks(src_space, ch)))
     srcidx = Int[]
     chunkof = Int[]
     perm = Int[]
@@ -253,7 +254,7 @@ function _readdestination!(out::AbstractMatrix,
             else
                 si = Int(s)
                 srcidx[j] = si
-                c = _chunkat(src_space, si)
+                c = _chunkat(src_space, si, ch)
                 chunkof[j] = c
                 if slots[c] == 0
                     slots[c] = 1
@@ -304,7 +305,7 @@ function _readdestination!(out::AbstractMatrix,
             s = srcchunks[k]
             sr = srcranges[k]
             ncell = prod(map(length, sr))
-            cmap = indexmap(_ownedindices(src_space, s))
+            cmap = indexmap(_ownedindices(src_space, s, ch))
             rng = starts[k]:(starts[k+1]-1)
             for (gi, gpos) in enumerate(groups)
                 gr = _grouprange(others, gpos)

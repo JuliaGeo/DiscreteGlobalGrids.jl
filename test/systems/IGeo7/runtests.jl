@@ -816,7 +816,6 @@ const CLEAN = (0, "")
         # pentagons and cone cuts), then sample down to the deepest geometry.
         for r in 0:4
             g = DGG.levelgrid(S, r)
-            @test DGG.Fallbacks.cell_cap_is_cheap(g) isa Val{true}
             for i in 1:DGG.ncells(g)
                 c = DGG.cellindex(g, i)
                 cap = DGG.Fallbacks.cell_cap(g, c)
@@ -860,7 +859,8 @@ const CLEAN = (0, "")
 
         # A complete bucket is the common MOC-interior case. The cursor carries
         # that one bit down the hierarchy, so its entries address the complete
-        # level interval directly instead of searching the CellVector runs.
+        # level interval directly instead of searching the CellVector runs; the
+        # entries themselves are built into a heap vector once per visit.
         full_root = first(DGG.children(S, root))
         full_ids = collect(DGG.descendants(S, full_root, 13))
         full = DGG.treeify(DGG.PartialGrid(S, 13, full_ids;
@@ -869,9 +869,7 @@ const CLEAN = (0, "")
         full_entries = GO.SpatialTreeInterface.child_indices_extents(full)
         @test first.(full_entries) == collect(eachindex(full_ids))
         @test last.(full_entries) == DGG.Fallbacks.cell_cap.(Ref(full.grid), full_ids)
-        GO.SpatialTreeInterface.child_indices_extents(full)
-        @test @allocated(GO.SpatialTreeInterface.child_indices_extents(full)) == 0 skip =
-            VERSION < v"1.12"
+        @test full_entries isa Vector
 
         # the published corner rings tile the sphere exactly: adjacent cells
         # share corners, so their great-circle edges coincide and the areas sum

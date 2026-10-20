@@ -60,10 +60,10 @@ Base.parent(cs::CellCountSpace) = cs.space
 GrI.cell_geometry(cs::CellCountSpace, i::Integer) =
     (Threads.atomic_add!(cs.cells, 1); GrI.cell_geometry(cs.space, i))
 
-GrI.subtree(cs::CellCountSpace, inds::AbstractVector{<:Integer}) =
-    (Threads.atomic_add!(cs.builds, 1); GrI.subtree(cs.space, inds))
-GrI.subtree(cs::CellCountSpace, s::GrI.Subset) =
-    (Threads.atomic_add!(cs.builds, 1); GrI.subtree(cs.space, s))
+GrI.subtree(cs::CellCountSpace, inds::AbstractVector{<:Integer}; kw...) =
+    (Threads.atomic_add!(cs.builds, 1); GrI.subtree(cs.space, inds; kw...))
+GrI.subtree(cs::CellCountSpace, s::GrI.Subset; kw...) =
+    (Threads.atomic_add!(cs.builds, 1); GrI.subtree(cs.space, s; kw...))
 GrI.treeify(cs::CellCountSpace; leaf_capacity = GrI.Balanced()) =
     (Threads.atomic_add!(cs.builds, 1); GrI.treeify(cs.space; leaf_capacity))
 GrI.treeify(cs::CellCountSpace, hint::GrI.LeafHint) =
@@ -814,6 +814,23 @@ end
             @test all(pair.denom .=== reference.denom)
             @test pair.reference === pair.denom
         end
+    end
+
+    @testset "a plan resolves each space's chunk list once" begin
+        dst = CountingSpace(ToyLonLatSpace(8, 4; chunks = (4, 2)))
+        src = CountingSpace(ToyLonLatSpace(16, 8; chunks = (4, 4)))
+        plan = ChunkedPlan(Conservative(), Weighted(0.5), dst, src; storage = PerChunk())
+        bare = ChunkedPlan(Conservative(), Weighted(0.5), dst.space, src.space;
+            storage = PerChunk())
+        dst.chunkreads[] = src.chunkreads[] = 0
+        for d in 1:nchunks(dst.space), s in GR.sourcesof(GR.dependencies(plan), d)
+            pair = GR.buildblock(plan, d, Int(s))
+            reference = GR.buildblock(bare, d, Int(s))
+            @test pair.weights == reference.weights
+            @test all(pair.denom .=== reference.denom)
+        end
+        @test dst.chunkreads[] == 0
+        @test src.chunkreads[] == 0
     end
 
     @testset "a conservative pair assembles no coordinate list" begin

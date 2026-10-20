@@ -336,7 +336,9 @@ end
 # complete grid, so rooted subtrees and compressed multi-root coverages take
 # this method too without duplicating dispatch here.
 DGG.Fallbacks.cell_cap(::IGeo7LevelGrid, c::Z7Cell) = _analytical_cell_cap(c)
-DGG.Fallbacks.cell_cap_is_cheap(::IGeo7LevelGrid) = Val(true)
+# closed form, so the authalic wrapper keeps it closed form (centre warped, radius stretched)
+DGG.Fallbacks.cell_cap(g::DGG.Fallbacks.AuthalicGrid{<:IGeo7LevelGrid}, c::Z7Cell) =
+    DGG.Fallbacks._stretched_cell_cap(g, c)
 
 """
     cellat(g::IGeo7LevelGrid, p::UnitSphericalPoint) -> Z7Cell

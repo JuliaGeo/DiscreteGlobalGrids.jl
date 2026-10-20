@@ -430,11 +430,12 @@ residency(A::LazyRegridArray) = A.stats
 
 # Return chunk spans and whether every chunk is contiguous.
 function _chunkspans(space)
-    nc = Int(_nchunks(space))
+    ch = _chunks(space)
+    nc = Int(_nchunks(space, ch))
     spans = Vector{UnitRange{Int}}(undef, nc)
     contiguous = true
     for c in 1:nc
-        inds = _ownedindices(space, c)
+        inds = _ownedindices(space, c, ch)
         if isempty(inds)
             spans[c] = 1:0
             contiguous = false
@@ -613,7 +614,8 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
         # takes is compiled; `_fillwave!` specializes on what it is handed.
         destination = Base.inferencebarrier(
             (tile === nothing && length(srcchunks) > 1) ?
-            preparedestination(plan.method, plan.dst_space, dinds, plan.budget) :
+            _holdingchunks(() -> preparedestination(plan.method, plan.dst_space, dinds,
+                plan.budget), plan.held) :
             dinds)
         keep = _canhold(hold, srcranges, groups, sizeof(eltype(hold.scratch)))
         w = tile === nothing ?
@@ -799,7 +801,7 @@ end
 
 # Return cells owned by a tile.
 _tileindices(A::LazyRegridArray, t::Int) =
-    A.tiling.spacetiled ? _ownedindices(A.plan.dst_space, t) : A.tiling.runs[t]
+    A.tiling.spacetiled ? _dstindices(A.plan, t) : A.tiling.runs[t]
 
 """
     _connectedsource!(out, A, t[, tile]) -> out

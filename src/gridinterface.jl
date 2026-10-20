@@ -19,7 +19,7 @@
 # ===========================================================================
 
 import GridInterface: cellshape, edgekind, tessellation, location_is_analytic,
-    neighbors_are_analytic, extent_is_expensive, cell_geometry_is_expensive,
+    neighbors_are_analytic, cell_geometry_is_expensive,
     isglobal, gridrelation, cell_geometry, cell_contains,
     vertices_are_analytic, vertex_numbering_is_analytic, nvertices, vertex_key,
     vertex_index, vertex_cells, vertex_point, VertexKey,
@@ -54,7 +54,6 @@ isglobal(grid::AuthalicGrid) = isglobal(grid.grid)
 location_is_analytic(grid::AbstractGrid) =
     (sys = system(grid); sys !== nothing && has_direct_location(sys))
 neighbors_are_analytic(grid::AbstractGrid) = system(grid) !== nothing
-extent_is_expensive(grid::AbstractGrid) = !(Fallbacks.cell_cap_is_cheap(grid) isa Val{true})
 # Every boundary here is computed (a projection or a library call) except the
 # lon/lat lattice's.
 cell_geometry_is_expensive(grid::AbstractGrid) = !(system(grid) isa CopernicusDEMSystem)
@@ -273,7 +272,6 @@ edgekind(set::MultiOrderCellSet) = edgekind(_refgrid(set))
 tessellation(set::MultiOrderCellSet) =
     has_congruent_refinement(set.system) ? Tessellating() : Overlapping()
 cell_geometry_is_expensive(set::MultiOrderCellSet) = cell_geometry_is_expensive(_refgrid(set))
-extent_is_expensive(set::MultiOrderCellSet) = extent_is_expensive(_refgrid(set))
 location_is_analytic(set::MultiOrderCellSet) =
     _sorted_layout(set) && location_is_analytic(_refgrid(set))
 neighbors_are_analytic(::MultiOrderCellSet) = false
@@ -320,8 +318,9 @@ treeify(set::MultiOrderCellSet, hint::GridInterface.LeafHint) =
     treeify(set, GridInterface.leaf_capacity(set, hint))
 treeify(set::MultiOrderCellSet; leaf_capacity=GridInterface.Balanced()) =
     treeify(set, leaf_capacity)
-subtree(set::MultiOrderCellSet, cells::AbstractVector{<:Integer}) = _sorted_layout(set) ?
-    subtree(_multilevel_view(set), cells) : invoke(subtree, Tuple{Any,AbstractVector{<:Integer}}, set, cells)
+subtree(set::MultiOrderCellSet, cells::AbstractVector{<:Integer}; leaf_capacity=GridInterface.Balanced()) =
+    _sorted_layout(set) ? subtree(_multilevel_view(set), cells; leaf_capacity) :
+    invoke(subtree, Tuple{Any,AbstractVector{<:Integer}}, set, cells; leaf_capacity)
 GridInterface.hierarchy_chunks(set::MultiOrderCellSet, l::Integer) =
     GridInterface.hierarchy_chunks(_multilevel_view(set), l)
 GridInterface.expand_to_reference(set::MultiOrderCellSet) =

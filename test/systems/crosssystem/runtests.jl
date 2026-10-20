@@ -6,6 +6,7 @@ module CrossSystemTests
 
 using Test
 import DiscreteGlobalGrids as DGG
+import GridInterface as GrI
 using DiscreteGlobalGrids: systems, levels, levelgrid, ncells, cellindex,
     cell_boundary, cell_centroid, cellat, neighbors, ring, level, children,
     descendants, subtree, border, interior, Vertex, Edge, PartialGrid
@@ -310,6 +311,56 @@ eager_interior(sys, c, l; kw...) =
                 lc > first(levels(sys)) &&
                     @test_throws ArgumentError subtree(sys, c, lc - 1)
             end
+        end
+    end
+
+    # GridInterface's restriction over DGG's own trees, on a sorted, a
+    # seven-fold, a selection (H3) and a partial grid, every kind of cell set.
+    @testset "restriction laws over the hierarchy cursors" begin
+        STI = GrI.STI
+        # A cell's vertices under a cap (each a unit vector).
+        holds(cap, v) = cap.radius >= pi ||
+            2 * asin(min(1.0, sqrt(sum(k -> (cap.point[k] - v[k])^2, 1:3)) / 2)) <= cap.radius + 1e-9
+        bounds(e, grid, p) = all(v -> holds(e, v), GrI.cell_boundary(grid, p))
+        # (a) the leaves emit exactly `want`, once each; (b) every node and leaf
+        # cap bounds its members' cells; (c) `subtree_indices` is the members in
+        # traversal order; (d) `split_weight` bounds them and never grows going
+        # down. `pos(k)` is the grid position an emitted `k` names.
+        function laws(t, want, grid, pos)
+            ok = true
+            function visit(n, w0)
+                es = STI.isleaf(n) ? collect(STI.child_indices_extents(n)) : nothing
+                mem = es === nothing ?
+                    reduce(vcat, (visit(c, GrI.split_weight(n)) for c in STI.getchild(n)); init = Int[]) :
+                    Int[k for (k, _) in es]
+                w, ext = GrI.split_weight(n), STI.node_extent(n)
+                ok &= collect(GrI.subtree_indices(n)) == mem && length(mem) <= w <= w0
+                ok &= all(k -> bounds(ext, grid, pos(k)), mem)
+                es === nothing || (ok &= all(((k, e),) -> bounds(e, grid, pos(k)), es))
+                return mem
+            end
+            mem = visit(t, typemax(Int))
+            return ok && sort(mem) == want && allunique(mem)
+        end
+        # contiguous, chunks, a deterministic scatter, single and empty
+        function cellsets(grid)
+            N = ncells(grid)
+            scatter(m, k) = sort!(unique([mod(i * 7919 + k * 104729, N) + 1 for i in 1:m]))
+            ch = GrI.chunks(grid, 1)
+            return Any[1:N, 2:(N ÷ 3), (N ÷ 2):N, scatter(5, 1), scatter(N ÷ 4, 2),
+                scatter(N ÷ 2, 3), [N ÷ 2], N:N, Int[], 1:0, ch[1], ch[length(ch)],
+                collect(GrI.parentpositions(ch[(length(ch) + 1) ÷ 2]))]
+        end
+        ig = levelgrid(DGG.IGeo7System(), 3)
+        band = PartialGrid(DGG.IGeo7System(), 3, [cellindex(ig, i) for i in 1:ncells(ig) if 0.2 < cell_centroid(ig, cellindex(ig, i))[3] < 0.6])
+        for g in (levelgrid(DGG.HEALPixSystem(), 3), ig, levelgrid(DGG.H3System(), 2), band),
+            cs in cellsets(g), hint in (GrI.Balanced(), GrI.ForSweeps())
+            cells = collect(Int, cs isa GrI.Subset ? GrI.parentpositions(cs) : cs)
+            @test laws(GrI.subtree(g, cs; leaf_capacity = hint), cells, g, identity)
+            cs isa GrI.Subset && continue
+            # (e) a subset's own tree emits its own positions, naming the parent's cells
+            s = GrI.subset(g, cells)
+            @test laws(GrI.treeify(s; leaf_capacity = hint), collect(1:length(cells)), g, k -> cells[k])
         end
     end
 end

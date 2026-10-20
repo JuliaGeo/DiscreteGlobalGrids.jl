@@ -542,30 +542,6 @@ end
     @test node_extent(SORTED, c).radius > FB.cell_cap(grid, c).radius
 end
 
-@testset "analytical cap enclosure" begin
-    # Unequal radii are part of the bound, not an inflation applied after solving
-    # a point-only problem.
-    caps = (
-        US.SphericalCap(sph(0.0, 0.0), deg2rad(0.5)),
-        US.SphericalCap(sph(2.0, 0.0), deg2rad(1.0)),
-        US.SphericalCap(sph(1.0, 2.0), deg2rad(0.25)),
-    )
-    cap_enclosure(caps) = FB._caps_cap(i -> @inbounds(caps[i]), length(caps))
-    enclosing = @inferred cap_enclosure(caps)
-    @test enclosing isa US.SphericalCap{Float64}
-    @test all(caps) do cap
-        US.spherical_distance(enclosing.point, cap.point) + cap.radius <= enclosing.radius
-    end
-
-    # The hot path derives caps twice but retains no batch or boundary buffer.
-    cap_enclosure(caps)
-    @test @allocated(cap_enclosure(caps)) == 0 skip = VERSION < v"1.12"
-    @test FB._caps_cap(i -> caps[i], 0).radius > pi
-    antipodal = (US.SphericalCap(sph(0.0, 0.0), 0.0),
-                 US.SphericalCap(sph(180.0, 0.0), 0.0))
-    @test cap_enclosure(antipodal).radius > pi
-end
-
 @testset "cursor: window mode" begin
     grid = levelgrid(SORTED, 3)
     tree = treeify(grid)
@@ -732,22 +708,15 @@ end
         @test sort(covered) == collect(EN.node_indices(node))
     end
 
-    # A sparse internal node tightens its extent past the system's own
-    # `node_extent`, which is the one thing the cursor adds to the hierarchy.
-    tightened = false
+    # An internal node carries the system's own `node_extent`, however sparse
+    # its window: the cursor adds no tightening.
     walk(tree) do node
         STI.isleaf(node) && return
         node.level < 0 && return
-        count = length(EN.node_indices(node))
-        if 0 < count < RADIX^(4 - node.level)
-            if STI.node_extent(node).radius < node_extent(SORTED, node.id).radius
-                tightened = true
-            end
-        end
+        @test STI.node_extent(node) == node_extent(SORTED, node.id)
     end
-    @test tightened
 
-    # ... and it still covers what it claims to.
+    # ... and every node covers what it claims to.
     walk(tree) do node
         extent = STI.node_extent(node)
         for i in EN.node_indices(node)

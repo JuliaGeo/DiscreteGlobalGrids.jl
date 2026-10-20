@@ -623,7 +623,7 @@ end
             # Forward: the walked subtree is exactly the range's indices.
             walked = [c]
             for _ in 1:depth
-                walked = reduce(vcat, (children(SYS, x) for x in walked))
+                walked = reduce(vcat, (collect(children(SYS, x)) for x in walked))
             end
             @test sort!([globalindex(g, x) for x in walked]) == collect(r)
             # Backward: every index in the range is a descendant.

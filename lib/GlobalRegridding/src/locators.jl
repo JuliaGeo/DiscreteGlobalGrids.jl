@@ -55,7 +55,8 @@ function overlappairs end
 function overlappairs(::TreeLocator, dst_space, dst_inds, src_space, src_inds;
     threaded::Bool)
     return ConservativeRegridding.candidate_pairs(GOCore.booltype(threaded),
-        _subtree(dst_space, dst_inds), _subtree(src_space, src_inds))
+        _subtree(dst_space, dst_inds; leaf_capacity = GridInterface.ForSweeps()),
+        _subtree(src_space, src_inds; leaf_capacity = GridInterface.ForSweeps()))
 end
 
 function overlappairs(::AnalyticLocator, dst_space, dst_inds, src_space, src_inds;
@@ -170,7 +171,8 @@ end
 # confirmed against the cell's own ring. Candidates are taken in index order so
 # a point on a shared boundary always names the same cell.
 function locatecell(::TreeLocator, space, inds, p::US.UnitSphericalPoint)
-    hits = STI.query(_subtree(space, inds), node -> _nodecontains(node, p))
+    hits = STI.query(_subtree(space, inds; leaf_capacity = GridInterface.ForQueries()),
+        node -> _nodecontains(node, p))
     imap = indexmap(inds)
     undecided = 0
     for i in sort!(hits)

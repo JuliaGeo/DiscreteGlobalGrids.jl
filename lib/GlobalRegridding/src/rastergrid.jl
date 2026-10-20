@@ -585,7 +585,6 @@ function GridInterface.cell_extent(space::RasterGrid, i::Integer)
     cap.radius > Float64(pi) / 2 && return _WHOLE_SPHERE
     return Extents.grow(cap, 5e-5)
 end
-GridInterface.extent_is_expensive(::RasterGrid) = true
 
 """
     cellsubscript(space::RasterGrid, i::Int) -> (ix, iy)
@@ -999,19 +998,28 @@ GridInterface.treeify(space::RasterGrid, ::GridInterface.LeafHint) = _rastercurs
 GridInterface.treeify(space::RasterGrid, ::Integer) = _rastercursor(space)
 
 """
-    GridInterface.subtree(space::RasterGrid, inds::AbstractVector{<:Integer})
+    GridInterface.subtree(space::RasterGrid, inds::AbstractVector{<:Integer}; leaf_capacity = Balanced())
 
-The restricted quadtree cursor when `inds` form a lattice rectangle, otherwise
-GridInterface's packed R-tree over those cells. Leaves emit the raster's cell
-indices.
+The quadtree cursor over the lattice rectangle `inds` enumerates, when it is
+one, otherwise GridInterface's packed R-tree over those cells. Leaves emit the
+raster's cell indices. The raster's cursor has the one leaf size its `treeify`
+has (`_RASTER_CURSOR_LEAFSIZE`), so the keyword reaches only the R-tree.
+
+Both branches beat GridInterface's generic restriction of the raster's tree:
+a rectangle not aligned with the bisection would root above itself with
+looser extents, and a scattered set would be pruned on rows only (a block's
+[`GridInterface.position_span`](@ref) is a run of whole rows), visiting every
+block of a member's row.
 """
-function GridInterface.subtree(space::RasterGrid, inds::AbstractVector{<:Integer})
+function GridInterface.subtree(space::RasterGrid, inds::AbstractVector{<:Integer};
+    leaf_capacity = GridInterface.Balanced())
     rect = _indexrect(space, inds)
     if rect !== nothing
         ix0, ix1, iy0, iy1 = rect
         return _rastercursor(space, ix0:ix1, iy0:iy1)
     end
-    return invoke(GridInterface.subtree, Tuple{Any,AbstractVector{<:Integer}}, space, inds)
+    return GridInterface.fallback_subtree(GOCore.best_manifold(space), space, inds,
+        GridInterface._capacity(space, leaf_capacity))
 end
 
 """
@@ -1147,8 +1155,9 @@ GridInterface.chunkat(c::RasterChunks, i::Integer) = _rasterchunkat(c.space, Int
 # A block of the raster's own lattice is the raster's cursor over it, with the
 # raster's leaf size; a chunk's tree comes here through `Structured`'s tile
 # subset method.
-function GridInterface.subtree(space::RasterGrid, t::TileIndices)
+function GridInterface.subtree(space::RasterGrid, t::TileIndices;
+    leaf_capacity = GridInterface.Balanced())
     t.grid === space || return invoke(GridInterface.subtree,
-        Tuple{RasterGrid,AbstractVector{<:Integer}}, space, t)
+        Tuple{RasterGrid,AbstractVector{<:Integer}}, space, t; leaf_capacity)
     return TopDownQuadtreeCursor(space, 1, t.ir, t.jr; leafsize = _RASTER_CURSOR_LEAFSIZE)
 end

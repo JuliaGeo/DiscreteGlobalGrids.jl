@@ -120,6 +120,8 @@ struct RasterTileTree{G<:AbstractGrid,T}
     node_children::Vector{Vector{Int}}
     node_cap::Vector{Cap}
     node_weight::Vector{Int}        # pixels beneath the node
+    node_lo_index::Vector{Int}      # lowest and highest grid index beneath the node
+    node_hi_index::Vector{Int}
 end
 
 function RasterTileTree(grid::AbstractGrid, inds::AbstractUnitRange{<:Integer};
@@ -144,7 +146,7 @@ function RasterTileTree(grid::AbstractGrid, inds::AbstractUnitRange{<:Integer};
     end
     order = sortperm(keys)
     tree = RasterTileTree{typeof(grid),eltype(tiles)}(grid, tiles[order], caps[order],
-        shapes[order], Int[], Int[], Vector{Int}[], Cap[], Int[])
+        shapes[order], Int[], Int[], Vector{Int}[], Cap[], Int[], Int[], Int[])
     _build_tile_node!(tree, 1, n, Int(arity))
     return tree
 end
@@ -157,6 +159,8 @@ function _build_tile_node!(tree::RasterTileTree, lo::Int, hi::Int, arity::Int)
     push!(tree.node_children, Int[])
     push!(tree.node_cap, _EMPTY_CAP)
     push!(tree.node_weight, 0)
+    push!(tree.node_lo_index, 1)
+    push!(tree.node_hi_index, 0)
     count = hi - lo + 1
     if count <= 0
         tree.node_cap[index] = _EMPTY_CAP
@@ -164,12 +168,17 @@ function _build_tile_node!(tree::RasterTileTree, lo::Int, hi::Int, arity::Int)
     elseif count == 1
         tree.node_cap[index] = tree.tilecaps[lo]
         tree.node_weight[index] = prod(tree.shapes[lo])
+        nrows, ncols = tree.shapes[lo]
+        tile = tree.tiles[lo]
+        tree.node_lo_index[index] = raster_localindex(tree.grid, tile, 0, 0)
+        tree.node_hi_index[index] = raster_localindex(tree.grid, tile, nrows - 1, ncols - 1)
         return index
     end
     per = cld(count, arity)
     start = lo
     cap = nothing
     weight = 0
+    lo_index, hi_index = typemax(Int), typemin(Int)
     while start <= hi
         stop = min(hi, start + per - 1)
         child = _build_tile_node!(tree, start, stop, arity)
@@ -177,10 +186,14 @@ function _build_tile_node!(tree::RasterTileTree, lo::Int, hi::Int, arity::Int)
         cap = cap === nothing ? tree.node_cap[child] :
               Extents.union(cap, tree.node_cap[child])
         weight += tree.node_weight[child]
+        lo_index = min(lo_index, tree.node_lo_index[child])
+        hi_index = max(hi_index, tree.node_hi_index[child])
         start = stop + 1
     end
     tree.node_cap[index] = cap === nothing ? _EMPTY_CAP : cap
     tree.node_weight[index] = weight
+    tree.node_lo_index[index] = lo_index
+    tree.node_hi_index[index] = hi_index
     return index
 end
 
@@ -333,6 +346,20 @@ GOCore.best_manifold(c::TiledRasterCursor) = GOCore.best_manifold(c.tree.grid)
 getcell(c::TiledRasterCursor, i::Int) = getcell(c.tree.grid, i)
 getcell(c::TiledRasterCursor) = getcell(c.tree.grid)
 
+# The grid indices beneath a node: a tile node's lowest and highest are stored
+# (its tiles sit anywhere in the grid, Morton order being spatial); a raster
+# rectangle is a lattice block of its tile's row-major numbering.
+function GridInterface.position_span(c::TiledRasterCursor)
+    tree = c.tree
+    if c.inraster
+        tile = @inbounds tree.tiles[c.slot]
+        _, ncols = @inbounds tree.shapes[c.slot]
+        return GridInterface.LatticeBlock(raster_localindex(tree.grid, tile, c.j0, c.i0),
+            c.i1 - c.i0 + 1, ncols, c.j1 - c.j0 + 1)
+    end
+    return @inbounds tree.node_lo_index[c.node]:tree.node_hi_index[c.node]
+end
+
 # A node knows its own pixel count.
 function split_weight(c::TiledRasterCursor)
     c.inraster && return (c.j1 - c.j0 + 1) * (c.i1 - c.i0 + 1)
@@ -427,7 +454,7 @@ function _memo_extent(c::TiledRasterCursor)
 end
 
 # ===========================================================================
-# treeify and subcursor
+# treeify
 # ===========================================================================
 
 """
@@ -437,7 +464,7 @@ The [`TiledRasterCursor`](@ref) root over the cells at grid indices `inds`, or
 `nothing` when `grid` answers no [`raster_tiles`](@ref) for them.
 
 Leaf indices are `grid`'s own, so a window's tree names its cells exactly as the
-whole grid's does, which is what [`subcursor`](@ref) needs.
+whole grid's does.
 """
 function tiled_raster_tree(grid::AbstractGrid,
         inds::AbstractUnitRange{<:Integer} = 1:ncells(grid);

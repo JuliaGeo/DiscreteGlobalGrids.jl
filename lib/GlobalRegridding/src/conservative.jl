@@ -1,8 +1,8 @@
 # Conservative weights from spherical intersection areas.
 
 # Candidate discovery descends the grids' trees: the whole grid's sweep tree,
-# a chunk's own tree (O(1) on a rooted hierarchy chunk or a raster tile), or
-# the grid's `subtree` over any other index set (`_subtree`, spaces.jl). Leaves
+# or the grid's `subtree` over a chunk or any other index set (`_subtree`,
+# spaces.jl): its own tree restricted, or a typed chunk's own tree. Leaves
 # emit the grids' positions; the block operator maps them to its rows and
 # columns through the index maps.
 
@@ -45,7 +45,8 @@ end
 
 DestinationCache(space, inds) =
     isempty(inds) ? nothing :
-    DestinationCache(space, inds, indexmap(inds), _subtree(space, inds))
+    DestinationCache(space, inds, indexmap(inds),
+        _subtree(space, inds; leaf_capacity = GridInterface.ForSweeps()))
 
 # The map and the tree are the tile's, built once by `preparedestination` and
 # handed to whichever preparation it settles on.
@@ -124,7 +125,7 @@ function preparedestination(method::AbstractRegriddingMethod,
     dst_space, dst_inds, budget::Integer)
     isempty(dst_inds) && return dst_inds
     imap = indexmap(dst_inds)
-    tree = _subtree(dst_space, dst_inds)
+    tree = _subtree(dst_space, dst_inds; leaf_capacity = GridInterface.ForSweeps())
     if preparesdestination(method, dst_space) &&
        destcellsfit(method, dst_space, length(dst_inds), budget)
         cache = DestinationCache(dst_space, dst_inds, imap, tree)
@@ -169,7 +170,7 @@ rather than for all of them, behind a single dynamic dispatch per block; the
 clipping loop runs inside that specialization and pays nothing.
 """
 _destinationtree(dst_space, dst_inds) =
-    Base.inferencebarrier(_subtree(dst_space, dst_inds))
+    Base.inferencebarrier(_subtree(dst_space, dst_inds; leaf_capacity = GridInterface.ForSweeps()))
 # A preparation holds its tree opaque already.
 _destinationtree(cache::DestinationCache) = cache.tree
 _destinationtree(prepared::DestinationTree) = prepared.tree
@@ -457,7 +458,7 @@ same matrix, entry for entry.
 function _intersectionareas(m::GOCore.Manifold, ::TreeLocator, dst_space,
     dst, src_space, src_inds, op)
     return _intersectionareas(m, dst_space, _destinationtree(dst_space, dst),
-        src_space, _subtree(src_space, src_inds), op)
+        src_space, _subtree(src_space, src_inds; leaf_capacity = GridInterface.ForSweeps()), op)
 end
 
 function _intersectionareas(m::GOCore.Manifold, locator::AnalyticLocator,

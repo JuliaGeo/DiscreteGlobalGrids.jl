@@ -995,7 +995,7 @@ end
     end
 
     # A raster window of the complete level-1 lattice covers exactly its own
-    # index range, which is the shape `subcursor` cuts for a chunk.
+    # index range, which is the window `subtree` cuts for a chunk.
     g1twin = levelgrid(TWIN, 1)
     twin_tilecell = CD.tilecell(TWIN, 50, 6)
     twin_range = descendant_range(TWIN, twin_tilecell, 1)
@@ -1020,7 +1020,7 @@ end
         @test (string(typeof(strategy)), leaf_index_list(window)) ==
               (string(typeof(strategy)), collect(twin_range))
     end
-    @test leaf_index_list(DGG.subcursor(g1twin, first(twin_range):last(twin_range))) ==
+    @test leaf_index_list(GrI.subtree(g1twin, first(twin_range):last(twin_range))) ==
           collect(twin_range)
 
     # ---- the covering law, at every node ------------------------------------
@@ -1226,9 +1226,10 @@ end
 # =========================================================================
 
 # A Copernicus source chunked by tile (`mockchunks(grid, LevelChunks(0))`) asks
-# for one tree per chunk of `chunks(grid)`.
-# `subcursor` answers with the index rectangle rather than the bounding-cap
-# fallback, whose row-major bisection prunes nothing on longitude.
+# for one tree per chunk of `chunks(grid)`. GridInterface's `subtree` restricts
+# the lattice's block cursor to the chunk's index range and roots it at the
+# tile's own node, rather than building a bounding-cap fallback whose
+# row-major bisection prunes nothing on longitude.
 @testset "a source chunk keeps the block cursor" begin
     STI = GO.SpatialTreeInterface
 
@@ -1259,26 +1260,65 @@ end
         @test inds == GrI.parentpositions(GrI.chunks(dense)[k])
         @test length(inds) == Int(CD.lat_intervals(TWIN)) * Int(CD.ncols_at(TWIN, lat_s))
         tree = GR._subtree(dense, inds)
-        @test tree isa CD.MemoBlockCursor
+        @test tree isa GrI.MaskedCursor{<:CD.MemoBlockCursor}
+        # Rooted at the tile's node, not the whole lattice.
+        root = tree.node.node
+        tr, tq, _, _ = CD.decode(TWIN, tile)
+        @test (root.r0, root.r1, root.q0, root.q1, root.inpixels) == (tr, tr, tq, tq, false)
+        # A tile node's span bound is its rows of pixels: the chunk, exactly.
+        sp = GrI.position_span(tree)
+        @test sp isa CD.TileRows && GrI.span_range(sp) == inds && GrI.span_inside(sp, inds)
+        @test !GrI.span_mayhold(sp, (first(inds) - 5):(first(inds) - 1)) && !GrI.span_mayhold(sp, (last(inds) + 1):(last(inds) + 5))
+        @test GrI.split_weight(tree) == length(inds)
         # The window is the chunk exactly — no cell of another tile leaks in.
         @test leafindices(tree) == collect(inds)
+        @test sort!(collect(GrI.subtree_indices(tree))) == collect(inds)
     end
 
-    # Any window of whole raster rows is a rectangle too; a mid-row window is
-    # not one, and takes GridInterface's restricted hierarchy cursor.
+    # Any window is the same restriction: whole raster rows root inside the
+    # tile, a mid-row window and a run spanning two tiles root at the deepest
+    # block holding them and filter their leaves.
     r = GR._ownedindices(dense, GR._chunkat(dense,
         localindex(g1twin, CD.pixelcell(TWIN, CD.tilecell(TWIN, 12, 40), 0, 0))))
     nc = Int(CD.ncols_at(TWIN, 12))
     rows = (first(r) + nc):(first(r) + 3nc - 1)
-    @test GR._subtree(dense, rows) isa CD.MemoBlockCursor
+    @test GR._subtree(dense, rows) isa GrI.MaskedCursor{<:CD.MemoBlockCursor}
+    @test GR._subtree(dense, rows).node.node.inpixels
     @test leafindices(GR._subtree(dense, rows)) == collect(rows)
     midrow = (first(r) + 1):(first(r) + nc)
-    @test GR._subtree(dense, midrow) isa GrI.HierarchyCursor
+    @test GR._subtree(dense, midrow) isa GrI.MaskedCursor{<:CD.MemoBlockCursor}
     @test leafindices(GR._subtree(dense, midrow)) == collect(midrow)
     # And a run spanning two tiles is not one rectangle either.
     span = (last(r) - 1):(last(r) + 1)
-    @test GR._subtree(dense, span) isa GrI.HierarchyCursor
+    @test GR._subtree(dense, span) isa GrI.MaskedCursor{<:CD.MemoBlockCursor}
     @test leafindices(GR._subtree(dense, span)) == collect(span)
+
+    # Scattered members restrict as exactly as a range: a block's rows of pixels
+    # answer a vector run by run, so one pixel roots at its leaf rather than at
+    # the whole lattice, whose positions `subtree_indices` would then filter.
+    for p in (first(r), first(r) + nc + 7, last(r) + 1)
+        one = GrI.subtree(g1twin, [p])
+        @test STI.isleaf(one.node) && collect(GrI.subtree_indices(one)) == [p] && leafindices(one) == [p]
+    end
+    two = [first(r) + 3, last(r) + 2]
+    @test leafindices(GrI.subtree(g1twin, two)) == two
+    @test sort!(collect(GrI.subtree_indices(GrI.subtree(g1twin, two)))) == two
+    # Vector and range answers agree, probes between a block's runs included.
+    lattice = GrI.treeify(g1twin)
+    blocks = Any[lattice]
+    for c in STI.getchild(lattice)
+        push!(blocks, c)
+        append!(blocks, STI.getchild(c))
+    end
+    probes(sp) = (q = GrI.span_range(sp); unique!([first(q) - 1; round.(Int, range(first(q), last(q); length = 15)); last(q) + 1]))
+    for b in blocks
+        sp = GrI.position_span(b)
+        @test sp isa CD.TileRows
+        @test all(p -> GrI.span_mayhold(sp, [p]) == GrI.span_mayhold(sp, p:p), probes(sp))
+        @test !GrI.span_mayhold(sp, filter(p -> !GrI.span_mayhold(sp, p:p), probes(sp)))
+    end
+    @test count(b -> any(p -> p in GrI.span_range(GrI.position_span(b)) &&
+        !GrI.span_mayhold(GrI.position_span(b), p:p), probes(GrI.position_span(b))), blocks) > 0
 
     # ---- a sparse holding: a scattered `PartialGrid`, one tile per chunk ----
     tiles = [CD.tilecell(TWIN, 89, 10),     # polemost band, 3 columns
@@ -1304,10 +1344,17 @@ end
     for k in 1:GR._nchunks(src)
         inds = GR._ownedindices(src, k)
         tree = GR._subtree(src, inds)
-        @test tree isa DGG.TiledRasterCursor
+        @test tree isa GrI.MaskedCursor{<:DGG.TiledRasterCursor}
+        # Rooted at the tile's own node of the holding's tree.
+        @test Engine._issingletile(tree.node) && !tree.node.inraster
+        @test GrI.position_span(tree) == inds
         @test leafindices(tree) == collect(inds)
+        # A plain vector of the same positions restricts the same tree.
+        vec = GR._subtree(holding, collect(inds))
+        @test vec isa GrI.MaskedCursor{<:DGG.TiledRasterCursor}
+        @test leafindices(vec) == collect(inds)
         # The weights are the packed fallback R-tree's, entry for entry.
-        rtree = GR._subtree(holding, collect(inds))
+        rtree = GrI.fallback_subtree(MANIFOLD, holding, collect(inds), 16)
         @test rtree isa GO.FlexibleRTrees.RTree
         fast = CR.intersection_areas(MANIFOLD, GOCore.False(), dstgrid, holding;
             dst_tree = dsttree, src_tree = tree, intersection_operator = op)
@@ -1416,7 +1463,7 @@ end
         out = Int[]
         for (lat, lon) in spec
             r = descendant_range(TWIN, CD.tilecell(TWIN, lat, lon), 1)
-            window = DGG.subcursor(complete, first(r):last(r))
+            window = GrI.subtree(complete, first(r):last(r))
             for i in STI.query(window, cap -> capholds(cap, p))
                 push!(out, localindex(g, cellindex(complete, i)))
             end
@@ -1554,18 +1601,21 @@ end
 # (k3) The extent memo: the same caps, no false hits, no shared state
 # =========================================================================
 
-# `treeify`/`subcursor` hand back a `MemoBlockCursor`, which answers
-# `node_extent` from a per-task direct-mapped table instead of re-deriving the
-# box and its cap. The table must be invisible: every answer is the bare
-# cursor's, bit for bit, whoever asks and in whatever order.
+# `treeify` hands back a `MemoBlockCursor`, which answers `node_extent` from a
+# per-task direct-mapped table instead of re-deriving the box and its cap. The
+# table must be invisible: every answer is the bare cursor's, bit for bit,
+# whoever asks and in whatever order.
 @testset "the node-extent memo" begin
     STI = GO.SpatialTreeInterface
 
-    # The block cursor addresses the complete lattice and the windows
-    # `subcursor` cuts out of it; one tile's raster is such a window.
+    # The block cursor addresses the complete lattice; `subtree` restricts it
+    # to a window and roots at the window's node. One tile's raster is such a
+    # window, and its node is a memo cursor like any other.
     g1twin = levelgrid(TWIN, 1)
     tilerange = descendant_range(TWIN, CD.tilecell(TWIN, 50, 6), 1)
-    memoroot = DGG.subcursor(g1twin, first(tilerange):last(tilerange))
+    window = GrI.subtree(g1twin, first(tilerange):last(tilerange))
+    @test window isa GrI.MaskedCursor{<:CD.MemoBlockCursor}
+    memoroot = window.node
     @test memoroot isa CD.MemoBlockCursor
     bareroot = memoroot.node
 
@@ -1803,14 +1853,17 @@ end
         t0 = CD.tilecell(TWIN, 46, 10)
         row = localindex(tiles, t0):(localindex(tiles, t0) + 2)
         pix = descendant_range(TWIN, t0, 1)
-        dsttree = DGG.subcursor(tiles, row)
-        srctree = DGG.subcursor(pixels, first(pix):last(pix))
-        @test dsttree isa CD.MemoBlockCursor
-        @test srctree isa CD.MemoBlockCursor
+        dsttree = GrI.subtree(tiles, row)
+        srctree = GrI.subtree(pixels, first(pix):last(pix))
+        @test dsttree isa GrI.MaskedCursor{<:CD.MemoBlockCursor}
+        @test srctree isa GrI.MaskedCursor{<:CD.MemoBlockCursor}
         fast = CR.intersection_areas(MANIFOLD, GOCore.False(), tiles, pixels;
             dst_tree = dsttree, src_tree = srctree, intersection_operator = op)
+        # The same windows over the bare cursors: the memo changes no weight.
         slow = CR.intersection_areas(MANIFOLD, GOCore.False(), tiles, pixels;
-            dst_tree = dsttree.node, src_tree = srctree.node, intersection_operator = op)
+            dst_tree = GrI.MaskedCursor{false}(dsttree.node.node, row),
+            src_tree = GrI.MaskedCursor{false}(srctree.node.node, first(pix):last(pix)),
+            intersection_operator = op)
         @test length(fast.nzval) > 0
         @test fast == slow
     end

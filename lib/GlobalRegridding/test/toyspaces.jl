@@ -327,21 +327,24 @@ end
 
 Wrap a grid and count restricted-tree builds at the `GridInterface.subtree` /
 `treeify` seam GlobalRegridding's `_subtree` reads, delegating every other
-grid verb unchanged. Read `cs.builds[]`; block builders may run on
+grid verb unchanged; `cs.chunkreads[]` counts `chunks(cs)` resolutions. Read
+`cs.builds[]`; block builders may run on
 `Threads.@spawn` tasks, hence the atomic counter.
 """
 struct CountingSpace{S} <: GrI.AbstractWrappedGrid
     space::S
     builds::Threads.Atomic{Int}
+    chunkreads::Threads.Atomic{Int}
 end
 
-CountingSpace(space) = CountingSpace(space, Threads.Atomic{Int}(0))
+CountingSpace(space) = CountingSpace(space, Threads.Atomic{Int}(0), Threads.Atomic{Int}(0))
 Base.parent(cs::CountingSpace) = cs.space
+GrI.chunks(cs::CountingSpace) = (Threads.atomic_add!(cs.chunkreads, 1); GrI.chunks(cs.space))
 
-GrI.subtree(cs::CountingSpace, inds::AbstractVector{<:Integer}) =
-    (Threads.atomic_add!(cs.builds, 1); GrI.subtree(cs.space, inds))
-GrI.subtree(cs::CountingSpace, s::GrI.Subset) =
-    (Threads.atomic_add!(cs.builds, 1); GrI.subtree(cs.space, s))
+GrI.subtree(cs::CountingSpace, inds::AbstractVector{<:Integer}; kw...) =
+    (Threads.atomic_add!(cs.builds, 1); GrI.subtree(cs.space, inds; kw...))
+GrI.subtree(cs::CountingSpace, s::GrI.Subset; kw...) =
+    (Threads.atomic_add!(cs.builds, 1); GrI.subtree(cs.space, s; kw...))
 GrI.treeify(cs::CountingSpace; leaf_capacity = GrI.Balanced()) =
     (Threads.atomic_add!(cs.builds, 1); GrI.treeify(cs.space; leaf_capacity))
 GrI.treeify(cs::CountingSpace, hint::GrI.LeafHint) =

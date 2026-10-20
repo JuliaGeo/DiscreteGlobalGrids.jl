@@ -1,6 +1,5 @@
 # A hierarchical cursor uses grid indices as leaf indices. Sorted-subtree
 # systems descend through contiguous windows; others materialize selections.
-# Sparse partial-grid nodes may tighten their system-provided extent.
 
 """
     HierarchicalGridCursor(grid; bucket_size = nothing)
@@ -17,8 +16,8 @@ A synthetic root above [`rootcells`](@ref) covers the sphere. A rooted
 `nothing` uses the grid default.
 
 Node extents are marked expensive. They are system [`node_extent`](@ref) caps,
-except at the leaf level and on sparse nodes, which report tight caps over the
-cells they actually hold and therefore cover nothing below the leaf level.
+except at the leaf level, where a node is one cell and reports its own
+[`cell_cap`](@ref), which covers nothing below it.
 
 !!! note "What a system has to get right for this to work"
     A non-`PartialGrid` grid with a system must be its complete level grid in
@@ -258,22 +257,16 @@ function STI.getchild(cursor::HierarchicalGridCursor, i::Int)
     throw(BoundsError(cursor, i))
 end
 
-# Maximum per-node boundary calls used to tighten a sparse node extent. 64
-# clears one child row at every aperture in scope (4, 7, 9) and two rows of an
-# aperture-7 grid (49).
-const STORED_UNION_CAP_LIMIT = 64
-
 """
     STI.node_extent(cursor::HierarchicalGridCursor) -> SphericalCap
 
-The cap this node is pruned by. It bounds cell *geometry* in every case, but not
-the same geometry in every case: a node at or below the leaf level bounds its one
-cell (`cell_cap`), a sparse node encloses the stored cells beneath it from either
-their boundaries or their analytical caps, and every other node bounds the
-system's whole subtree (`node_extent(system, id)`). Only the last reaches past
-the cursor's leaf level, so code that needs a bound over what lies *below* a leaf
-— a chunk index, where aperture-7 children overhang their parent — must call
-`node_extent(system, id)` itself rather than reuse the cursor's cap.
+The cap this node is pruned by. A node at or below the leaf level is one cell
+and bounds that cell's own geometry (`cell_cap`); every other node bounds the
+system's whole subtree (`node_extent(system, id)`, the covering law). Only the
+latter reaches past the cursor's leaf level, so code that needs a bound over
+what lies *below* a leaf — a chunk index, where aperture-7 children overhang
+their parent — must call `node_extent(system, id)` itself rather than reuse
+the cursor's cap.
 """
 function STI.node_extent(cursor::HierarchicalGridCursor)
     _issynthetic(cursor) && return full_sphere_cap()
@@ -281,152 +274,16 @@ function STI.node_extent(cursor::HierarchicalGridCursor)
     # boundary-derived cap is tighter than the subtree cap, and an analytical
     # one may coincide with it (HEALPix).
     cursor.level >= cursor.leaf_level && return cell_cap(cursor.grid, cursor.id)
-    count = _stored_count(cursor)
-    if 0 < count <= STORED_UNION_CAP_LIMIT && count < _subtree_count(cursor)
-        # Tighten only proper sparse subsets; complete subtrees use the system cap.
-        return _stored_cells_cap(cursor, count, cell_cap_is_cheap(cursor.grid))
-    end
     return node_extent(cursor.system, cursor.id)
 end
 
-# Complete grids report their stored count; partial grids use the descendant
-# range when available and otherwise conservatively qualify as sparse.
-_subtree_count(cursor::HierarchicalGridCursor) = _stored_count(cursor)
-
-function _subtree_count(cursor::HierarchicalGridCursor{<:PartialGrid})
-    has_sorted_subtrees(cursor.system) || return typemax(Int)
-    return length(descendant_range(cursor.system, cursor.id, cursor.leaf_level))
-end
-
-# Boundary-derived caps remain the tight generic fallback.  A grid with a cheap
-# analytical cell cap can instead enclose those caps directly: no vertex vector,
-# no boundary construction, and the cursor still has one concrete extent type.
-_stored_cells_cap(cursor, count, ::Val{false}) =
-    cells_cap(cursor.grid, (_stored_id(cursor, i) for i in 1:count))
-
-function _stored_cells_cap(cursor, count, ::Val{true})
-    return Fallbacks._caps_cap(count) do i
-        cell_cap(cursor.grid, _stored_id(cursor, i))
-    end
-end
-
 """
-    LazyCellCapEntries(cursor)
+    STI.child_indices_extents(cursor) -> Vector{Tuple{Int,SphericalCap{Float64}}}
 
-A read-only, allocation-free leaf view for a grid with a closed-form
-`cell_cap`. Each index and cap is derived only when the dual-tree walk reads
-that entry; no per-cell cap vector is retained.
-"""
-struct LazyCellCapEntries{C} <: AbstractVector{Tuple{Int,Cap}}
-    cursor::C
-end
-
-Base.size(entries::LazyCellCapEntries) = (_stored_count(entries.cursor),)
-Base.IndexStyle(::Type{<:LazyCellCapEntries}) = IndexLinear()
-
-Base.@propagate_inbounds function Base.getindex(entries::LazyCellCapEntries, i::Int)
-    @boundscheck checkbounds(entries, i)
-    cursor = entries.cursor
-    index = _stored_index(cursor, i)
-    return (index, cell_cap(cursor.grid, cellindex(cursor.grid, index)))
-end
-
-"""
-    ANALYTICAL_LEAF_CAPACITY
-
-Capacity of an inline analytical leaf. The value is one aperture-7 grandchild
-block, matching the broad-search leaf-size optimum when the dual-tree traversal
-derives a fixed leaf once and carries it while the opposing tree descends.
-"""
-const ANALYTICAL_LEAF_CAPACITY = 49
-
-"""
-    AnalyticalLeafEntries
-
-One immutable analytical leaf's entries in inline storage. The dual-tree
-traversal owns this value only for the fixed leaf's recursive descent, so cap
-memory is `O(ANALYTICAL_LEAF_CAPACITY)` rather than `O(ncells(grid))`.
-"""
-struct AnalyticalLeafEntries <: AbstractVector{Tuple{Int,Cap}}
-    entries::NTuple{ANALYTICAL_LEAF_CAPACITY,Tuple{Int,Cap}}
-    len::Int
-end
-
-Base.size(entries::AnalyticalLeafEntries) = (entries.len,)
-Base.IndexStyle(::Type{AnalyticalLeafEntries}) = IndexLinear()
-
-Base.@propagate_inbounds function Base.getindex(entries::AnalyticalLeafEntries, i::Int)
-    @boundscheck checkbounds(entries, i)
-    return @inbounds entries.entries[i]
-end
-
-const _EMPTY_ANALYTICAL_CAP = SphericalCap(USPoint(0.0, 0.0, 1.0), 0.0)
-const _EMPTY_ANALYTICAL_ENTRIES = AnalyticalLeafEntries(
-    ntuple(_ -> (0, _EMPTY_ANALYTICAL_CAP), Val(ANALYTICAL_LEAF_CAPACITY)), 0)
-
-@inline function _analytical_leaf_entries_indirect(cursor::HierarchicalGridCursor)
-    lazy = LazyCellCapEntries(cursor)
-    n = length(lazy)
-    return if n == 0
-        _EMPTY_ANALYTICAL_ENTRIES
-    else
-        head = lazy[1]
-        AnalyticalLeafEntries(ntuple(Val(ANALYTICAL_LEAF_CAPACITY)) do i
-            i == 1 ? head : (i <= n ? lazy[i] : head)
-        end, n)
-    end
-end
-
-# A complete partial-grid node occupies one contiguous interval of the complete
-# leaf grid. Resolve that interval once, then decode its cells directly. This
-# avoids the `CellVector` run search that a logical subset index otherwise pays
-# for every entry.
-@inline function _analytical_leaf_entries(cursor::HierarchicalGridCursor{<:PartialGrid})
-    cursor.complete_subtree || return _analytical_leaf_entries_indirect(cursor)
-    range = descendant_range(cursor.system, cursor.id, cursor.leaf_level)
-    first_complete_index = Int(first(range))
-    n = _stored_count(cursor)
-    n == 0 && return _EMPTY_ANALYTICAL_ENTRIES
-    first_entry = _direct_analytical_entry(cursor, first_complete_index, 1)
-    return AnalyticalLeafEntries(ntuple(Val(ANALYTICAL_LEAF_CAPACITY)) do i
-        i == 1 ? first_entry :
-        (i <= n ? _direct_analytical_entry(cursor, first_complete_index, i) : first_entry)
-    end, n)
-end
-
-_analytical_leaf_entries(cursor::HierarchicalGridCursor) =
-    _analytical_leaf_entries_indirect(cursor)
-
-@inline function _direct_analytical_entry(cursor, first_complete_index::Int, i::Int)
-    index = _stored_index(cursor, i)
-    id = cellindex(cursor.grid.complete, first_complete_index + i - 1)
-    return (index, cell_cap(cursor.grid, id))
-end
-
-function _leaf_indices_extents(cursor::HierarchicalGridCursor, ::Val{false})
-    count = _stored_count(cursor)
-    entries = Vector{Tuple{Int,Cap}}(undef, count)
-    for i in 1:count
-        index = _stored_index(cursor, i)
-        entries[i] = (index, cell_cap(cursor.grid, cellindex(cursor.grid, index)))
-    end
-    return entries
-end
-
-function _leaf_indices_extents(cursor::HierarchicalGridCursor, ::Val{true})
-    _stored_count(cursor) <= ANALYTICAL_LEAF_CAPACITY ||
-        return LazyCellCapEntries(cursor)
-    return _analytical_leaf_entries(cursor)
-end
-
-"""
-    STI.child_indices_extents(cursor) -> AbstractVector{Tuple{Int,SphericalCap{Float64}}}
-
-Return leaf grid indices and tight cell caps. Systems whose cap is boundary-
-derived materialize the entries once per visit. A system with a closed-form cap
-returns an inline [`AnalyticalLeafEntries`](@ref) value. The dual-tree traversal
-carries that value while the opposing tree descends, avoiding both repeated cap
-construction and retained leaf or grid-sized caches.
+The leaf's grid indices and tight cell caps, built once per visit: the pair
+search reads a leaf's entries once per opposing cell, so deriving them lazily
+would recompute every cap that many times (measured 2.6x slower on HEALPix and
+IGeo7, 22x on H3).
 
 Each cap is `cell_cap` of that one leaf cell: a bound over that cell's own
 geometry, with no subtree headroom and no coverage of anything below the leaf
@@ -436,7 +293,13 @@ level. A consumer that needs the subtree bound must call
 function STI.child_indices_extents(cursor::HierarchicalGridCursor)
     STI.isleaf(cursor) ||
         throw(ArgumentError("child_indices_extents is only valid for leaf nodes"))
-    return _leaf_indices_extents(cursor, cell_cap_is_cheap(cursor.grid))
+    count = _stored_count(cursor)
+    entries = Vector{Tuple{Int,Cap}}(undef, count)
+    for i in 1:count
+        index = _stored_index(cursor, i)
+        entries[i] = (index, cell_cap(cursor.grid, cellindex(cursor.grid, index)))
+    end
+    return entries
 end
 
 # --------------------------------------------------------------------------
@@ -462,3 +325,8 @@ getcell(cursor::HierarchicalGridCursor) =
 # neither copied.
 split_weight(cursor::HierarchicalGridCursor) = _stored_count(cursor)
 subtree_indices(cursor::HierarchicalGridCursor) = node_indices(cursor)
+# A window's span is the window; a selection stays ascending (children are
+# bucketed in the parent's order), so its span is its ends.
+GridInterface.position_span(cursor::WindowCursor) = cursor.first_index:cursor.last_index
+GridInterface.position_span(cursor::SelectionCursor) =
+    isempty(cursor.selection) ? (1:0) : (first(cursor.selection):last(cursor.selection))

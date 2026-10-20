@@ -246,10 +246,8 @@ include("chunks.jl")
 include("gridinterface.jl")
 
 # Last: the regridding face reads the grids, the compressed collection, and the
-# cube axis alike. The whole-grid sweep tree with its per-cell work cached sits
-# beside the other cursors' tree verbs.
+# cube axis alike.
 include("regrid_targets.jl")
-include("cap_cached_tree.jl")
 include("partitioning.jl")
 include("partitioning_backends.jl")
 

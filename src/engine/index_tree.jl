@@ -160,13 +160,25 @@ _grid_tree(grid::AbstractGrid) = system(grid) === nothing ?
 # GridInterface's intents and integer form, as provider overrides. The finest
 # tree is the one the bare form builds, so `ForQueries` is that; any other leaf
 # size is the same cursor with that many cells per leaf, or the index tree
-# with that node capacity where the grid has no hierarchy. `ForSweeps` is the
-# bucket the regridding face measured (`_CACHED_BUCKET_SIZE`).
+# with that node capacity where the grid has no hierarchy.
 treeify(grid::AbstractGrid, ::ForQueries) = treeify(grid)
 treeify(grid::AbstractGrid, hint::LeafHint) = treeify(grid, leaf_capacity(grid, hint))
 treeify(grid::AbstractGrid, n::Integer) = system(grid) === nothing ?
                                           IndexTreeNode(IndexTree(grid; leafsize=Int(n))) :
                                           HierarchicalGridCursor(grid; bucket_size=Int(n))
+# The sweep leaf: stop descent at `7^2` stored cells, two IGeo7 refinement
+# levels above the grid's own resolution. A cell budget, not a level count, so
+# a system of another aperture stops wherever 49 cells falls. With one-cell
+# leaves the dual search spends most of its visits on the bottom level (for an
+# IGeo7 level-12 column rooted at level 5, 823543 of the tree's 960799 nodes);
+# the bucketed leaf hands those cells back through `child_indices_extents`.
+# Measured on the CopDEM GLO-90 -> IGeo7 L12 column regrid, core-seconds per
+# column, serial:
+#
+#   column            leaf 1   leaf 8   leaf 49   leaf 343
+#   728                20.39    13.16     12.69      18.67
+#   98241 (all NaN)    18.27    11.66     10.97      16.60
+#   115426 (polar)     20.36    13.30     12.34      18.89
 leaf_capacity(::AbstractGrid, ::ForSweeps) = 49
 
 # Idempotent on the trees themselves, as a tree of a tree is the tree.

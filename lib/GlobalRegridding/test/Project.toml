@@ -9,6 +9,7 @@ GeometryOpsCore = "05efe853-fabf-41c8-927e-7063c8b9f013"
 GlobalRegridding = "76847d5f-3a3e-4aa5-90cc-2a3a47dd1c11"
 Graphs = "86223c79-3864-5bf0-83f7-82e725a168b6"
 GridInterface = "ae69c2d7-6fba-4c43-9473-473fff3cdc1f"
+GridInterfaceConformance = "aa8aab9d-9df5-42a8-9a40-2377a5cb432e"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 Proj = "c94c279d-25a6-4763-9509-64d165bea63e"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
@@ -24,3 +25,4 @@ GeometryOps = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "as
 GeometryOpsCore = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "as/split-unitsphericalgeometrycore", subdir = "GeometryOpsCore"}
 GlobalRegridding = {path = ".."}
 GridInterface = {url = "https://github.com/JuliaGeo/GridInterface.jl.git", rev = "gridinterface"}
+GridInterfaceConformance = {url = "https://github.com/JuliaGeo/GridInterface.jl.git", rev = "gridinterface", subdir = "lib/GridInterfaceConformance"}

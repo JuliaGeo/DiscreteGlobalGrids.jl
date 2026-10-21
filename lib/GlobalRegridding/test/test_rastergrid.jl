@@ -4,6 +4,7 @@ import DimensionalData as DD
 import DiskArrays
 import ConservativeRegridding as CR
 import GridInterface as GrI
+import GridInterfaceConformance as GIC
 import GeometryOps: SpatialTreeInterface as STI
 
 const GEOGRAPHIC_TO_UNIT_SPHERE = GO.UnitSpherical.UnitSphereFromGeographic()
@@ -62,12 +63,16 @@ function same_cells(a, b)
     return true
 end
 
-# Direct chart constructions used as references for edge-table fast paths.
+# Direct chart constructions used as references for edge-table fast paths: the
+# lattice corners of cell `(i, j)` through the chart itself.
 
-@noinline function reference_corners(space, ix, iy)
-    xlo, xhi, ylo, yhi = GR.cellbox(space, ix, iy)
+@noinline function reference_corners(space, i, j)
     t = space.native_to_unit_sphere
-    return (t((xlo, ylo)), t((xhi, ylo)), t((xhi, yhi)), t((xlo, yhi)))
+    function vertex(a, b)
+        ex, ey = GR._storagevertex(space, a, b)
+        return t((space.xedges[ex], space.yedges[ey]))
+    end
+    return (vertex(i, j), vertex(i + 1, j), vertex(i + 1, j + 1), vertex(i, j + 1))
 end
 
 @noinline function reference_cellring(corners::NTuple{4,USPoint})
@@ -81,9 +86,8 @@ end
 end
 
 @noinline function reference_cell(space, i)
-    ix, iy = GR.cellsubscript(space, i)
-    c = reference_corners(space, ix, iy)
-    return reference_cellring(space.ccw ? c : (c[4], c[3], c[2], c[1]))
+    a, b = GR._latticeindex(space, GR.cellsubscript(space, i)...)
+    return reference_cellring(reference_corners(space, a, b))
 end
 
 # Bitwise comparison includes signed zero and NaN payloads.
@@ -441,7 +445,7 @@ end
             @test whole isa GrS.TopDownQuadtreeCursor
             @test whole.grid === space
             @test whole.leafsize == (4, 4)
-            @test (length(whole.irange), length(whole.jrange)) == GR.rastersize(space)
+            @test (length(whole.irange), length(whole.jrange)) == GrS.facesize(space, 1)
             @test GrI.split_weight(whole) == ncells(space)
             @test sort!(leafindices!(Int[], whole)) == collect(1:ncells(space))
 
@@ -635,5 +639,161 @@ end
         geographic = rg_forward()
         GR.blockextent(geographic, 1, 2:7, 2:3)
         @test (@allocated GR.blockextent(geographic, 1, 2:7, 2:3)) == 0
+    end
+
+    @testset "conformance" begin
+        lat(step) = (-90 + step / 2):step:(90 - step / 2)
+        lon180(step) = (-180 + step / 2):step:(180 - step / 2)
+        lon360(step) = (step / 2):step:(360 - step / 2)
+        grid(x, y) = RasterGrid(DD.DimArray(zeros(length(x), length(y)), (DD.X(x), DD.Y(y))))
+        lonlat(space, c) = UNIT_SPHERE_TO_GEOGRAPHIC(cellcentroid(space, c))
+        failing(rep) = ["$(r.family) / $(r.law): $(r.detail)" for r in rep.results if r.status === :fail]
+
+        global10 = grid(lon180(10.0), lat(10.0))
+        polecentred = grid(lon180(10.0), -90.0:10.0:90.0)
+        east360 = grid(lon360(10.0), lat(10.0))
+        descending = grid(lon180(10.0), reverse(lat(10.0)))
+        westward = grid(reverse(lon180(10.0)), lat(10.0))
+        ymajor = RasterGrid(DD.DimArray(zeros(18, 36), (DD.Y(lat(10.0)), DD.X(lon180(10.0)))))
+        regional = grid(-35.0:10.0:35.0, -15.0:10.0:15.0)
+
+        # Every law GridInterface states, on each layout a raster comes in.
+        for (name, space) in (
+                "global 1°" => grid(lon180(1.0), lat(1.0)),
+                "global 10°" => global10,
+                "pole-centred" => polecentred,
+                "0..360" => east360,
+                "descending latitude" => descending,
+                "descending latitude, 0..360" => grid(lon360(10.0), reverse(lat(10.0))),
+                "descending longitude" => westward,
+                "Y-major" => ymajor,
+                "regional" => regional,
+                "coarse" => rg_forward())
+            rep = GIC.check_grid(space; name)
+            @test failing(rep) == String[]
+            @test isempty(intersect(rep.fallbacks, [:cellat, :neighbors, :cell_geometry, :cell_extent]))
+        end
+
+        # A regional raster reaching a pole passes every law but the suite's
+        # open-fan winding, which winds a closed ring about the vertex: an open
+        # fan spanning less than a half turn turns by nothing about it whatever
+        # its order. The fan is counter-clockwise about the north pole seen
+        # from outside: its cells' longitudes increase.
+        polar = grid(-35.0:10.0:35.0, 55.0:10.0:85.0)
+        rep = GIC.check_grid(polar; name = "regional to the pole")
+        @test failing(rep) == filter(f -> startswith(f, "dual / vertex fans wind CCW about the vertex"), failing(rep))
+        @test length(failing(rep)) <= 1
+        V = GrI.GridAndVertices(polar)
+        pole = only(v for v in 1:GrI.nvertices(V) if length(GrI.vertex_cells(V, v)) > 4)
+        fan = collect(GrI.vertex_cells(V, pole))
+        @test GrI.vertex_isopen(V, pole)
+        @test fan == [GR.localindex(polar, ix, 4) for ix in 1:8]
+        @test issorted([lonlat(polar, c)[1] for c in fan])
+
+        # The poles: a polar cell is a triangle with the pole as one corner, has
+        # a neighbour across each of its three edges, and touches every other
+        # cell of its row at the pole.
+        nx, ny = 36, 18
+        for (c, pole) in ((GR.localindex(global10, 5, 1), geographic_point(0.0, -90.0)),
+                          (GR.localindex(global10, 5, ny), geographic_point(0.0, 90.0)))
+            @test length(cellcorners(global10, c)) == 3
+            @test length(cellring(global10, c)) == 4
+            @test any(p -> p == pole, cellcorners(global10, c))
+            @test GrI.cell_contains(global10, c, pole)
+            @test length(GrI.neighbors(global10, c; connectivity = GrI.Edge())) == 3
+            vertex = collect(GrI.neighbors(global10, c))
+            @test length(vertex) == nx - 1 + 3
+            @test allunique(vertex) && !(c in vertex)
+        end
+        @test GrI.maxneighbors(global10, GrI.Vertex()) === nothing
+        @test GrI.maxneighbors(regional, GrI.Vertex()) == 8
+        @test GrI.isglobal(global10) && GrI.isglobal(descending) && GrI.isglobal(ymajor)
+        @test !GrI.isglobal(regional) && !GrI.isglobal(polar)
+        @test polecentred.yedges[1] == -90.0 && polecentred.yedges[end] == 90.0
+        @test length(cellcorners(polecentred, 1)) == 3
+        # The pole itself belongs to a cell of the polar row.
+        @test GR.cellsubscript(global10, cellat(global10, geographic_point(0.0, 90.0)))[2] == ny
+        @test GR.cellsubscript(global10, cellat(global10, geographic_point(0.0, -90.0)))[2] == 1
+
+        # The antimeridian: the first and last columns are neighbours on a
+        # raster spanning the period, whatever its origin, and not on a region.
+        for space in (global10, east360, descending, ymajor)
+            west = GR.localindex(space, 1, 9)
+            east = GR.localindex(space, nx, 9)
+            @test east in GrI.neighbors(space, west; connectivity = GrI.Edge())
+            @test west in GrI.neighbors(space, east; connectivity = GrI.Edge())
+            @test length(GrI.neighbors(space, west)) == 8
+        end
+        @test !(GR.localindex(regional, 8, 2) in GrI.neighbors(regional, GR.localindex(regional, 1, 2)))
+        @test length(GrI.neighbors(regional, GR.localindex(regional, 1, 2))) == 5
+
+        # Edge neighbours are counter-clockwise from the one across the ring's
+        # first edge, so a cell's neighbours come south, east, north, west in
+        # every layout.
+        for space in (global10, east360, descending, westward, ymajor)
+            c = cellat(space, geographic_point(5.0, 5.0))
+            edges = collect(GrI.neighbors(space, c; connectivity = GrI.Edge()))
+            @test [round.(lonlat(space, q); digits = 6) for q in edges] ==
+                  [(5.0, -5.0), (15.0, 5.0), (5.0, 15.0), (-5.0, 5.0)]
+        end
+
+        # Points exactly on a cell edge, on the antimeridian and at the poles
+        # land in a cell that contains them.
+        for space in (global10, east360, descending, westward, ymajor),
+                p in (geographic_point(10.0, 0.0), geographic_point(5.0, 10.0),
+                      geographic_point(10.0, 10.0), geographic_point(180.0, 5.0),
+                      geographic_point(-180.0, 5.0), geographic_point(180.0, -10.0),
+                      geographic_point(0.0, 90.0), geographic_point(0.0, -90.0),
+                      geographic_point(180.0, 90.0))
+            c = cellat(space, p)
+            @test c isa Int
+            @test GrI.cell_contains(space, c, p)
+        end
+        # The outer edges, where the inverse chart lands an ulp outside the
+        # axes, belong to the end cells.
+        for (lon, column) in ((-40.0, 1), (40.0, 8)), lat in (0.0, 5.0, -20.0, 20.0)
+            c = cellat(regional, geographic_point(lon, lat))
+            @test c isa Int && GR.cellsubscript(regional, c)[1] == column
+            @test GrI.cell_contains(regional, c, geographic_point(lon, lat))
+        end
+        @test cellat(regional, geographic_point(5.0, 25.0)) === nothing
+        @test cellat(regional, geographic_point(45.0, 5.0)) === nothing
+
+        # A point just outside the chart can lie under the geodesic bulge of a
+        # boundary cell's edge: it is inside that cell, and located there.
+        top = cellat(regional, geographic_point(5.0, 15.0))
+        mid = LinearAlgebra.normalize(geographic_point(0.0, 20.0) + geographic_point(10.0, 20.0))
+        bulged = LinearAlgebra.normalize(0.01 * cellcentroid(regional, top) + 0.99 * mid)
+        @test UNIT_SPHERE_TO_GEOGRAPHIC(bulged)[2] > 20.0
+        @test GrI.cell_contains(regional, top, bulged)
+        @test cellat(regional, bulged) == top
+
+        # A descending or Y-major lookup keeps the cells, their neighbours and
+        # their storage chunks; only the lattice is reordered to ascend.
+        for space in (descending, westward, ymajor)
+            @test !GrS.facecolumnmajor(space, 1)
+            xs, ys = GrS.faceaxes(space, 1)
+            @test issorted(xs) && issorted(ys)
+            @test same_cells(global10, space)
+            for c in (1, 100, ncells(space))
+                f = cellat(global10, cellcentroid(space, c))
+                @test Set(round.(Tuple(cellcentroid(space, q)); digits = 10) for q in GrI.neighbors(space, c)) ==
+                      Set(round.(Tuple(cellcentroid(global10, q)); digits = 10) for q in GrI.neighbors(global10, f))
+            end
+        end
+        @test GrS.facecolumnmajor(global10, 1)
+        chunked = RasterGrid(DD.DimArray(CountingChunked(zeros(36, 18), (12, 6)),
+            (DD.X(lon180(10.0)), DD.Y(reverse(lat(10.0))))))
+        @test nchunks(chunked) == 9
+        for c in 1:nchunks(chunked)
+            owned = ownedindices(chunked, c)
+            xr, yr = GR.chunkbox(chunked, c)
+            @test collect(owned) == vec([GR.localindex(chunked, ix, iy) for ix in xr, iy in yr])
+            tree = celltree(chunked, c)
+            @test tree isa GrS.TopDownQuadtreeCursor
+            @test sort!(collect(GrI.subtree_indices(tree))) == collect(owned)
+            @test all(chunkat(chunked, i) == c for i in owned)
+        end
+        @test chunks_cover_dense(chunked)
     end
 end

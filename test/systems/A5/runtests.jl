@@ -618,7 +618,7 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
         @test typeof(DGG.ring(grid, c, 1)) === SmallVector{11,A5.A5Cell}
         @test typeof(DGG.children(S, c)) === SmallVector{5,A5.A5Cell}
         DGG.children(S, c)
-        @test @allocated(DGG.children(S, c)) == 0 skip = VERSION < v"1.12"
+        @test @allocated(DGG.children(S, c)) == 0 broken = VERSION < v"1.12"
 
         # Cover both special low levels, a level-2 quintant/cross-face seam,
         # and an ordinary deep cell. The seam cases take different native
@@ -628,7 +628,7 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
             probe = DGG.cellindex(probe_grid, i)
             DGG.neighbors(probe_grid, probe, 1; connectivity = conn)
             @test neighbor_bytes(probe_grid, probe, conn) == 0 skip =
-                VERSION < v"1.12" || Base.JLOptions().check_bounds == 1
+                Base.JLOptions().check_bounds == 1
         end
 
         # An id that is not a cell of this grid's resolution is an error, not a

@@ -381,7 +381,7 @@ end
         first = copy(dst)
         # Two accumulators and no third vector: a per-application reference would
         # cost another `8 * nwide` bytes on top.
-        @test (@allocated GR.applyplan!(dst, plan, src)) < 3 * 8 * nwide skip = VERSION < v"1.12"
+        @test (@allocated GR.applyplan!(dst, plan, src)) < 3 * 8 * nwide
         @test dst == first
     end
 

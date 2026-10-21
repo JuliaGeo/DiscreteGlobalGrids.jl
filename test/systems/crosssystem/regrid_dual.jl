@@ -261,7 +261,7 @@ querybytes(row, smp, p) =
                 @test sites
 
                 # Nothing per destination, once warm.
-                @test querybytes(row, smp, points[1]) == 0 skip = VERSION < v"1.12"
+                @test querybytes(row, smp, points[1]) == 0
             end
         end
     end

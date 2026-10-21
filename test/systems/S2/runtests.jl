@@ -915,7 +915,7 @@ end
         c = cellindex(g, position)
         neighbors(g, c, 1; connectivity = conn)
         @test neighbor_bytes(g, c, conn) == 0 skip =
-            VERSION < v"1.12" || Base.JLOptions().check_bounds == 1
+            Base.JLOptions().check_bounds == 1
     end
 end
 

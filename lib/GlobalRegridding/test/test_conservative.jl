@@ -1148,7 +1148,7 @@ end
                 @test all(i -> all(j -> i in cellneighbors(fine, j), cellneighbors(fine, i)),
                     1:ncells(fine))
                 f(s, i) = (cellneighbors(s, i); @allocated cellneighbors(s, i))
-                @test f(fine, interior) == 0 skip = VERSION < v"1.12"
+                @test f(fine, interior) == 0
 
                 open = RasterGrid(DD.DimArray(zeros(nx, ny),
                     (DD.X(range(-175, 175; length = nx)), DD.Y(range(-85, 85; length = ny))));

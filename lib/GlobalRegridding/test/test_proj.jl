@@ -67,7 +67,7 @@ end
     prepared_vertex = GR.facevertex(perimeter, 1, 1, 1)
     @test tuple_isapprox(Tuple(prepared_vertex), Tuple(GR.facevertex(space, 1, 1, 1)))
     prepared_vertex_allocated = @allocated(GR.facevertex(perimeter, 1, 1, 1))
-    @test prepared_vertex_allocated == 0
+    @test prepared_vertex_allocated == 0 broken = VERSION < v"1.12"
 
     # A prepared destination retains its restricted tree across block tasks;
     # that stored tree is rooted at the grid and so keeps the safe chart.

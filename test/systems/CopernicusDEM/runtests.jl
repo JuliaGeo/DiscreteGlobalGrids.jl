@@ -887,8 +887,7 @@ _cellat_bytes(g, p) = (cellat(g, p); @allocated cellat(g, p))
 
     # Locating is the lattice arithmetic and a membership search, with no tree
     # query, no candidate list and no boundary polygon behind it.
-    @test _cellat_bytes(pg, cell_centroid(complete, held[2 * nc])) == 0 skip =
-        VERSION < v"1.12"
+    @test _cellat_bytes(pg, cell_centroid(complete, held[2 * nc])) == 0
 end
 
 # =========================================================================
@@ -2856,7 +2855,7 @@ DGG.Helpers.strictly_increasing(::LazyTilePixels) = true
         return n
     end
     sweep(row, smp, points)
-    @test @allocated(sweep(row, smp, points)) == 0 skip = VERSION < v"1.12"
+    @test @allocated(sweep(row, smp, points)) == 0 broken = VERSION < v"1.12"
 end
 
 @testset "a post is found by its tile chunk or by the holding's ids alike" begin
@@ -3028,7 +3027,7 @@ end
         return n
     end
     sweep(row, smp, points)                       # warm the row's buffers
-    @test @allocated(sweep(row, smp, points)) == 0 skip = VERSION < v"1.12"
+    @test @allocated(sweep(row, smp, points)) == 0 broken = VERSION < v"1.12"
     @test sweep(row, smp, points) > 4 * length(points) - 100
 
     # The polar branch is the same query: one entry, inferred, and no allocation.
@@ -3038,7 +3037,7 @@ end
     polar = [CD.TO_SPHERE((-180 + 360 * rand(rng),
         hemi * (90 - rand(rng) / (8 * nlat)))) for hemi in (1.0, -1.0), _ in 1:500]
     sweep(row, smp, polar)
-    @test @allocated(sweep(row, smp, polar)) == 0 skip = VERSION < v"1.12"
+    @test @allocated(sweep(row, smp, polar)) == 0 broken = VERSION < v"1.12"
     @test sweep(row, smp, polar) == length(polar)
 end
 

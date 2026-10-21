@@ -701,7 +701,7 @@ const CLEAN = (0, "")
         # primitive every halo and stencil is built from.
         let g = DGG.levelgrid(S, 8), c = DGG.cellindex(g, 12345)
             DGG.neighbors(g, c, 1)
-            @test (@allocated DGG.neighbors(g, c, 1)) == 0 skip = VERSION < v"1.12"
+            @test (@allocated DGG.neighbors(g, c, 1)) == 0 broken = VERSION < v"1.12"
         end
 
         # ---------------------------------------------------------------
@@ -854,7 +854,7 @@ const CLEAN = (0, "")
                     DGG.cell_boundary(sparse.grid, c))
         end
         GO.SpatialTreeInterface.node_extent(sparse)
-        @test @allocated(GO.SpatialTreeInterface.node_extent(sparse)) == 0 skip =
+        @test @allocated(GO.SpatialTreeInterface.node_extent(sparse)) == 0 broken =
             VERSION < v"1.12"
 
         # A complete bucket is the common MOC-interior case. The cursor carries

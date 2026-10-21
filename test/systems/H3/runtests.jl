@@ -480,18 +480,18 @@ end
         DGG.neighbors(grid, pent, 1)
         DGG.children(S, c)
         DGG.children(S, pent)
-        @test @allocated(DGG.neighbors(grid, c, 1)) == 0 skip = VERSION < v"1.12"
-        @test @allocated(DGG.neighbors(grid, pent, 1)) == 0 skip = VERSION < v"1.12"
-        @test @allocated(DGG.children(S, c)) == 0 skip = VERSION < v"1.12"
-        @test @allocated(DGG.children(S, pent)) == 0 skip = VERSION < v"1.12"
+        @test @allocated(DGG.neighbors(grid, c, 1)) == 0 broken = VERSION < v"1.12"
+        @test @allocated(DGG.neighbors(grid, pent, 1)) == 0 broken = VERSION < v"1.12"
+        @test @allocated(DGG.children(S, c)) == 0 broken = VERSION < v"1.12"
+        @test @allocated(DGG.children(S, pent)) == 0 broken = VERSION < v"1.12"
         # And at k >= 2 through the `Val` forms, on both libh3 paths.
         for x in (c, pent)
             DGG.neighbors(grid, x, Val(2)); DGG.neighbors(grid, x, Val(3))
             DGG.ring(grid, x, Val(2)); DGG.ring(grid, x, Val(3))
-            @test @allocated(DGG.neighbors(grid, x, Val(2))) == 0 skip = VERSION < v"1.12"
-            @test @allocated(DGG.neighbors(grid, x, Val(3))) == 0 skip = VERSION < v"1.12"
-            @test @allocated(DGG.ring(grid, x, Val(2))) == 0 skip = VERSION < v"1.12"
-            @test @allocated(DGG.ring(grid, x, Val(3))) == 0 skip = VERSION < v"1.12"
+            @test @allocated(DGG.neighbors(grid, x, Val(2))) == 0 broken = VERSION < v"1.12"
+            @test @allocated(DGG.neighbors(grid, x, Val(3))) == 0 broken = VERSION < v"1.12"
+            @test @allocated(DGG.ring(grid, x, Val(2))) == 0 broken = VERSION < v"1.12"
+            @test @allocated(DGG.ring(grid, x, Val(3))) == 0 broken = VERSION < v"1.12"
         end
     end
 

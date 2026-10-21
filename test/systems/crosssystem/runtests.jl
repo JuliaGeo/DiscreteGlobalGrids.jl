@@ -234,8 +234,7 @@ eager_interior(sys, c, l; kw...) =
 
             # Composing costs the complete level's arithmetic and a binary
             # search, and nothing else: no tree, no candidate list, no polygon.
-            @test located_bytes(pg, cell_centroid(grid, held[2])) == 0 skip =
-                VERSION < v"1.12"
+            @test located_bytes(pg, cell_centroid(grid, held[2])) == 0
 
             # The one place the two locators part company, and the reason the
             # composed answer is stated as the complete level's restricted to

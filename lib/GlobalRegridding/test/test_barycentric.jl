@@ -428,11 +428,11 @@ end
 
         # Once warm, a point costs no allocation at all.
         @test p1_kernelbytes(GR.meanvalueweights!, row, P1_TRI_INDS, P1_TRI_NODES,
-            (1.0, 1.0)) == 0 skip = VERSION < v"1.12"
+            (1.0, 1.0)) == 0
         @test p1_kernelbytes(GR.bilinearweights!, row, P1_QUAD_INDS, P1_QUAD_NODES,
-            (2.0, 1.0)) == 0 skip = VERSION < v"1.12"
+            (2.0, 1.0)) == 0
         @test p1_kernelbytes(GR.meanvalueweights!, row, P1_HEX_INDS, P1_HEX_NODES,
-            (0.3, 0.2)) == 0 skip = VERSION < v"1.12"
+            (0.3, 0.2)) == 0
     end
 
     @testset "a local tangent chart" begin
@@ -475,7 +475,7 @@ end
         # The kernel infers to coordinates or the one answer for a point it
         # cannot place, and costs nothing warm.
         @test (@inferred Union{Nothing,NTuple{2,Float64}} GR.chartpoint(ch, a)) === ca
-        @test p1_chartbytes(ch, a) == 0 skip = VERSION < v"1.12"
+        @test p1_chartbytes(ch, a) == 0
 
         # Containment is the mean-value kernel's own reading, so a ring this
         # accepts is one that kernel weights.
@@ -565,8 +565,7 @@ end
                   for i in 1:Int(ncells(dst)))
         @test sort(row.indices) == [1, 2, 3, 4]
         @test p1_rowsum(row) ≈ 1.0
-        @test p1_samplerbytes(row, smp, cellcentroid(dst, 1)) == 0 skip =
-            VERSION < v"1.12"
+        @test p1_samplerbytes(row, smp, cellcentroid(dst, 1)) == 0
 
         # Eager and chunked build one operator, with every stencil split across
         # both source chunks.
@@ -630,8 +629,7 @@ end
 
         # Once warm, a point on the chart path costs no allocation at all.
         row = GR.WeightRow()
-        @test p1_samplerbytes(row, smp, cellcentroid(qdst, 1)) == 0 skip =
-            VERSION < v"1.12"
+        @test p1_samplerbytes(row, smp, cellcentroid(qdst, 1)) == 0
     end
 
     @testset "a periodic chart axis wraps at the seam" begin

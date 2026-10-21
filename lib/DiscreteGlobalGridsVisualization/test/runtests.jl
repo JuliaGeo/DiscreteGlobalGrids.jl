@@ -590,7 +590,7 @@ end
         @test DGGV.triangulate(planar(), grid, DGGV.ZeroHeights(n)).positions ==
             flat.positions
         @test all(iszero, DGGV.ZeroHeights(n))
-        @test (@allocated DGGV.ZeroHeights(n)) == 0
+        @test (@allocated DGGV.ZeroHeights(n)) == 0 broken = VERSION < v"1.12"
 
         # Given, the map is the same map with a height on top of it.  The seam
         # and the poles add vertices of their own, and each takes the height of

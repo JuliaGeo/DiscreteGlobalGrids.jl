@@ -28,11 +28,14 @@ GlobalRegriddingProjExt = "Proj"
 GlobalRegriddingRastersExt = "Rasters"
 GlobalRegriddingRastersProjExt = ["Rasters", "Proj"]
 
-# GridInterface is unregistered and ConservativeRegridding is the development
-# checkout its engine needs: path sources, as DiscreteGlobalGrids declares them.
+# Unregistered or unreleased dependencies. Pkg does not reliably carry a
+# workspace sibling's source over to the active project (it drops `subdir`
+# and can install the registered release), so these repeat the root's entries.
 [sources]
-GridInterface = {url = "https://github.com/JuliaGeo/GridInterface.jl.git", rev = "gridinterface"}
 ConservativeRegridding = {url = "https://github.com/JuliaGeo/ConservativeRegridding.jl.git", rev = "gridinterface"}
+GridInterface = {url = "https://github.com/JuliaGeo/GridInterface.jl.git", rev = "gridinterface"}
+GeometryOps = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "as/split-unitsphericalgeometrycore"}
+GeometryOpsCore = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "as/split-unitsphericalgeometrycore", subdir = "GeometryOpsCore"}
 
 [compat]
 ConservativeRegridding = "0.2.18"

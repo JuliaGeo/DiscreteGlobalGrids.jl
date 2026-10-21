@@ -63,5 +63,7 @@ DocumenterVitepress = "0.3"
 GeoInterface = "1"
 GeoMakie = "0.7"
 Geomorphometry = "0.7"
-Makie = "0.24"
+# GeoMakie 0.7.17 calls `Makie.timed_ticklabelspace_reset`, which Makie 0.24.16
+# removed (MakieOrg/GeoMakie.jl#398).
+Makie = "0.24.0 - 0.24.15"
 WGLMakie = "0.13"

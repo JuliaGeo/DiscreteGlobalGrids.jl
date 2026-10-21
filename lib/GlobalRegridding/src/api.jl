@@ -53,9 +53,9 @@ it and `NaN` otherwise.
 
 # Keyword arguments
 
-  - `to`: destination `RegridSpace`, a dimensional raster or tuple of
-    dimensions naming a `RasterGrid`, or a package-specific target.
-  - `from`: source space, spelled any of those ways; `nothing` derives a
+  - `to`: destination grid (`GridInterface.isgrid`), a dimensional raster or
+    tuple of dimensions naming a `RasterGrid`, or a package-specific target.
+  - `from`: source grid, spelled any of those ways; `nothing` derives a
     `RasterGrid` from `data`.
   - `method`: weight-building method; defaults to [`Conservative`](@ref).
   - `locator`: how candidate cells are found while weights are built, a
@@ -224,11 +224,12 @@ function plan_regrid(data; to, from = nothing,
     dependencies = nothing, refine = nothing,
     narrow::Union{Nothing,Symbol} = nothing,
     locator::CandidateLocator = TreeLocator())
-    src_space = from === nothing ? _sourcespace(data) : _asspace(from, "from")
-    dst_space = _asspace(to, "to", src_space)
-    manifold(dst_space) == manifold(src_space) || throw(ArgumentError(
+    src_space = from === nothing ? _sourcespace(data) : _asgrid(from, "from")
+    dst_space = _asgrid(to, "to", src_space)
+    GOCore.best_manifold(dst_space) == GOCore.best_manifold(src_space) || throw(ArgumentError(
         "the two sides of a regrid must live on one manifold, but the source " *
-        "is on $(manifold(src_space)) and the destination on $(manifold(dst_space))"))
+        "is on $(GOCore.best_manifold(src_space)) and the destination on " *
+        "$(GOCore.best_manifold(dst_space))"))
     if !lazy
         _rejectlazykeywords(chunks, budget, storage, dependencies, refine, narrow)
         return eagerplan(method, missingpolicy, dst_space, src_space,
@@ -286,21 +287,21 @@ The whole domain is one block, so it prepares no destination geometry
 ([`preparedestination`](@ref)): with no second block to share it, a task-local
 memo is cheaper than a slot per destination cell.
 """
-wholeblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
-    src_space::RegridSpace, locator::CandidateLocator = TreeLocator()) =
+wholeblock(method::AbstractRegriddingMethod, dst_space, src_space,
+    locator::CandidateLocator = TreeLocator()) =
     weightblock(method, dst_space, 1:Int(ncells(dst_space)),
         src_space, 1:Int(ncells(src_space)), locator)
 
-# Only dimensional arrays carry enough geometry to infer a source space.
+# Only dimensional arrays carry enough geometry to infer a source grid.
 function _sourcespace(data::DD.AbstractDimArray)
     _checkrasterdims(DD.dims(data), "from",
-        "no `from` was given, so the source space was derived from the data")
+        "no `from` was given, so the source grid was derived from the data")
     return RasterGrid(data)
 end
 
 _sourcespace(data) = throw(ArgumentError(
-    "a $(typeof(data)) carries no coordinates, so no source space can be " *
-    "derived from it; pass `from = ` a RegridSpace."))
+    "a $(typeof(data)) carries no coordinates, so no source grid can be " *
+    "derived from it; pass `from = ` a grid."))
 
 # A dimension that already names cells ([`dimsource`](@ref)) is not a raster
 # axis, so name the source it holds rather than ask for the raster axis it does
@@ -322,25 +323,25 @@ end
 # A dimensional raster, or the bare dimensions of one, stands for the lattice it
 # carries. Either side of a regrid may be spelled that way, so putting a result
 # back on the axes it came from needs no `RasterGrid` written out by hand.
-function _asspace(A::DD.AbstractDimArray, name::AbstractString)
+function _asgrid(A::DD.AbstractDimArray, name::AbstractString)
     _checkrasterdims(DD.dims(A), name, "`$name` was given a dimensional raster")
     return RasterGrid(A)
 end
 
-function _asspace(ds::Tuple{Vararg{DD.Dimension}}, name::AbstractString)
+function _asgrid(ds::Tuple{Vararg{DD.Dimension}}, name::AbstractString)
     _checkrasterdims(ds, name, "`$name` was given a dimension tuple")
     return RasterGrid(ds)
 end
 
-function _asspace(space, name)
-    space isa RegridSpace || throw(ArgumentError(
-        "`$name` must be a RegridSpace, a dimensional raster or a tuple of " *
-        "dimensions, got $(typeof(space)). A package that supplies spaces " *
+function _asgrid(space, name)
+    GridInterface.isgrid(space) && return space
+    throw(ArgumentError(
+        "`$name` must be a GridInterface grid, a dimensional raster or a tuple " *
+        "of dimensions, got $(typeof(space)). A package that supplies grids " *
         "resolves its own target spellings into one."))
-    return space
 end
 
-_asspace(space, name, src_space) = _asspace(space, name)
+_asgrid(space, name, src_space) = _asgrid(space, name)
 
 _checkchunks(::Nothing) = nothing
 _checkchunks(chunks::Tuple{Vararg{Integer}}) =

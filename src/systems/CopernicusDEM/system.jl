@@ -148,7 +148,7 @@ end
     descendants(CopernicusDEMSystem(...), c, l)
 
 Every level-`l` descendant of `c`, ascending, as a lazy vector over
-[`descendant_range`](@ref DiscreteGlobalGrids.descendant_range).
+[`descendant_range`](@ref DGG.descendant_range).
 
 This implementation returns a read-only `AbstractVector` without enumerating
 the descendants. Call `collect` before passing the result to a mutating API.
@@ -505,3 +505,11 @@ function DGG.ring(g::CopernicusDEMLevelGrid, c::DGG.LevelIndex, ::Val{K};
     K == 1 && return DGG.one_ring(g, c, connectivity)
     return DGG.shell_ring(g, c, Val(K), connectivity)
 end
+
+# ===========================================================================
+# GridInterface shape traits
+# ===========================================================================
+
+# Cells are lon/lat rectangles whose parallels are small circles: one simple ring, not promised convex.
+GridInterface.cellshape(::CopernicusDEMLevelGrid) = GridInterface.SimpleCells()
+GridInterface.edgekind(::CopernicusDEMLevelGrid) = GridInterface.CurvedEdges()

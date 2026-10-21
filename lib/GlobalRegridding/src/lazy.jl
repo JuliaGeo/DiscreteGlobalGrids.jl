@@ -1,44 +1,7 @@
 # Lazy destination array and chunked execution.
 
-# Source addressing
-
-function chunkranges(space::RegridSpace, chunk::Integer, ::NTuple{1,Int})
-    inds = ownedindices(space, Int(chunk))
-    n = length(inds)
-    n == 0 && return (1:0,)
-    lo, hi = Int(first(inds)), Int(last(inds))
-    hi - lo + 1 == n || _notrectangular(space, chunk)
-    return (lo:hi,)
-end
-
-function chunkranges(space::RegridSpace, chunk::Integer, ssz::NTuple{2,Int})
-    inds = ownedindices(space, Int(chunk))
-    n = length(inds)
-    n == 0 && return (1:0, 1:0)
-    n1 = ssz[1]
-    c1, r1 = fldmod1(Int(first(inds)), n1)
-    c2, r2 = fldmod1(Int(last(inds)), n1)
-    rows, cols = r1:r2, c1:c2
-    length(rows) * length(cols) == n || _notrectangular(space, chunk)
-    k = 0
-    for c in cols, r in rows
-        k += 1
-        @inbounds Int(inds[k]) == r + (c - 1) * n1 || _notrectangular(space, chunk)
-    end
-    return (rows, cols)
-end
-
-chunkranges(space::RegridSpace, chunk::Integer, ssz::Tuple) = throw(ArgumentError(
-    "a regrid flattens over one or two spatial dimensions, got $(length(ssz))"))
-
-_notrectangular(space, chunk) = throw(ArgumentError(
-    "chunk $chunk of $(typeof(space)) is not a rectangle of the array lattice, " *
-    "so it cannot be read in one block; define " *
-    "`GlobalRegridding.chunkranges(::$(typeof(space)), chunk, spatialsize)`"))
-
-# `chunkbox` is `(X, Y)`; array dimensions follow `xfast` order.
-chunkranges(space::RasterGrid, chunk::Integer, ::NTuple{2,Int}) =
-    space.xfast ? chunkbox(space, Int(chunk)) : reverse(chunkbox(space, Int(chunk)))
+# Source addressing is `chunkranges` (spaces.jl; `RasterGrid` names its
+# chunks' rectangles directly in rastergrid.jl).
 
 # Source chunk metadata
 
@@ -121,11 +84,11 @@ per-cell accumulators, plus one prepared cell polygon and its flag where
 
 One cell is probed, because a space's cells are the same shape.
 """
-function destcellbytes(method::AbstractRegriddingMethod, dst_space::RegridSpace,
+function destcellbytes(method::AbstractRegriddingMethod, dst_space,
     ndst::Int)
     (ndst > 0 && preparesdestination(method, dst_space)) ||
         return DEST_BYTES_PER_CELL
-    return DEST_BYTES_PER_CELL + Int(Base.summarysize(getcell(dst_space, 1))) + 1
+    return DEST_BYTES_PER_CELL + Int(Base.summarysize(GridInterface.cell_geometry(dst_space, 1))) + 1
 end
 
 """
@@ -139,7 +102,7 @@ geometry included, inside [`destcellbudget`](@ref).
   - Prepared geometry that does not fit is refused here rather than charged to a
     budget that does not hold it.
 """
-destcellsfit(method::AbstractRegriddingMethod, dst_space::RegridSpace,
+destcellsfit(method::AbstractRegriddingMethod, dst_space,
     ndst::Integer, budget::Integer) =
     Int(ndst) * destcellbytes(method, dst_space, Int(ndst)) <= destcellbudget(budget)
 
@@ -167,13 +130,13 @@ function _spacetileable(spans::Vector{UnitRange{Int}}, contiguous::Bool, ndst::I
     return next == ndst + 1
 end
 
-function _desttiling(dst_space::RegridSpace, ndst::Int, spans::Vector{UnitRange{Int}},
+function _desttiling(dst_space, ndst::Int, spans::Vector{UnitRange{Int}},
     contiguous::Bool, cellsizes::Union{Nothing,Vector{Int}}, budget::Int)
     if cellsizes === nothing && _spacetileable(spans, contiguous, ndst)
         return DestTiling(copy(spans), [[c] for c in eachindex(spans)], true)
     end
     sizes = cellsizes === nothing ?
-            _defaulttilesizes(ndst, Int(nchunks(dst_space)), budget) : cellsizes
+            _defaulttilesizes(ndst, Int(_nchunks(dst_space)), budget) : cellsizes
     runs = _runs(sizes, ndst)
     return DestTiling(runs, [_overlappingchunks(spans, r) for r in runs], false)
 end
@@ -405,7 +368,7 @@ function LazyRegridArray(data, plan::ChunkedPlan;
         typeof(source),typeof(plan),typeof(graph),typeof(chunks),typeof(chunking)}(
         source, plan, _blankvalue(T, missingval), srcsize,
         (ndst, othersizes...), graph, tiling,
-        chunks, chunking, zeros(Int8, Int(nchunks(src_space))),
+        chunks, chunking, zeros(Int8, Int(_nchunks(src_space))),
         !usesreference(plan.missingpolicy), LazyStats(),
         TilePrefetch(length(tiling.runs), weightlimit(plan.storage)))
 end
@@ -425,12 +388,12 @@ function _lazygraph(plan::ChunkedPlan)
         "`chunk_dependency_graph(dst, src; radius)` — rather than assembling it " *
         "from bare CSR arrays."))
     # Restate the plan's validation in the numbering the tiling indexes.
-    ndestinationchunks(g) == Int(nchunks(plan.dst_space)) || throw(ArgumentError(
+    ndestinationchunks(g) == Int(_nchunks(plan.dst_space)) || throw(ArgumentError(
         "$g holds $(ndestinationchunks(g)) destination rows for a " *
-        "$(nchunks(plan.dst_space))-chunk destination space"))
-    nsourcechunks(g) == Int(nchunks(plan.src_space)) || throw(ArgumentError(
+        "$(_nchunks(plan.dst_space))-chunk destination grid"))
+    nsourcechunks(g) == Int(_nchunks(plan.src_space)) || throw(ArgumentError(
         "$g holds $(nsourcechunks(g)) source chunks for a " *
-        "$(nchunks(plan.src_space))-chunk source space"))
+        "$(_nchunks(plan.src_space))-chunk source grid"))
     return g
 end
 
@@ -466,12 +429,13 @@ Return `A`'s load, cache, skip, drop, and residency statistics.
 residency(A::LazyRegridArray) = A.stats
 
 # Return chunk spans and whether every chunk is contiguous.
-function _chunkspans(space::RegridSpace)
-    nc = Int(nchunks(space))
+function _chunkspans(space)
+    ch = _chunks(space)
+    nc = Int(_nchunks(space, ch))
     spans = Vector{UnitRange{Int}}(undef, nc)
     contiguous = true
     for c in 1:nc
-        inds = ownedindices(space, c)
+        inds = _ownedindices(space, c, ch)
         if isempty(inds)
             spans[c] = 1:0
             contiguous = false
@@ -650,7 +614,8 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
         # takes is compiled; `_fillwave!` specializes on what it is handed.
         destination = Base.inferencebarrier(
             (tile === nothing && length(srcchunks) > 1) ?
-            preparedestination(plan.method, plan.dst_space, dinds, plan.budget) :
+            _holdingchunks(() -> preparedestination(plan.method, plan.dst_space, dinds,
+                plan.budget), plan.held) :
             dinds)
         keep = _canhold(hold, srcranges, groups, sizeof(eltype(hold.scratch)))
         w = tile === nothing ?
@@ -703,8 +668,8 @@ single-threaded session.
     [`_blockcosts!`](@ref) against `innerspeedup * nthreads()` — or this returns
     one and the build gets the threads.
   - `innerspeedup` is the per-thread speedup one weight build reaches on its own.
-  - The caps the estimate needs are read off `graph`'s
-    [`chunkextents`](@ref) and never copied, so a wave's tasks share them;
+  - The caps the estimate needs are read off `graph`'s stored chunk extents
+    (`grid_extent` of each chunk) and never copied, so a wave's tasks share them;
     `rows` are the tile's destination rows.
 """
 function _wavesize(plan::ChunkedPlan, nd::Int, srcchunks::Vector{Int}, srcranges::Vector,
@@ -836,7 +801,7 @@ end
 
 # Return cells owned by a tile.
 _tileindices(A::LazyRegridArray, t::Int) =
-    A.tiling.spacetiled ? ownedindices(A.plan.dst_space, t) : A.tiling.runs[t]
+    A.tiling.spacetiled ? _dstindices(A.plan, t) : A.tiling.runs[t]
 
 """
     _connectedsource!(out, A, t[, tile]) -> out

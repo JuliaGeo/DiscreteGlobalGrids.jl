@@ -239,33 +239,79 @@ deliberately does not: its callback closes over the original array and indexes i
 handles it is given, so a sweep over blocks would hand it block indices to read from the
 whole cube.
 
+## Trees
+
+Every tree here is a `GeometryOps.SpatialTreeInterface` tree whose leaves emit grid
+positions, and GridInterface's tree verbs read it as it is. This package supplies the tree
+and three node properties; the verbs are GridInterface's.
+
+| verb | what this package supplies |
+|---|---|
+| `treeify(grid, n::Integer)` | the grid's own tree with up to `n` cells per leaf: a `HierarchicalGridCursor` over the system's hierarchy for a level grid or a `PartialGrid`, an `IndexTree` over cell caps for a grid without a system |
+| `leaf_capacity(grid, hint)` | the leaf size an intent asks for: `ForSweeps` is 49 cells, two IGeo7 refinements above the leaf level; `ForQueries` is the one-cell tree `treeify(grid)` builds |
+| `subtree(grid, cells)` | nothing: GridInterface restricts `treeify(grid, n)` through its `MaskedCursor`, which keeps a child only while `position_span` says it may hold a member, and starts at the deepest node that alone may hold one |
+
+A hierarchy cursor costs O(1) to build. A node is one cell, its children are the cell's
+`children`, and its extent is the system's `node_extent` cap, computed when a traversal
+reaches it. Two properties of its nodes let generic code use it well:
+
+- `GridInterface.position_span(node)` bounds the grid positions beneath a node, so a
+  restriction prunes by index arithmetic and reads no geometry. A sorted-subtree window
+  answers its index range; a materialised selection, its two ends; a raster tile
+  rectangle, a `LatticeBlock`; a Copernicus DEM tile rectangle, a `TileRows` bound whose
+  row runs are exact against a range of members.
+- `SpatialTreeInterface.node_extent_is_expensive` on the node type tells a dual-tree
+  sweep whether to carry child extents or recompute them per visit. The hierarchy cursor
+  and the DEM block cursor compute caps on demand and declare them expensive; the index
+  tree, the raster tile cursor and the memoised DEM cursor store theirs and declare them
+  cheap.
+
 ## Regridding
 
 Regridding lives in a separate package, `GlobalRegridding`, which owns the verbs and does
 not depend on this one. The main package implements its contract for DGGS grids by adding
 methods to imported bindings, so a session that loads both sees one function per name.
 
-Its central abstraction is `RegridSpace`: anything with cells, chunks, and a manifold.
-A raster is one; a DGGS grid is another. Six methods are required of a space.
+It has no space abstraction of its own: a source or destination is any GridInterface grid
+(`GridInterface.isgrid`). A raster is one — `RasterGrid`, a one-face `Structured` grid whose
+chunks are its DiskArrays tiles — and a DGGS grid is another. Cells, trees, chunks, point
+location, neighbours and face charts are read through GridInterface's verbs (`cell_geometry`,
+`cellat`, `neighbors`, `cell_extent`, `treeify` and `subtree`, `chunks` and `grid_extent`,
+`Structured.faceaxes`), so a grid that answers them needs no regridding method of its own.
 
-What a DGGS space contributes is the idea that a chunk is a non-empty ancestor subtree,
-chosen at whichever level lands closest to a target cell count. Chunk discovery is then a
-descent of the hierarchy the grid already has, rather than a second spatial index built
-alongside it.
+What a DGGS grid contributes is the idea that a chunk is a non-empty ancestor subtree,
+chosen at whichever level lands closest to a target cell count; `mockchunks(grid,
+LevelChunks(l))` names another level. A chunk's extent is then its root cell's cap, O(1),
+and a chunk's tree is the grid's hierarchy cursor restricted to the chunk, rooted at the
+chunk's own node in O(depth) by the generic `subtree` described above. Chunk discovery
+packs the chunk extents in one R-tree per plan, O(chunks log chunks) and nothing per cell.
+
+What a package may still extend is execution, not geometry: plain GlobalRegridding functions
+with `Any` defaults. `chunkranges` and `knownempty` say how storage reads a chunk;
+`samplerstate`, `weightsat!`, `dualcellat` and `supportradius` make a grid point-samplable;
+`chunkindex`, `candidatechunks!`, `overlappairs` and `locatecell` replace discovery;
+`destinationdims`, `dimsource`, `rebuildoutput` and the missing-value hooks label the
+result; `_asgrid` resolves a `to` or `from` spelling into a grid. This package extends
+`_asgrid`, `destinationdims` and `dimsource` in `src/regrid_targets.jl`, and Copernicus DEM
+the point-sampling hooks.
 
 Method, missing-data policy and weight storage are three orthogonal axes, each spelled as a
-singleton tag: `Conservative`, `NearestCell` or `BilinearPoint`; `Weighted` or `Extensive`;
-`PerChunk` or `Spilled`.
+singleton tag: `Conservative`, `NearestCell` or `BarycentricPoint`; `Weighted` or
+`Extensive`; `PerChunk` or `Spilled`.
 
 ## Conformance testing
 
-The executable form of these contracts is
-`lib/DiscreteGlobalGridsConformanceTesting`, whose two entry points assert the laws a grid
-and a system must satisfy: index round-trips, boundary rings that are closed implicitly and
-wound counter-clockwise seen from outside, centroids strictly inside their own cells,
-neighbour symmetry and two-hop closure, ring and disc consistency, and the covering law —
-that a descendant's boundary lies inside every ancestor's node extent, at every depth.
+The grid verbs are GridInterface's, so the executable form of these contracts is
+GridInterface's conformance package, `GridInterfaceConformance`, whose `test_grid` and
+`test_system` assert the laws a grid and a system must satisfy: index round-trips, boundary
+rings that are closed implicitly and wound counter-clockwise seen from outside, centroids
+strictly inside their own cells, neighbour symmetry, ring and disc consistency, the subset
+and tree laws, and the covering law — that a descendant's boundary lies inside every
+ancestor's node extent, at every depth.
 
-A system opts out by capability rather than by name: the suite checks whether a method is
-actually specialised and skips the corresponding laws if it is not. A new grid or system is
+A system opts out by capability rather than by name: the suite reads the traits a grid
+declares (`cellshape`, `winding`, `location_is_analytic`, …) and skips or relaxes the
+corresponding laws accordingly. This package's own stricter oracles — rotational order of
+every ring, the two-hop neighbour closure — live in `test/conformance_helpers.jl` and are
+asserted by each system's suite. A new grid or system is
 expected to pass both suites.

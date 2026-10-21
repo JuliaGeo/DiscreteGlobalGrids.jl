@@ -8,6 +8,7 @@ module InterfaceTests
 using Test
 using DiscreteGlobalGrids
 import DiscreteGlobalGrids as DGG
+import GridInterface
 
 # Types that implement nothing at all. Every generic must bounce off them.
 struct UnimplementedGrid <: AbstractGrid end
@@ -127,12 +128,24 @@ end
         @test !isdefined(DiscreteGlobalGrids, n)
     end
 
-    # `treeify`/`ncells`/`getcell` are `Trees`' own bindings, not lookalikes:
-    # a method added here is a method `ConservativeRegridding` will dispatch to.
-    Trees = DGG.Trees
-    @test DGG.treeify === Trees.treeify
-    @test DGG.ncells === Trees.ncells
-    @test DGG.getcell === Trees.getcell
+    # The grid verbs are GridInterface's own bindings, not lookalikes: a
+    # method added here is a method every GridInterface consumer dispatches to,
+    # and the id supertype is GridInterface's, so the typed-id forms apply.
+    @test DGG.ncells === GridInterface.ncells
+    @test DGG.cellindex === GridInterface.cellindex
+    @test DGG.cell_boundary === GridInterface.cell_boundary
+    @test DGG.treeify === GridInterface.treeify
+    @test DGG.neighbors === GridInterface.neighbors
+    @test DGG.subtree === GridInterface.subtree
+    @test DGG.AbstractCellIndex === GridInterface.AbstractCellIndex
+    @test DGG.LevelIndex <: GridInterface.AbstractCellIndex
+    @test DGG.Vertex === GridInterface.Vertex
+    @test GridInterface.isgrid(levelgrid(HEALPixSystem(), 2))
+    @test GridInterface.issystem(HEALPixSystem())
+    # `getcell` and `cellat` are this package's own (GridInterface spells the
+    # first `cell_geometry` and answers a position for the second).
+    @test DGG.getcell !== GridInterface.cell_geometry
+    @test DGG.cellat !== GridInterface.cellat
 
     # DE9IM predicates are re-exported, and `parent` unwraps the target.
     @test Intersects <: DE9IMPredicate

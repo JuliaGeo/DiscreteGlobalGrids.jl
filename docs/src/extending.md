@@ -41,7 +41,12 @@ falls into three groups:
 |---|---|---|
 | declarations | `has_congruent_refinement`, [`has_sorted_subtrees`](@ref), [`has_direct_location`](@ref), [`maxneighbors`](@ref), `maxring`, `winding`, `cap_inflation`, [`node_extent`](@ref) | the engines take a faster route once a system promises the property holds |
 | store I/O | `idrank`, `idselect`, `idvalid`, `idcell`, `register_grid!` | `dggwrite` and `dggread` |
-| fast paths | `cellat`, `localindex`, `neighbors`, `ring`, `cell_area`, `cell_extent`, `getcell`, `ancestor`, `descendants`, `subtree` | speed; the generic implementations already answer every one of them |
+| fast paths | `cellat`, `localindex`, `neighbors`, `ring`, `cell_area`, `cell_extent`, `getcell`, `ancestor`, `descendants` | speed; the generic implementations already answer every one of them |
+
+Trees need no method of their own: `treeify` builds the system's hierarchy
+cursor from `children` and [`node_extent`](@ref), and GridInterface's
+`subtree(grid, cells)` restricts it to any subset; see
+[Trees](architecture.md#Trees).
 
 This page implements the thirteen for a longitude/latitude lattice, runs the
 conformance suites over it, exercises the package's high-level API, and then
@@ -175,8 +180,9 @@ DGG.children(LonLatSystem(), LonLatCell(0, 3, 8))
 
 ## Run the conformance suites
 
-[`DiscreteGlobalGridsConformanceTesting`](https://github.com/JuliaGeo/DiscreteGlobalGrids.jl/tree/main/lib/DiscreteGlobalGridsConformanceTesting)
-checks two things.
+The grid verbs this page implemented are GridInterface's, so GridInterface's
+conformance package, `GridInterfaceConformance` (in the GridInterface.jl
+repository under `lib/`), checks two things.
 
 **That the interface works.** `cellindex` and `localindex` are inverses; every
 boundary ring is closed and winds counter-clockwise; every centroid lies inside
@@ -189,34 +195,35 @@ hierarchy; every descendant's boundary lies inside every ancestor's extent.
 [`maxneighbors`](@ref) is a real ceiling; a declared `winding` matches the order
 the boundaries actually run in.
 
-Each optional law group is gated on the method it tests. A group whose method
-the system has not written is skipped, and the `@info` at the end names every
-skip together with the signature that would open it. `test_grid_interface`
-checks one grid:
+Each law group is gated on the traits the grid declares, and the report names
+the verbs the generic fallbacks answered. `test_grid` checks one grid:
 
-```@example extending
-using DiscreteGlobalGridsConformanceTesting
+```julia
+using GridInterfaceConformance
 sys = LonLatSystem()
 grid = DGG.levelgrid(sys, 4)
-test_grid_interface(grid)
-nothing # hide
+test_grid(grid)
 ```
 
-`test_hierarchical_system` checks the hierarchy against every level the system
-declares:
-
-```@example extending
-test_hierarchical_system(sys)
-nothing # hide
+```@setup extending
+sys = LonLatSystem()
+grid = DGG.levelgrid(sys, 4)
 ```
 
-Several methods remain unwritten, and the skip list identifies them:
+`test_system` checks the hierarchy, one level grid and a sample multi-level
+set, at the levels given:
+
+```julia
+test_system(sys; levels = (2, 3))
+```
+
+Several methods remain unwritten, and the fallback list identifies them:
 `cellat`, `ancestor`, `descendants`, `neighbors`, `ring`, and
 `descendant_range`. The rest of this page uses generic fallbacks, then adds the
 closed-form methods this lattice can answer directly.
 
-A third suite, `test_generic_fallbacks(sys)`, hides a system's fast paths from
-dispatch and re-runs the adjacency and point-location laws against the generic
+`test/fallbacks/generic_fallbacks.jl` in this repository hides a system's fast
+paths from dispatch and re-runs the same laws against the generic
 implementations underneath them.
 
 ## Locate a point, measure a cell, draw the grid
@@ -388,9 +395,8 @@ An optional method must return what the generic implementation returns, and the
 conformance suite is where that is checked. The `cellat` law group now checks
 the direct-location implementation:
 
-```@example extending
-test_grid_interface(grid)
-nothing # hide
+```julia
+test_grid(grid)
 ```
 
 ## Write and read a DGGS store

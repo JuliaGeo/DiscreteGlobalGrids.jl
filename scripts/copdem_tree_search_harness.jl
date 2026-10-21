@@ -143,7 +143,6 @@ function build_destination_tree(spaces)
     return GR.subtree(spaces.destination_space, indices)
 end
 
-destination_cursor(tree::DGG.CapCachedTree) = tree.node
 destination_cursor(tree) = tree
 
 # Keep compilation out of the reported tree-build time.
@@ -177,8 +176,7 @@ function print_workload(spaces, source_tree, destination_tree, tree_build)
     cursor = destination_cursor(destination_tree)
     println("  destination tree:  ", nameof(typeof(destination_tree)),
         " (bucket ", cursor.bucket_size, ")")
-    println("  destination caps:  ", destination_tree isa DGG.CapCachedTree ?
-        "precomputed" : "analytical, constructed per fixed-leaf descent")
+    println("  destination caps:  derived per leaf visit")
     sample_entries = STI.child_indices_extents(first_leaf(destination_tree))
     println("  leaf entries:      ", nameof(typeof(sample_entries)),
         " (sample leaf length ", length(sample_entries), ")")
@@ -208,8 +206,7 @@ function print_multi_workload(spaces, source_tree, destination_tree, tree_build)
     cursor = destination_cursor(destination_tree)
     println("  destination tree:  ", nameof(typeof(destination_tree)),
         " (bucket ", cursor.bucket_size, ")")
-    println("  destination caps:  ", destination_tree isa DGG.CapCachedTree ?
-        "precomputed" : "analytical, constructed per fixed-leaf descent")
+    println("  destination caps:  derived per leaf visit")
     sample_entries = STI.child_indices_extents(first_leaf(destination_tree))
     @printf("  leaf payload:      %.2f KiB traversal-owned, no retained cache\n",
         sizeof(sample_entries) / 2.0^10)

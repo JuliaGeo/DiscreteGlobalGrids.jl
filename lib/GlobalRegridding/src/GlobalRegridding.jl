@@ -3,10 +3,11 @@
 
 Regrid spherical cell collections eagerly or in chunks.
 
-The source and destination spaces both implement [`RegridSpace`](@ref).
-Regridding methods build geometry-only sparse [`WeightBlock`](@ref)s through
-[`buildweights!`](@ref).
-Plans contain the method, spaces, missing-data policy, storage, and memory
+The source and destination are GridInterface grids (`GridInterface.isgrid`):
+cells, trees, chunks, point location and neighbourhoods are read through
+GridInterface's verbs. Regridding methods build geometry-only sparse
+[`WeightBlock`](@ref)s through [`buildweights!`](@ref).
+Plans contain the method, grids, missing-data policy, storage, and memory
 budget, so applying a plan takes no keywords:
 
     regrid(data; to, method = Conservative())   # build a plan, apply it, drop it
@@ -24,10 +25,18 @@ import GeoInterface as GI
 import GeometryOps: SpatialTreeInterface as STI
 
 import ConservativeRegridding
-import ConservativeRegridding: Trees
-# Extend the original bindings so spaces work with `ConservativeRegridding`.
-import ConservativeRegridding.Trees: ncells, getcell
-import GeometryOpsCore: manifold
+# The grid contract. `ncells` is GridInterface's binding (what
+# `ConservativeRegridding` reads); every other verb is spelled qualified.
+import GridInterface
+import GridInterface: ncells
+using GridInterface.Structured: AbstractStructuredGrid, TopDownQuadtreeCursor, TileIndices
+import GridInterface.Structured: isstructured
+import GridInterface.Structured: nfaces, facesize, facevertex, faceposition, facecell, blockextent
+import GridInterface.Structured: hasfaceaxes, faceaxes, facecoords, faceperiod, facelocalindex
+import GridInterface.Structured: facecross, facefan
+# Dual-cell answers are fixed-capacity, as GridInterface's rings are.
+import SmallCollections
+using SmallCollections: SmallVector
 
 import DimensionalData as DD
 import DiskArrays
@@ -44,6 +53,7 @@ const SphericalCap = GO.UnitSpherical.SphericalCap
 const Cap = GO.UnitSpherical.SphericalCap{Float64}
 const Extents = GO.Extents
 const FlexibleRTrees = GO.FlexibleRTrees
+using GeometryOps.FlexibleRTrees: RTree, HPR
 
 include("shared.jl")
 include("spaces.jl")
@@ -66,16 +76,10 @@ include("api.jl")
 # and `_readdestination!` from `lazy.jl`, so it comes after both.
 include("directnearest.jl")
 
-# Space interface
-export RegridSpace
-export celltree, nchunks, ownedindices, ncells, getcell
-export cellcentroid, cellat, hascellchart, manifold
-
-# `cellindices` stays exported for the deprecation shim in `spaces.jl`.
-export cellindices
-
-# Included spaces
+# Included grids. `ncells` is GridInterface's, re-exported so a session that
+# regrids can count a grid's cells without a second import.
 export RasterGrid
+export ncells
 
 # Methods
 export AbstractRegriddingMethod
@@ -110,32 +114,31 @@ export regrid, regrid!, plan_regrid
 export LazyRegridArray
 
 # Qualified extension and observability APIs.
-public knownempty, sourcemissingval, chunkat, cellarea
+public knownempty, sourcemissingval, cellarea
 # The destination's nodata convention: what a regrid blanks with and declares.
 public outputmissingval, destinationmissingval, rebuildoutput
 public residency, LazyStats, ShapedRegridArray
 public spilledfiles, usesreference
 public outputsampling, destinationdims, dimsource
 
-# Qualified `RegridSpace` extension hooks. Their declarations and contracts are
-# grouped by responsibility in spaces.jl; they stay unexported to avoid generic
-# names in user namespaces.
-public subtree, expensivecellgeometry
-public hasanalyticlocation, cellneighbors, cellcap, cellcorners
-public chunkextents, chunkextent, chunkindex, candidatechunks!
-# Making a source space point-samplable. `hasdualcells` declares it,
-# `samplerstate` prepares whatever the lookup reads, and `dualcellat` answers
-# one point with the `DualCell` its nodes and `BasisKind` describe. `Sampler` is
-# what those two dispatch on, and `chartat` is where a space without a cell
-# chart says which plane its nodes are written in.
-public hasdualcells, dualcellat, samplerstate
-public Sampler, DualCell, BasisKind, Bilinear, MeanValue, chartat
-public chunkranges
-public chartaxes, chartcoords, chartlocalindex, chartperiod, chartspacing
-public _asspace
-
-# `chartposition` stays public for the deprecation shim in `spaces.jl`.
-public chartposition
+# The execution hooks a package extends for its grids. Their contracts are in
+# `spaces.jl`, `methods.jl` and `barycentric.jl`; they stay unexported to avoid
+# generic names in user namespaces. Everything grid-shaped (cells, trees,
+# chunks, location, neighbours, charts) is read through GridInterface's verbs.
+public chunkranges, samplerstate
+# The source-chunk index a dependency relation is discovered through, and its
+# one query; a grid whose chunks a packed R-tree indexes poorly may answer both.
+public chunkindex, candidatechunks!
+# Making a source grid point-samplable with a state of its own: `samplerstate`
+# prepares whatever the lookup reads, `weightsat!` answers one point on the
+# `Sampler` carrying it, and `dualcellat` names the `DualCell` its nodes and
+# `BasisKind` describe. `chartat` is where a source without a cell chart says
+# which plane its nodes are written in.
+public weightsat!, dualcellat, Sampler, DualCell, BasisKind, Bilinear, MeanValue, chartat
+public DualState, ChartState, WeightRow, meanvalueweights!, addentry!, snapunit
+# What `weightsat!` answers.
+public WeightStatus, WeightsMapped, WeightsRim, WeightsOutside, WeightsDegenerate, ismapped
+public _asgrid
 
 # Other qualified extension hooks used by package integrations.
 public resolvespatialdims
@@ -159,11 +162,11 @@ public destinationchunks, destinationchunk, destinationrow
 public hasextents, destinationextents, sourceextents
 public destinationextent, sourceextent
 
-# DiscreteGlobalGrids extends the qualified space contract in every
-# responsibility it customizes: `subtree`; `chunkextents`, `chunkindex`, and
-# `candidatechunks!`; `chunkranges`; and `dimsource`/`_asspace`. In particular,
-# its native DGG and CopernicusDEM chunk paths do not use private discovery
-# hooks. The Proj extension separately specializes the two public preparation
-# hooks above for task-owned native transforms.
+# DiscreteGlobalGrids answers the grid verbs for its grids (`treeify`,
+# `subtree`, `chunks`, `cellat`, `neighbors`, ...) and extends only the
+# execution hooks above (`samplerstate`, `weightsat!`, `supportradius`,
+# `destinationdims`, `dimsource`, `_asgrid`). The Proj extension separately
+# specializes the two public preparation hooks above for task-owned native
+# transforms.
 
 end # module GlobalRegridding

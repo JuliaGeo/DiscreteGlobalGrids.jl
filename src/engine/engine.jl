@@ -21,7 +21,7 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     cell_polygon, cell_area, cell_extent, getcell,
     cellat, cellindices, neighbors, ring, one_ring, neighborcount,
     halo, border, interior, adjacency,
-    treeify, query, subcursor,
+    treeify, query,
     raster_tiles, raster_shape, raster_localindex, raster_cap,
     system, level,
     cellindextype, levels, maxlevel, levelgrid, rootcells, children,
@@ -39,7 +39,7 @@ import ..Fallbacks: AuthalicGrid, AuthalicSystem, HierarchicalLevelGrid,
     EdgeCellIterator, InnerCellIterator, collect_subtree,
     MortonCurve, quadrant_step, _SQUARE_CAP,
     checked_id, subtree_curve, nside,
-    cap_contains, cell_cap, cell_cap_is_cheap, cells_cap, full_sphere_cap,
+    cap_contains, cell_cap, full_sphere_cap,
     points_cap, lonlat, unit_point, query_point,
     point_in_cell, open_ring, closed_ring,
     _canonical, _match_tolerance, _shared_vertices,
@@ -50,8 +50,13 @@ import GeometryOpsCore as GOCore
 import GeoInterface as GI
 import Extents
 import DE9IM
-import ConservativeRegridding: Trees
 import GeometryOps: SpatialTreeInterface as STI
+import GeometryOps.SpatialTreeInterface: split_weight, subtree_indices
+# The intent layer the cursors answer: `treeify(grid, hint)` and the chunk and
+# subset vocabulary the region verbs are read through.
+import GridInterface
+import GridInterface: LeafHint, Balanced, ForSweeps, ForQueries, leaf_capacity, grow,
+    chunks, chunkat, gridrelation, parentpositions, cellshape, isglobal, position_span
 # Only for the `getindex` tie-break in `cell_vector.jl`: a neighbour list is one
 # of SmallCollections' vectors, and indexing a cell vector by one is otherwise
 # ambiguous against that package's own method.

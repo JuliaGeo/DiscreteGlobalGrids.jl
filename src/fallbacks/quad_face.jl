@@ -115,7 +115,9 @@ function children(sys::AbstractQuadFaceGridSystem, c::LevelIndex)
     l < maxlevel(sys) || throw(ArgumentError(
         "$(systemname(sys)) cell $c is at maxlevel $(maxlevel(sys)) and has no children"))
     base = c.index << 2
-    return [LevelIndex(l + 1, base + k) for k in 0:3]
+    # fixed capacity: no allocation per node of a tree descent
+    return SmallCollections.SmallVector{4,LevelIndex}((LevelIndex(l + 1, base), LevelIndex(l + 1, base + 1),
+        LevelIndex(l + 1, base + 2), LevelIndex(l + 1, base + 3)))
 end
 
 """
@@ -167,7 +169,7 @@ end
     descendants(sys::AbstractQuadFaceGridSystem, c, l)
 
 Every level-`l` descendant of `c`, ascending: the dense, subtree-contiguous
-[`descendant_range`](@ref DiscreteGlobalGrids.descendant_range) read off as consecutive ids, with no `children`
+[`descendant_range`](@ref DGG.descendant_range) read off as consecutive ids, with no `children`
 recursion and no sort.
 """
 function descendants(sys::AbstractQuadFaceGridSystem, c::LevelIndex, l::Integer)

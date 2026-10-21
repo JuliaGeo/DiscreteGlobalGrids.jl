@@ -14,7 +14,7 @@ sorted, disjoint intervals (or, where intervals are unavailable, a sorted list)
 of indices in `levelgrid(sys, leaf)`. Its logical content is their
 concatenation, and every operation is arithmetic over that concatenation:
 `length` sums the window lengths, `lk[k]` binary-searches the cumulative
-lengths and resolves one `cellindex`, [`localindex`](@ref DiscreteGlobalGrids.localindex) runs the inverse.
+lengths and resolves one `cellindex`, [`localindex`](@ref DGG.localindex) runs the inverse.
 Nothing is materialised.
 
 `CellVector` provides the storage and indexing behavior; this module provides
@@ -94,7 +94,7 @@ cells, `lk[k]` is the `k`th of them, `collect(lk)` is the vector itself.
 as sorted, disjoint index windows at the leaf level ([`level_ranges`](@ref)),
 using O(number of windows) memory instead of O(number of leaf cells). Lookup
 operations delegate to the vector's methods, including `lk[k]`,
-[`localindex`](@ref DiscreteGlobalGrids.localindex), [`cellset`](@ref), [`covering`](@ref),
+[`localindex`](@ref DGG.localindex), [`cellset`](@ref), [`covering`](@ref),
 and [`PartialGrid`](@ref).
 
 `Base.parent` returns the lookup's VALUES, as `DimensionalData` requires: the

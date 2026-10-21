@@ -1,8 +1,8 @@
 # Cell size at a level, and the level that matches a target resolution. Both
 # read `cell_area` through the grid interface and choose levels through
 # `levels`/`levelgrid`, so every system answers them without a method of its
-# own. Included after `regridding.jl` because a target resolution may be spelled
-# as a raster or a `GlobalRegridding.RegridSpace`.
+# own. Included after `regrid_targets.jl` because a target resolution may be
+# spelled as a raster or any GridInterface grid a regrid accepts.
 
 # WGS84 authalic radius: the sphere on which unit-sphere areas are ellipsoidal
 # areas.
@@ -17,8 +17,9 @@ The typical width of a cell, in **metres**: the side of a square whose area is
 the median cell area of the grid, laid on a sphere of `radius`.
 
 `x` may be a raster (a `DimensionalData.AbstractDimArray`, measured through its
-X/Y lookups) or a `GlobalRegridding.RegridSpace`, which is how a source
-resolution is put on the same footing as a system's levels.
+X/Y lookups) or any GridInterface grid (a `GlobalRegridding.RasterGrid`, a
+chunked wrapper of a grid here), which is how a source resolution is put on the
+same footing as a system's levels.
 
 The number is a median over a sample, not a bound: cell area varies within a
 level on every system that is not equal-area, and with latitude on a system
@@ -30,9 +31,9 @@ whose cells are lon/lat boxes. Use [`cell_area`](@ref) for one exact cell.
     `Extents.Extent` in lon/lat degrees, a GeoInterface geometry, or a
     `SphericalCap`, the targets [`query`](@ref) accepts. Where cell area varies
     with position this can differ from the global number by a factor of two.
-    A grid is sampled through its own system; a raster or regridding space is
+    A grid is sampled through its own system; a raster or any other grid is
     sampled at points spread evenly by area across the area of interest, each
-    located by `GlobalRegridding.cellat`, so a projected raster needs the
+    located by `GridInterface.cellat`, so a projected raster needs the
     inverse chart that call reads. An area of interest that meets no cell of
     `x` throws an `ArgumentError`.
   - `radius = $(_EARTH_RADIUS)`: the sphere the area is laid on, in metres. The
@@ -42,7 +43,7 @@ whose cells are lon/lat boxes. Use [`cell_area`](@ref) for one exact cell.
 
 See also [`levelfor`](@ref), which asks the question the other way round.
 """
-function cellsize end
+cellsize
 
 cellsize(grid::AbstractGrid; over=nothing, radius::Real=_EARTH_RADIUS,
     samples::Integer=256) =
@@ -51,9 +52,14 @@ cellsize(grid::AbstractGrid; over=nothing, radius::Real=_EARTH_RADIUS,
 cellsize(sys::AbstractHierarchicalGridSystem, l::Integer; kwargs...) =
     cellsize(levelgrid(sys, l); kwargs...)
 
-cellsize(space::GR.RegridSpace; over=nothing, radius::Real=_EARTH_RADIUS,
+# `GridInterface.cellsize(grid)` is a one-argument radian answer for any grid;
+# the metre form with its keywords is this package's, answered for its own
+# grids above and for `GlobalRegridding`'s raster grid. A wrapper (a chunked
+# grid) forwards to the grid it wraps, keywords and all, by GridInterface's
+# own forwarding.
+cellsize(grid::GR.RasterGrid; over=nothing, radius::Real=_EARTH_RADIUS,
     samples::Integer=256) =
-    sqrt(_mediancellarea(space, over, Int(samples))) * radius
+    sqrt(_mediancellarea(grid, over, Int(samples))) * radius
 
 cellsize(A::DD.AbstractDimArray; kwargs...) = cellsize(GR.RasterGrid(A); kwargs...)
 
@@ -65,8 +71,8 @@ The level of `sys` whose cells come closest to `target`, so that
 resolution.
 
 `target` is either a cell size in metres (a `Real`) or anything
-[`cellsize`](@ref) measures: a raster, an [`AbstractGrid`](@ref), or a
-`GlobalRegridding.RegridSpace`.
+[`cellsize`](@ref) measures: a raster, an [`AbstractGrid`](@ref), or any other
+GridInterface grid.
 
 Levels are compared in ratio rather than in difference, so a target falling
 between two levels takes the geometrically nearer of the two. A target coarser
@@ -74,8 +80,8 @@ than every level of `sys`, or finer than every level, takes that end of
 [`levels`](@ref).
 
 `radius` and `samples` follow [`cellsize`](@ref). `over` restricts the
-comparison to an area of interest: the candidate levels of `sys` and a raster,
-grid, or regridding-space `target` are each measured within it.
+comparison to an area of interest: the candidate levels of `sys` and a raster
+or grid `target` are each measured within it.
 
   - A global lon/lat raster asks for a finer level over the Arctic than over
     the equator.
@@ -102,8 +108,12 @@ end
 _targetarea(width::Real, over, radius::Real, ::Int) = (width / radius)^2
 _targetarea(grid::AbstractGrid, over, ::Real, samples::Int) =
     _mediancellarea(grid, over, samples)
-_targetarea(space::GR.RegridSpace, over, ::Real, samples::Int) =
-    _mediancellarea(space, over, samples)
+function _targetarea(grid, over, ::Real, samples::Int)
+    GridInterface.isgrid(grid) || throw(ArgumentError(
+        "a target is a cell size in metres, a raster, a grid, or a system and " *
+        "level; got $(typeof(grid))"))
+    return _mediancellarea(grid, over, samples)
+end
 _targetarea(A::DD.AbstractDimArray, over, radius::Real, samples::Int) =
     _targetarea(GR.RasterGrid(A), over, radius, samples)
 
@@ -121,24 +131,25 @@ function _median!(v::Vector{Float64})
     return isodd(k) ? v[(k + 1) ÷ 2] : (v[k ÷ 2] + v[k ÷ 2 + 1]) / 2
 end
 
-# A grid with a system samples through its own hierarchy; any other grid takes
-# the probe route every space has.
-function _mediancellarea(space::DGGSpace, over, samples::Int)
-    g = space.grid
-    (over === nothing || (system(g) !== nothing && level(g) !== nothing)) &&
-        return _mediancellarea(g, over, samples)
-    return invoke(_mediancellarea, Tuple{GR.RegridSpace,Any,Int}, space, over, samples)
-end
+# A grid of this package samples through its own hierarchy; a wrapper of one
+# (a chunked grid) is measured as the grid it wraps; any other grid takes the
+# probe route every grid has.
+_mediancellarea(g::GridInterface.AbstractWrappedGrid, over, samples::Int) =
+    _mediancellarea(parent(g), over, samples)
 
-function _mediancellarea(space::GR.RegridSpace, over, samples::Int)
-    n = Int(ncells(space))
-    n > 0 || throw(ArgumentError("cannot measure cell areas against an empty space"))
-    over === nothing && return _median!(
-        [GR.cellarea(space, i) for i in _sampleindices(n, samples)])
-    return _median!([GR.cellarea(space, i) for i in _aoicells(space, over, samples)])
+function _mediancellarea(grid, over, samples::Int)
+    n = Int(ncells(grid))
+    n > 0 || throw(ArgumentError("cannot measure cell areas against an empty grid"))
+    area(i) = Float64(GridInterface.cell_area(grid, Int(i)))
+    over === nothing && return _median!([area(i) for i in _sampleindices(n, samples)])
+    return _median!([area(i) for i in _aoicells(grid, over, samples)])
 end
 
 function _mediancellarea(grid::AbstractGrid, over, samples::Int)
+    # Without a system there is no hierarchy to sample an area of interest
+    # through, so such a grid takes the probe route every grid has.
+    over === nothing || (system(grid) !== nothing && level(grid) !== nothing) ||
+        return invoke(_mediancellarea, Tuple{Any,Any,Int}, grid, over, samples)  # positions
     n = ncells(grid)
     n > 0 || throw(ArgumentError("an empty grid has no cell size"))
     over === nothing && return _median!(
@@ -154,8 +165,9 @@ end
 function _aoicells(grid::AbstractGrid, over, samples::Int)
     sys = system(grid)
     l = level(grid)
-    (sys === nothing || l === nothing) && throw(ArgumentError(
-        "`over` needs a grid that belongs to a grid system; got $(typeof(grid))"))
+    # No system, no hierarchy: the probe route, which answers positions.
+    (sys === nothing || l === nothing) &&
+        return invoke(_aoicells, Tuple{Any,Any,Int}, grid, over, samples)
     lq, probe, sampled = _aoiprobe(sys, l, over, samples, grid)
     lq == l && return sampled
     return _locate(c -> cellat(grid, c), probe, sampled,
@@ -191,13 +203,14 @@ function _aoicells(grid::PartialGrid, over, samples::Int)
     return out
 end
 
-# A space has no hierarchy of its own to descend, so an equal-area system
-# stands in as the probe and `GR.cellat` finds the space's cell under each point.
+# A grid of another package has no hierarchy of its own to descend, so an
+# equal-area system stands in as the probe and `GridInterface.cellat` finds the
+# grid's cell under each point.
 const _PROBE = HEALPixSystem()
 
-function _aoicells(space::GR.RegridSpace, over, samples::Int)
+function _aoicells(grid, over, samples::Int)
     _, probe, sampled = _aoiprobe(_PROBE, last(levels(_PROBE)), over, samples, nothing)
-    return unique!(_locate(p -> GR.cellat(space, p), probe, sampled,
+    return unique!(_locate(p -> GridInterface.cellat(grid, p), probe, sampled,
         "the target does not meet the area of interest"))
 end
 

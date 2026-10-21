@@ -27,7 +27,7 @@ struct Blocked{K} <: BlockStrategy end
     Bisected()
 
 Split the longer axis in two, the rule both trees over this lattice use. This
-is what [`treeify`](@ref ConservativeRegridding.Trees.treeify) builds.
+is what [`treeify`](@ref) builds.
 """
 struct Bisected <: BlockStrategy end
 
@@ -39,13 +39,14 @@ const DEFAULT_STRATEGY = Bisected()
                 strategy = DEFAULT_STRATEGY)
 
 A spatial-tree cursor over a rectangle of the complete Copernicus DEM lattice.
-Prefer [`treeify`](@ref ConservativeRegridding.Trees.treeify), which wraps it in a [`MemoBlockCursor`](@ref).
+Prefer [`treeify`](@ref), which wraps it in a [`MemoBlockCursor`](@ref).
 
   - A node is either a tile rectangle (`inpixels == false`) or a raster
     rectangle within tile `(r0, q0)` (`inpixels == true`).
   - Its addressing law is `index = id - origin`, so it holds only where the
-    cells it covers are one contiguous id run forming one rectangle — the whole
-    level, and the windows [`subcursor`](@ref) cuts out of it.
+    cells it covers are one contiguous id run forming one rectangle: the whole
+    level. A window of it is GridInterface's restriction of this tree, rooted
+    at the window's node.
   - A holding of tiles satisfies neither in general and gets the engine's
     [`TiledRasterCursor`](@ref), whose law is a tile offset plus a row-major
     pixel index.
@@ -327,20 +328,135 @@ function STI.child_indices_extents(c::BlockCursor)
 end
 
 # ===========================================================================
-# ConservativeRegridding.Trees
+# The tree as a cell source, and the SpatialTreeInterface work verbs
 # ===========================================================================
 
 GOCore.best_manifold(c::BlockCursor) = GOCore.best_manifold(c.grid)
 
 # Leaf indices are grid indices, so these answer about the whole grid
 # regardless of which node holds them.
-Trees.ncells(c::BlockCursor) = DGG.ncells(c.grid)
-Trees.getcell(c::BlockCursor, i::Int) = DGG.getcell(c.grid, i)
-Trees.getcell(c::BlockCursor) = DGG.getcell(c.grid)
+DGG.getcell(c::BlockCursor, i::Int) = DGG.getcell(c.grid, i)
+DGG.getcell(c::BlockCursor) = DGG.getcell(c.grid)
 
-# `Trees.ncells` answers for the whole grid, so the frontier's default estimate
-# would be wrong here; a block knows its own cell count.
-Trees.split_weight(c::BlockCursor) = Int(_node_cells(c))
+# A block knows its own cell count.
+split_weight(c::BlockCursor) = Int(_node_cells(c))
+
+# Ids ascend with (tile row, tile column, pixel row, pixel column). A pixel
+# rectangle and a level-0 tile rectangle are lattice blocks (one run per row,
+# a fixed stride); a level-1 tile rectangle's rows are runs of a band-dependent
+# length, so it carries its own bound.
+function GridInterface.position_span(c::BlockCursor)
+    c.inpixels && return GridInterface.LatticeBlock(_index(c, c.r0, c.q0, c.j0, c.i0),
+        c.i1 - c.i0 + 1, Int(ncols(c.sys, c.r0)), c.j1 - c.j0 + 1)
+    c.level == 0 && return GridInterface.LatticeBlock(_index(c, c.r0, c.q0, 0, 0),
+        c.q1 - c.q0 + 1, NCOLS_TILES, c.r1 - c.r0 + 1)
+    return TileRows(c.sys, c.origin, c.r0, c.r1, c.q0, c.q1)
+end
+
+"""
+    TileRows(sys, origin, r0, r1, q0, q1)
+
+The span bound of a level-1 tile rectangle: for each tile row `r0:r1`, the run
+of pixel indices of tiles `q0:q1`, whose length is the band's. Exact against a
+range of members, which the bisection needs: it splits columns before rows,
+and the lowest-to-highest range of every column half spans every tile window.
+"""
+struct TileRows{S<:CopernicusDEMSystem}
+    sys::S
+    origin::Int64
+    r0::Int
+    r1::Int
+    q0::Int
+    q1::Int
+end
+
+function GridInterface.span_range(b::TileRows)
+    N = Int64(lat_intervals(b.sys))
+    lo = tilebase(b.sys, b.r0, b.q0) - b.origin
+    hi = tilebase(b.sys, b.r1, b.q1) + N * ncols(b.sys, b.r1) - 1 - b.origin
+    return Int(lo):Int(hi)
+end
+
+# the tile row and column of a grid index
+@inline function _tile_of(b::TileRows, p::Int)
+    idx = Int64(p) + b.origin
+    rowbase = tables(b.sys).rowbase
+    r = searchsortedlast(rowbase, idx) - 1
+    q = (idx - rowbase[r + 1]) ÷ (Int64(ncols(b.sys, r)) * Int64(lat_intervals(b.sys)))
+    return (Int(r), Int(q))
+end
+
+# A range of indices is a run of whole tiles between the tiles of its ends,
+# plus the tail of the first end's row and the head of the last end's row.
+function GridInterface.span_mayhold(b::TileRows, cells::AbstractUnitRange)
+    isempty(cells) && return false
+    sp = GridInterface.span_range(b)
+    max(first(sp), first(cells)) <= min(last(sp), last(cells)) || return false
+    ra, qa = _tile_of(b, max(Int(first(cells)), first(sp)))
+    rb, qb = _tile_of(b, min(Int(last(cells)), last(sp)))
+    max(ra + 1, b.r0) <= min(rb - 1, b.r1) && return true
+    if ra == rb
+        return b.r0 <= ra <= b.r1 && qa <= b.q1 && qb >= b.q0
+    end
+    (b.r0 <= ra <= b.r1 && qa <= b.q1) && return true
+    return b.r0 <= rb <= b.r1 && qb >= b.q0
+end
+
+# Against a vector, one search per tile row for the first member at or after
+# the row's run: exact, where the lowest-to-highest range would keep every
+# column half and a sparse restriction would root at the whole lattice.
+function GridInterface.span_mayhold(b::TileRows, cells::AbstractVector)
+    N = Int64(lat_intervals(b.sys))
+    n = length(cells)
+    k = 1
+    for r in b.r0:b.r1
+        lo = Int(tilebase(b.sys, r, b.q0) - b.origin)
+        k = searchsortedfirst(cells, lo, k, n, Base.Order.Forward)
+        k > n && return false
+        @inbounds(cells[k]) <= Int(tilebase(b.sys, r, b.q1) + N * ncols(b.sys, r) - 1 - b.origin) && return true
+    end
+    return false
+end
+
+"""
+    BlockWalk(node::BlockCursor) <: AbstractVector{Int}
+
+The grid indices beneath a node in the tree's own leaf order — the children in
+order, each leaf's cells row-major — computed on read: entry `k` descends from
+the node through the child whose cell count covers `k`, so nothing is
+materialised and a read costs the node's depth times its fan-out. What
+[`subtree_indices`](@ref GeometryOps.SpatialTreeInterface.subtree_indices)
+answers for every node.
+"""
+struct BlockWalk{C<:BlockCursor} <: AbstractVector{Int}
+    node::C
+    n::Int
+end
+
+Base.size(w::BlockWalk) = (w.n,)
+Base.IndexStyle(::Type{<:BlockWalk}) = IndexLinear()
+Base.@propagate_inbounds function Base.getindex(w::BlockWalk, k::Int)
+    @boundscheck checkbounds(w, k)
+    return _walk_index(w.node, k)
+end
+
+function _walk_index(c::BlockCursor, k::Int)
+    if STI.isleaf(c)
+        nfast, _ = _leafshape(c)
+        slow, fast = divrem(k - 1, nfast)
+        c.inpixels && return _index(c, c.r0, c.q0, c.j0 + slow, c.i0 + fast)
+        return _index(c, c.r0 + slow, c.q0 + fast, 0, 0)
+    end
+    for j in 1:STI.nchild(c)
+        child = STI.getchild(c, j)
+        m = Int(_node_cells(child))
+        k <= m && return _walk_index(child, k)
+        k -= m
+    end
+    throw(BoundsError(c, k))
+end
+
+subtree_indices(c::BlockCursor) = BlockWalk(c, Int(_node_cells(c)))
 
 # ===========================================================================
 # The lattice as raster tiles
@@ -507,6 +623,17 @@ function DGG.treeify(::GOCore.Manifold,
     return tree === nothing ? DGG.HierarchicalGridCursor(grid) : tree
 end
 
+# GridInterface's intents and integer form all name the block cursor: it is
+# already the two-level tree this lattice needs, so no leaf size and no intent
+# builds anything else over it — in particular never the generic hierarchy
+# cursor, whose flat root over 64 800 tiles is what made the prototype's point
+# query cost a second. The `ForQueries` methods exist only to settle the
+# ambiguity against the engine's `(AbstractGrid, ForQueries)` method.
+const _CDEMGrid = Union{CopernicusDEMLevelGrid,DGG.PartialGrid{<:CopernicusDEMSystem}}
+DGG.treeify(grid::_CDEMGrid, ::GridInterface.LeafHint) = DGG.treeify(grid)
+DGG.treeify(grid::_CDEMGrid, ::GridInterface.ForQueries) = DGG.treeify(grid)
+DGG.treeify(grid::_CDEMGrid, ::Integer) = DGG.treeify(grid)
+
 BlockCursor(grid::CopernicusDEMLevelGrid; strategy::BlockStrategy=DEFAULT_STRATEGY) =
     _level_cursor(grid, strategy)
 
@@ -515,66 +642,4 @@ function _level_cursor(grid::CopernicusDEMLevelGrid, strategy::BlockStrategy)
     l = DGG.level(grid)
     return BlockCursor(grid, sys, strategy, l, Int64(-1),
         0, NROWS - 1, 0, NCOLS_TILES - 1, 0, 0, 0, 0, false)
-end
-
-"""
-    subcursor(grid, inds) -> tree or `nothing`
-
-The node covering grid indices `inds`, with leaf indices still `grid`'s own.
-
-  - On the complete lattice: a [`MemoBlockCursor`](@ref) when `inds` is one
-    contiguous id run forming one lattice rectangle — a segment of a tile row or
-    whole tile rows at level 0, one tile's whole raster rows or a run of whole
-    tiles at level 1 — and `nothing` otherwise. The run test is over the window,
-    so a tile-sized chunk qualifies.
-  - On a holding: the [`TiledRasterCursor`](@ref) over the rectangles that
-    window holds, which every window has.
-"""
-DGG.subcursor(grid::CopernicusDEMLevelGrid, inds::AbstractUnitRange{<:Integer}) =
-    _memoized(_window_cursor(grid, DEFAULT_STRATEGY, inds))
-
-DGG.subcursor(grid::DGG.PartialGrid{<:CopernicusDEMSystem},
-    inds::AbstractUnitRange{<:Integer}) = Engine.tiled_raster_tree(grid, inds)
-
-# `nothing` unless `inds` is one contiguous id run forming one rectangle.
-function _window_cursor(grid::CopernicusDEMLevelGrid, strategy::BlockStrategy,
-        inds::AbstractUnitRange{<:Integer})
-    isempty(inds) && return nothing
-    lo_p, hi_p = Int(first(inds)), Int(last(inds))
-    (1 <= lo_p && hi_p <= DGG.ncells(grid)) || return nothing
-    lo = DGG.cellindex(grid, lo_p)
-    hi = DGG.cellindex(grid, hi_p)
-    # Strictly ascending ids form a run iff their span equals their count.
-    hi.index - lo.index + 1 == hi_p - lo_p + 1 || return nothing
-    return _run_cursor(grid, strategy, Int64(lo.index) - lo_p, lo, hi)
-end
-
-# The node covering the id run `lo:hi`, whose grid index is `id - origin`.
-function _run_cursor(grid::CopernicusDEMLevelGrid, strategy::BlockStrategy, origin::Int64,
-        lo::DGG.LevelIndex, hi::DGG.LevelIndex)
-    sys = DGG.system(grid)
-    l = DGG.level(grid)
-    ra, qa, ja, ia = decode(sys, lo)
-    rb, qb, jb, ib = decode(sys, hi)
-    # Rectangular tile runs are one row segment or whole rows.
-    tilerect = ra == rb || (qa == 0 && qb == NCOLS_TILES - 1)
-    if l == 0
-        tilerect || return nothing
-        return BlockCursor(grid, sys, strategy, 0, origin, ra, rb, qa, qb,
-            0, 0, 0, 0, false)
-    end
-    if ra == rb && qa == qb
-        # One tile, whole raster rows.
-        nc = Int(ncols(sys, ra))
-        (ia == 0 && ib == nc - 1) || return nothing
-        return BlockCursor(grid, sys, strategy, 1, origin, ra, ra, qa, qa,
-            ja, jb, 0, nc - 1, true)
-    end
-    # A run of whole tiles, represented as a level-1 tile node.
-    N = Int(lat_intervals(sys))
-    (ja == 0 && ia == 0 && jb == N - 1 && ib == Int(ncols(sys, rb)) - 1) ||
-        return nothing
-    tilerect || return nothing
-    return BlockCursor(grid, sys, strategy, 1, origin, ra, rb, qa, qb,
-        0, 0, 0, 0, false)
 end

@@ -82,7 +82,7 @@ destination lookup sampling the method would imply ([`outputsampling`](@ref)).
 `locator` is the [`CandidateLocator`](@ref) the block was built with.
 """
 struct DirectPlan{M<:AbstractRegriddingMethod,P<:AbstractMissingPolicy,
-                  D<:RegridSpace,S<:RegridSpace,B<:WeightBlock,V,
+                  D,S,B<:WeightBlock,V,
                   L<:Union{Nothing,DD.Lookups.Sampling},
                   C<:CandidateLocator} <: AbstractRegriddingPlan
     method::M
@@ -96,7 +96,7 @@ struct DirectPlan{M<:AbstractRegriddingMethod,P<:AbstractMissingPolicy,
 end
 
 DirectPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
-    dst_space::RegridSpace, src_space::RegridSpace, block::WeightBlock,
+    dst_space, src_space, block::WeightBlock,
     missingval = nothing, sampling::Union{Nothing,DD.Lookups.Sampling} = nothing) =
     DirectPlan(method, missingpolicy, dst_space, src_space, block, missingval,
         sampling, TreeLocator())
@@ -659,9 +659,9 @@ first use. Construction reads no data and builds no weights.
   - `locator` is the [`CandidateLocator`](@ref) every block is built with.
 """
 struct ChunkedPlan{M<:AbstractRegriddingMethod,P<:AbstractMissingPolicy,
-                   D<:RegridSpace,S<:RegridSpace,T<:AbstractBlockStorage,C,V,
+                   D,S,T<:AbstractBlockStorage,C,V,
                    G<:Union{Nothing,ChunkDependencyGraph},
-                   L<:CandidateLocator} <: AbstractRegriddingPlan
+                   L<:CandidateLocator,H<:HeldChunks} <: AbstractRegriddingPlan
     method::M
     missingpolicy::P
     dst_space::D
@@ -672,34 +672,45 @@ struct ChunkedPlan{M<:AbstractRegriddingMethod,P<:AbstractMissingPolicy,
     missingval::V
     dependencies::G
     locator::L
+    # Each space's `chunks`, resolved once: every block reads both lists, and a
+    # subset's costs a search per chunk to build.
+    held::H
 end
+
+ChunkedPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
+    dst_space, src_space, storage::AbstractBlockStorage,
+    budget::Integer, chunks, missingval,
+    dependencies::Union{Nothing,ChunkDependencyGraph}, locator::CandidateLocator) =
+    ChunkedPlan(method, missingpolicy, dst_space, src_space, storage, Int(budget),
+        chunks, missingval, dependencies, locator,
+        HeldChunks(dst_space, _chunks(dst_space), src_space, _chunks(src_space)))
 
 # The positional forms build the relation too; the forms that take
 # `dependencies` are the one way to assemble a plan around an existing
 # relation, or around none.
 ChunkedPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
-    dst_space::RegridSpace, src_space::RegridSpace, storage::AbstractBlockStorage,
+    dst_space, src_space, storage::AbstractBlockStorage,
     budget::Integer, chunks) =
     ChunkedPlan(method, missingpolicy, dst_space, src_space, storage, Int(budget),
         chunks, nothing,
         _plandependencies(nothing, nothing, nothing, method, dst_space, src_space))
 
 ChunkedPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
-    dst_space::RegridSpace, src_space::RegridSpace, storage::AbstractBlockStorage,
+    dst_space, src_space, storage::AbstractBlockStorage,
     budget::Integer, chunks, missingval) =
     ChunkedPlan(method, missingpolicy, dst_space, src_space, storage, Int(budget),
         chunks, missingval,
         _plandependencies(nothing, nothing, nothing, method, dst_space, src_space))
 
 ChunkedPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
-    dst_space::RegridSpace, src_space::RegridSpace, storage::AbstractBlockStorage,
+    dst_space, src_space, storage::AbstractBlockStorage,
     budget::Integer, chunks, missingval,
     dependencies::Union{Nothing,ChunkDependencyGraph}) =
     ChunkedPlan(method, missingpolicy, dst_space, src_space, storage, Int(budget),
         chunks, missingval, dependencies, TreeLocator())
 
 ChunkedPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
-    dst_space::RegridSpace, src_space::RegridSpace;
+    dst_space, src_space;
     storage::Union{Nothing,AbstractBlockStorage} = nothing,
     budget::Integer = DEFAULT_BUDGET, chunks = nothing, missingval = nothing,
     dependencies = nothing, refine = nothing, narrow = nothing,
@@ -712,8 +723,9 @@ ChunkedPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPoli
 
 function Base.show(io::IO, plan::ChunkedPlan)
     print(io, "ChunkedPlan(", typeof(plan.method).name.name, ", ",
-        ncells(plan.dst_space), " cells / ", nchunks(plan.dst_space), " chunks ← ",
-        ncells(plan.src_space), " cells / ", nchunks(plan.src_space), " chunks")
+        ncells(plan.dst_space), " cells / ", _nchunks(plan.dst_space, plan.held.dst_chunks),
+        " chunks ← ", ncells(plan.src_space), " cells / ",
+        _nchunks(plan.src_space, plan.held.src_chunks), " chunks")
     g = plan.dependencies
     g === nothing || print(io, ", ", Graphs.ne(g), " dependency edges")
     plan.locator isa TreeLocator || print(io, ", ", plan.locator)
@@ -778,8 +790,7 @@ dependencies(plan::ChunkedPlan) = plan.dependencies
 dependencies(::DirectPlan) = nothing
 
 function _plandependencies(dependencies, refine, narrow,
-        method::AbstractRegriddingMethod, dst_space::RegridSpace,
-        src_space::RegridSpace)
+        method::AbstractRegriddingMethod, dst_space, src_space)
     if dependencies isa ChunkDependencyGraph
         refine === nothing || throw(ArgumentError(
             "`refine` narrows a relation while it is being built, so it cannot " *
@@ -829,19 +840,18 @@ blockfor(plan::ChunkedPlan, key::Tuple{Int,Int}, dinds, destination) =
 
 _blockfor(::Nothing, plan::ChunkedPlan, key::Tuple{Int,Int}, dinds, destination) =
     getblock!(plan.storage, key,
-        () -> buildblock(plan, dinds, ownedindices(plan.src_space, key[2]), destination))
+        () -> buildblock(plan, dinds, _srcindices(plan, key[2]), destination))
 
 # A tile route reads destination sample sites, not cell geometry, so it takes
 # the tile's cells and never the preparation of their polygons.
 function _blockfor(smp, plan::ChunkedPlan, key::Tuple{Int,Int}, dinds, destination)
     entry = tileblock(tilefor(plan, key[1], dinds, smp), key[2])
     entry === nothing || return entry
-    return _emptyblock(length(dinds), length(ownedindices(plan.src_space, key[2])))
+    return _emptyblock(length(dinds), length(_srcindices(plan, key[2])))
 end
 
 blockfor(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer) =
-    blockfor(plan, (Int(dstchunk), Int(srcchunk)),
-        ownedindices(plan.dst_space, Int(dstchunk)))
+    blockfor(plan, (Int(dstchunk), Int(srcchunk)), _dstindices(plan, dstchunk))
 
 """
     tilefor(plan::ChunkedPlan, tile::Integer, dinds, smp) -> CachedTile
@@ -877,12 +887,19 @@ buildblock(plan::ChunkedPlan, dinds, sinds) =
     buildblock(plan, dinds, sinds, dinds)
 
 buildblock(plan::ChunkedPlan, dinds, sinds, destination) =
-    weightblock(plan.method, plan.dst_space, destination, plan.src_space, sinds,
-        plan.locator)
+    _holdingchunks(plan.held) do
+        weightblock(plan.method, plan.dst_space, destination, plan.src_space, sinds,
+            plan.locator)
+    end
 
 buildblock(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer) =
-    buildblock(plan, ownedindices(plan.dst_space, Int(dstchunk)),
-        ownedindices(plan.src_space, Int(srcchunk)))
+    buildblock(plan, _dstindices(plan, dstchunk), _srcindices(plan, srcchunk))
+
+# A chunk's positions, off the plan's resolved lists.
+_dstindices(plan::ChunkedPlan, chunk::Integer) =
+    _ownedindices(plan.dst_space, Int(chunk), plan.held.dst_chunks)
+_srcindices(plan::ChunkedPlan, chunk::Integer) =
+    _ownedindices(plan.src_space, Int(chunk), plan.held.src_chunks)
 
 """
     weightblock(method, dst_space, dst_inds, src_space, src_inds, locator = TreeLocator())
@@ -913,22 +930,22 @@ Build the weights destination cells `dst_inds` take from source cells
     six-argument `pairblock` of its own then builds through its five-argument
     one. [`Conservative`](@ref) is the method that takes the locator.
 """
-weightblock(method::AbstractRegriddingMethod, dst_space::RegridSpace, dst_inds,
-    src_space::RegridSpace, src_inds, locator::CandidateLocator = TreeLocator()) =
+weightblock(method::AbstractRegriddingMethod, dst_space, dst_inds,
+    src_space, src_inds, locator::CandidateLocator = TreeLocator()) =
     weightblock(outputsampling(method), method, dst_space, dst_inds, src_space,
         src_inds, locator)
 
 weightblock(sampling::DD.Lookups.Sampling, method::AbstractRegriddingMethod,
-    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds,
+    dst_space, dst_inds, src_space, src_inds,
     ::TreeLocator) =
     weightblock(sampling, method, dst_space, dst_inds, src_space, src_inds)
 
 weightblock(::DD.Lookups.Sampling, method::AbstractRegriddingMethod,
-    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds) =
+    dst_space, dst_inds, src_space, src_inds) =
     pairblock(method, dst_space, dst_inds, src_space, src_inds)
 
 function weightblock(sampling::DD.Lookups.Sampling, method::AbstractRegriddingMethod,
-    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds,
+    dst_space, dst_inds, src_space, src_inds,
     locator::CandidateLocator)
     _hasownseam(sampling, method, dst_space, dst_inds, src_space, src_inds) &&
         return weightblock(sampling, method, dst_space, dst_inds, src_space, src_inds)
@@ -942,7 +959,7 @@ _hasownseam(sampling, method, dst_space, dst_inds, src_space, src_inds) =
         typeof(dst_inds), typeof(src_space), typeof(src_inds))) !== _GENERIC_SEAM
 
 const _GENERIC_SEAM = which(weightblock, Tuple{DD.Lookups.Sampling,
-    AbstractRegriddingMethod, RegridSpace, Any, RegridSpace, Any})
+    AbstractRegriddingMethod, Any, Any, Any, Any})
 
 """
     pairblock(method, dst_space, dst_inds, src_space, src_inds[, locator]) -> WeightBlock
@@ -965,12 +982,12 @@ within `dst_inds`, columns chunk-local within `src_inds`.
     method's five-argument build, so a method that knows nothing of locators is
     built the same way under every locator. A wrapper forwards both forms.
 """
-pairblock(method::AbstractRegriddingMethod, dst_space::RegridSpace, dst_inds,
-    src_space::RegridSpace, src_inds, ::CandidateLocator) =
+pairblock(method::AbstractRegriddingMethod, dst_space, dst_inds,
+    src_space, src_inds, ::CandidateLocator) =
     pairblock(method, dst_space, dst_inds, src_space, src_inds)
 
-function pairblock(method::AbstractRegriddingMethod, dst_space::RegridSpace, dst_inds,
-    src_space::RegridSpace, src_inds)
+function pairblock(method::AbstractRegriddingMethod, dst_space, dst_inds,
+    src_space, src_inds)
     coo = WeightCOO(length(dst_inds))
     buildweights!(coo, method, dst_space, dst_inds, src_space, src_inds)
     return WeightBlock(coo, length(dst_inds), length(src_inds))
@@ -981,12 +998,12 @@ end
 # --------------------------------------------------------------------------
 
 """
-    sampler(method::AbstractRegriddingMethod, space::RegridSpace) -> Nothing
+    sampler(method::AbstractRegriddingMethod, grid) -> Nothing
 
 A method with no sampler builds its weights through [`buildweights!`](@ref), one
 chunk pair at a time.
 """
-sampler(::AbstractRegriddingMethod, ::RegridSpace) = nothing
+sampler(::AbstractRegriddingMethod, ::Any) = nothing
 
 """
     tilesampler(plan::ChunkedPlan) -> Union{Nothing,Sampler}
@@ -1027,7 +1044,7 @@ ChunkAccumulator(chunk::Int, inds) =
     col = localindex(a.map, src_index)
     col == 0 && throw(ArgumentError(
         "`chunkat` places source cell $src_index in chunk $(a.chunk), whose " *
-        "`ownedindices` do not list it; chunks must partition 1:ncells(space)"))
+        "positions do not list it; chunks must partition 1:ncells(grid)"))
     push!(a.rows, dst_local)
     push!(a.cols, col)
     push!(a.vals, w)
@@ -1042,7 +1059,7 @@ Build destination tile `dinds`' weights in one pass over its sample sites.
   - Each destination cell gets one [`weightsat!`](@ref) query whatever the
     source chunking is, so no chunk boundary changes a stencil.
   - Every nonzero entry is filed under the chunk that owns it,
-    [`chunkat`](@ref)`(src_space, i)`, by that chunk's chunk-local index;
+    `GridInterface.chunkat(chunks(src_grid), i)`, by that chunk's chunk-local index;
     entries naming one source cell twice are summed.
   - Blocks are finalized in ascending source-chunk order, and a chunk no stencil
     names produces none, so the manifest is exact.
@@ -1051,21 +1068,22 @@ Build destination tile `dinds`' weights in one pass over its sample sites.
     times candidate chunks.
   - Nothing here reads source data or depends on field values or execution order.
 """
-function tileweights(method::AbstractRegriddingMethod, dst_space::RegridSpace, dinds,
-    src_space::RegridSpace, smp)
+function tileweights(method::AbstractRegriddingMethod, dst_space, dinds,
+    src_space, smp)
     sites = samplesites(dst_space)
     row = WeightRow()
-    slots = zeros(Int, Int(nchunks(src_space)))
+    ch = _chunks(src_space)
+    slots = zeros(Int, Int(_nchunks(src_space, ch)))
     accums = ChunkAccumulator[]
     for (j, i) in enumerate(dinds)
         ismapped(weightsat!(row, smp, sites[Int(i)])) || continue
         indices, weights = row.indices, row.weights
         for k in eachindex(indices, weights)
             src_index = indices[k]
-            chunk = Int(chunkat(src_space, src_index))
+            chunk = _chunkat(src_space, src_index, ch)
             slot = slots[chunk]
             if slot == 0
-                push!(accums, ChunkAccumulator(chunk, ownedindices(src_space, chunk)))
+                push!(accums, ChunkAccumulator(chunk, _ownedindices(src_space, chunk, ch)))
                 slot = slots[chunk] = length(accums)
             end
             _fileentry!(accums[slot], j, src_index, weights[k])

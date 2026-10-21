@@ -31,7 +31,7 @@ complete or partial grids, cell vectors, cell lookups, and mixed-level sets.
 A bare system as `to` chooses a level from the source resolution. Use an
 explicit grid when the level must be fixed.
 
-Source spatial dimensions must come first and follow the source space's cell
+Source spatial dimensions must come first and follow the source grid's cell
 order. Other dimensions follow them in their original order. Dimensional
 results use the destination's axes; DGGS destinations provide a `Cells` axis.
 Plain array inputs return arrays. Results are floating point, including
@@ -39,7 +39,7 @@ containing-cell transfers of integer categories.
 
 ## Reuse a plan or destination
 
-A plan fixes the spaces, cell order, method, and weight policy. Reuse it for
+A plan fixes the grids, cell order, method, and weight policy. Reuse it for
 fields with that same spatial layout; changing geometry or cell order requires
 a new plan.
 
@@ -62,11 +62,17 @@ time or band slices; one plan serves those slices without rebuilding weights.
 | Control | Meaning |
 | --- | --- |
 | `lazy=true` | Compute destination data on demand; defaults to true for chunked sources |
-| `chunks` | Lazy output tiling; separate from the spatial chunks in `DGGSpace` |
+| `chunks` | Lazy output tiling; separate from the grids' own spatial chunks |
 | `budget` | Target bytes for lazy reads and weights, not a strict total-process memory limit |
 | `storage=PerChunk()` | Cache lazy weight blocks; this explicit form has no cache size limit |
 | `storage=Spilled(directory)` | Store lazy weight blocks on disk |
-| `DGGSpace(grid; chunklevel, chunkcells)` | Control the DGGS space's ancestor chunks |
+| `GridInterface.mockchunks(grid, LevelChunks(l))` | Chunk a DGGS grid by its level-`l` ancestors instead |
+
+A grid is its own regridding source or destination; there is no separate
+regridding object to build. A DGGS level grid is chunked by default into the ancestor
+subtrees at the level closest to 4096 cells each. To chunk it differently, pass
+`GridInterface.mockchunks(grid, LevelChunks(l))` as `from` or `to`: the same
+cells, read in level-`l` ancestor chunks.
 
 Without an explicit storage policy, lazy plans use a budget-limited cache.
 `chunks`, `budget`, and `storage` apply to lazy execution. `sampling` controls
@@ -83,7 +89,6 @@ fields with different coverage.
 regrid
 regrid!
 plan_regrid
-DGGSpace
 ```
 
 ## Point methods and weight storage

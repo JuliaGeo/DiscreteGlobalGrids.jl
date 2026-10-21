@@ -27,7 +27,7 @@ square ones, `d = l - level(c)` — and `SizeUnknown()` for the generic scan,
 which has no count short of running it. There is no `length` that would.
 
 See also [`InnerCellIterator`](@ref), the complement, and
-[`descendant_range`](@ref DiscreteGlobalGrids.descendant_range).
+[`descendant_range`](@ref DGG.descendant_range).
 """
 struct EdgeCellIterator{S<:AbstractHierarchicalGridSystem,C<:AbstractCellIndex,
         K<:Connectivity,E}

@@ -11,24 +11,56 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
 
 @testset "GlobalRegridding" begin
 
-    @testset "qualified space extension contract" begin
+    @testset "execution hook contract" begin
+        # A regrid side is any GridInterface grid; its cells, trees, chunks,
+        # charts and dual cells are read through GridInterface's verbs. What a
+        # package may still extend here are the execution hooks: plain
+        # functions with `Any` defaults, public and documented.
         hooks = (
-            :subtree, :expensivecellgeometry,
-            :hasanalyticlocation, :cellneighbors, :cellcap, :cellcorners,
-            :overlappairs, :locatecell,
-            :chunkextents, :chunkextent, :chunkindex, :candidatechunks!,
-            :chunkranges,
-            :chartaxes, :chartcoords, :chartlocalindex, :chartperiod, :chartspacing,
-            :destinationdims, :dimsource, :_asspace,
+            :chunkranges, :knownempty, :samplerstate, :supportradius,
+            :destinationdims, :dimsource, :rebuildoutput,
+            :sourcemissingval, :outputmissingval, :destinationmissingval,
+            :overlappairs, :locatecell, :chunkindex, :candidatechunks!,
+            :_asgrid,
         )
         integration_hooks = (
             :resolvespatialdims,
             :_prepare_raster_transform_pair, :_task_prepared_raster_transform,
             :_crs_native_to_unit_sphere, :_projected_crs_native_to_unit_sphere,
         )
-        @test all(name -> Base.ispublic(GR, name), (hooks..., integration_hooks...))
+        # What a package's own point sampler (`samplerstate` + `weightsat!`)
+        # writes its rows and statuses with.
+        sampler_hooks = (
+            :weightsat!, :Sampler, :WeightRow, :addentry!, :snapunit,
+            :meanvalueweights!, :WeightStatus, :ismapped,
+        )
+        @test all(name -> Base.ispublic(GR, name),
+            (hooks..., integration_hooks..., sampler_hooks...,
+             :WeightsMapped, :WeightsRim, :WeightsOutside, :WeightsDegenerate))
         docs = Base.Docs.meta(GR)
-        @test all(name -> haskey(docs, Base.Docs.Binding(GR, name)), hooks)
+        @test all(name -> haskey(docs, Base.Docs.Binding(GR, name)),
+            (hooks..., integration_hooks..., sampler_hooks...))
+        # The `Any` defaults, callable on anything that is a grid.
+        space = ToyLonLatSpace(8, 4; chunks = (4, 2))
+        @test GR.knownempty(zeros(2, 2), (1:2, 1:2)) === false
+        @test GR.supportradius(ToyDiagonalMethod(), space) == 0.0
+        @test GR.destinationdims(space, DD.Lookups.Points()) === nothing
+        @test GR.dimsource(1:4) === nothing
+        # `chunkranges` reads a chunk's positions off `chunks(grid)`.
+        @test GR.chunkranges(space, 2, (8, 4)) == (5:8, 1:2)
+        @test_throws ArgumentError GR.chunkranges(space, 1, (ncells(space),))
+        bands = ToyLonLatSpace(8, 4; chunks = (8, 2))
+        @test GR.chunkranges(bands, 1, (ncells(bands),)) == (1:16,)
+        # The grid-shaped hooks are gone, not merely unexported.
+        for name in (:RegridSpace, :celltree, :getcell, :cellcentroid, :cellneighbors,
+                     :cellcap, :cellcorners, :hasanalyticlocation, :hascellchart,
+                     :hasdualcells, :chartaxes, :chartcoords, :chartlocalindex,
+                     :chartperiod, :chartspacing, :nchunks, :ownedindices,
+                     :cellindices, :chunkextents, :chunkextent, :manifold,
+                     :expensivecellgeometry, :_asspace, :RasterGridView,
+                     :CellSpaceRTree)
+            @test !isdefined(GR, name)
+        end
     end
 
     @testset "toy space contract" begin
@@ -52,10 +84,10 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
         @test cellat(patch, toy_point(0, -10)) === nothing
 
         # Generic `chunkat` inverts `ownedindices` for indices and points.
-        @test all(GR.chunkat(space, i) == c
+        @test all(chunkat(space, i) == c
                   for c in 1:nchunks(space) for i in ownedindices(space, c))
-        @test GR.chunkat(space, cellcentroid(space, 5)) == GR.chunkat(space, 5)
-        @test GR.chunkat(patch, toy_point(0, -10)) === nothing
+        @test chunkat(space, cellcentroid(space, 5)) == chunkat(space, 5)
+        @test chunkat(patch, toy_point(0, -10)) === nothing
 
         # Analytic and polygon areas both cover the sphere.
         global_space = ToyLonLatSpace(8, 4)
@@ -70,7 +102,7 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
         # Regional chunk extents cover their cell corners.
         region = ToyLonLatSpace(8, 4; lon = (-40.0, 40.0), lat = (-20.0, 20.0),
             chunks = (4, 2))
-        caps = GR.chunkextents(region)
+        caps = chunkextents(region)
         @test all(GR.US._contains(caps[c], p)
                   for c in 1:nchunks(region)
                   for i in ownedindices(region, c)

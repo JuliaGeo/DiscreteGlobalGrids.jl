@@ -50,8 +50,8 @@ import GeometryOpsCore as GOCore
 import GeoInterface as GI
 import Extents
 import DE9IM
-import ConservativeRegridding: Trees
 import GeometryOps: SpatialTreeInterface as STI
+import GridInterface
 # Only for the `getindex` tie-break in `cell_vector.jl`: a neighbour list is one
 # of SmallCollections' vectors, and indexing a cell vector by one is otherwise
 # ambiguous against that package's own method.

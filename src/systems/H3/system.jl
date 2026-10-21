@@ -6,7 +6,7 @@
 
 H3's aperture-7 hexagonal hierarchy with twelve pentagons at resolutions
 `0:15`. Libh3 supplies geometry, location, and adjacency. Boundaries are
-implicitly closed counter-clockwise rings and include distortion vertices.
+implicitly closed counter-clockwise rings of the six (five) true vertices only, without libh3's distortion vertices.
 Canonical ordering makes `has_sorted_subtrees` true.
 """
 struct H3System <: AbstractHierarchicalGridSystem end
@@ -108,7 +108,7 @@ has_direct_location(::H3System) = true
 `1.2`, the generic default.
 
 Children overhang their parents, so
-[`node_extent`](@ref DiscreteGlobalGrids.node_extent) must be inflated. The
+[`node_extent`](@ref DGG.node_extent) must be inflated. The
 measured maximum ratio of a descendant *boundary vertex*'s distance from an
 ancestor's cell-cap centre to that cap's radius is `1.0522`; `1.2` preserves the
 covering invariant. Descendant caps are not the quantity bounded and may exceed
@@ -209,7 +209,7 @@ Every descendant at resolution `l`, in ascending id order. `cellToChildren`
 handles any depth in one call.
 
 O(subtree) and materialising, as the contract says — reach for
-[`descendant_range`](@ref DiscreteGlobalGrids.descendant_range) instead wherever indices will do.
+[`descendant_range`](@ref DGG.descendant_range) instead wherever indices will do.
 """
 function descendants(::H3System, c::H3Cell, l::Integer)
     target = Int(l)
@@ -254,3 +254,11 @@ function descendant_range(sys::H3System, c::H3Cell, l::Integer)
     count = Int(H3Native.cell_to_children_size(c.id, target))
     return p:(p+count-1)
 end
+
+# ===========================================================================
+# GridInterface shape traits
+# ===========================================================================
+
+# Cells are hexagons and pentagons whose edges are great-circle arcs: one simple ring, convex.
+GridInterface.cellshape(::H3LevelGrid) = GridInterface.ConvexCells()
+GridInterface.edgekind(::H3LevelGrid) = GridInterface.GeodesicEdges()

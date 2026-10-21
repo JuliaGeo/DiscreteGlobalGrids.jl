@@ -1,347 +1,187 @@
-# Regridding spaces use dense cell indices and spherical-cap spatial trees.
-
-"""
-    RegridSpace
-
-A source or destination cell collection.
-
-The qualified extension contract is grouped below by responsibility. Every
-space provides cell geometry, chunk ownership, and a manifold. Restricted cell
-trees, native chunk indexes, rectangular storage reads, point lookup, charts,
-and labelled output have generic fallbacks or are required only by the methods
-that use them.
-
-Spaces contain geometry and structure, not field data. Construction should be
-cheap, with cell polygons generated on demand.
-"""
-abstract type RegridSpace end
+# A source or destination of a regrid is a GridInterface grid
+# (`GridInterface.isgrid`). Cells, trees, chunks, point location, charts and
+# dual cells are read through GridInterface's verbs at the sites that need
+# them; this file holds the few private helpers those sites share and the
+# execution hooks a package may extend for its grids.
 
 # --------------------------------------------------------------------------
-# Cell geometry
+# Chunks, read off `chunks(grid)`
 # --------------------------------------------------------------------------
+#
+# A grid that declares no chunking (`chunks(grid) === nothing`) is one chunk
+# over every cell. Nothing is held by the grid: every answer is derived when it
+# is asked for, and a chunk's extent is `grid_extent` of the chunk, cheap by
+# contract. The chunk list itself need not be (a subset of a level grid searches
+# its positions once per chunk to build it), so each helper takes it as `ch`,
+# resolved once by the caller that loops or keeps it: a [`ChunkedPlan`](@ref)
+# resolves its two spaces' lists at construction.
 
-"""
-    celltree(space::RegridSpace)
+_chunks(grid) = GridInterface.chunks(grid)
 
-Return a `SpatialTreeInterface` tree over cell indices `1:ncells(space)`.
-Every node extent must be a `SphericalCap`. Define
-`STI.node_extent_is_expensive` when extents are computed on demand.
-"""
-function celltree end
+_nchunks(grid, ch = _chunks(grid)) = ch === nothing ? 1 : length(ch)
 
-"""
-    subtree(space::RegridSpace, inds) -> tree
-
-Return a spatial tree over `inds`, with leaves addressed by the space's
-local index. The fallback packs GeometryOps' Cartesian cell extents in an
-R-tree.
-Spaces with a cheaper restricted tree should specialize this function.
-"""
-function subtree end
-
-"""
-    ncells(space::RegridSpace) -> Int
-
-Return the stable cell count in `O(1)`. Cell indices are `1:ncells(space)`.
-"""
-function ncells end
-
-"""
-    getcell(space::RegridSpace, i::Int) -> GI.Polygon
-
-Return cell `i` as a GeoInterface polygon with one explicitly closed ring of
-unit-sphere `(x, y, z)` coordinates. The ring is counter-clockwise from outside
-the sphere and its segments are great-circle arcs. Densify non-geodesic edges.
-Throw `BoundsError` for an invalid index.
-"""
-function getcell end
-
-"""
-    expensivecellgeometry(space::RegridSpace) -> Bool
-
-Whether one [`getcell`](@ref) costs enough that an area method should keep the
-polygons of a destination tile rather than synthesize each one again for every
-source leaf that overlaps it.
-
-  - `true` by default: a space that derives cell boundaries from an index pays
-    for every call.
-  - A space whose cells are a few coordinates read off a lattice should answer
-    `false`; keeping them there costs more memory traffic than it saves.
-  - A property of the space, not of the tree an index set produces. The
-    spatial-tree trait `STI.node_extent_is_expensive` describes extents, and the
-    packed R-tree fallback answers `false` for it whatever space it wraps.
-"""
-expensivecellgeometry(::RegridSpace) = true
-
-# --------------------------------------------------------------------------
-# Chunk ownership and spatial discovery
-# --------------------------------------------------------------------------
-
-"""
-    nchunks(space::RegridSpace) -> Int
-
-Return the number of chunks. A space without natural chunking returns one chunk
-containing `1:ncells(space)`.
-"""
-function nchunks end
-
-"""
-    ownedindices(space::RegridSpace, chunk::Int) -> AbstractVector{Int}
-
-The space's local indices of the cells `chunk` owns — the cells it produces
-results for — ascending. Chunks must partition `1:ncells(space)`. Return an
-`AbstractUnitRange` when those indices are contiguous. Weight builders address
-entries by chunk-local index within this result.
-"""
-function ownedindices end
-
-# `cellindices` is the old name of `ownedindices` and forwards to it, so a call
-# of the old name answers the same with a deprecation warning. In this package
-# "cell index" is the local index a space numbers its cells by, and the name
-# collided with the typed cell id it means elsewhere. Only callers are carried:
-# a space that defines the old name supplies no chunk ownership, and the
-# generic dispatches on the new one.
-
-"""
-    cellindices(space::RegridSpace, chunk::Int) -> AbstractVector{Int}
-
-Deprecated. Use [`ownedindices`](@ref), which this forwards to, so existing
-calls keep their old behaviour exactly.
-"""
-function cellindices end
-
-@deprecate cellindices(space::RegridSpace, chunk::Int) ownedindices(space, chunk) false
-
-"""
-    chunkextent(space::RegridSpace, chunk::Integer) -> SphericalCap
-
-Return the spherical cap covering every cell owned by `chunk`. The fallback
-indexes [`chunkextents`](@ref); a space specializes it when one extent is
-cheaper to obtain than the complete vector, as [`RasterGrid`](@ref) does.
-
-For the cap of a chunk a *relation* was built over, prefer
-[`destinationextent`](@ref) or `sourceextent` on the relation: it already holds
-the caps it was built from, so reading them back off the space recomputes work
-and risks answering with a cap the relation never saw.
-"""
-function chunkextent end
-
-"""
-    chunkextents(space::RegridSpace) -> Vector{SphericalCap}
-
-Return the chunk extents in chunk-number order. Required of every space: there
-is no fallback.
-
-These are the caps as *values*, not a query. They stamp a relation's identity
-([`spacestamp`](@ref)), they are the destination caps a relation is built by
-querying with, and the generic [`chunkindex`](@ref) packs them. A chunk query
-goes to [`candidatechunks!`](@ref) on the space's own index, so a native space
-may report caps here that its index does not itself test.
-"""
-function chunkextents end
-
-"""
-    chunkindex(space::RegridSpace) -> index
-
-Build the source-chunk query object consumed by [`candidatechunks!`](@ref).
-The fallback packs [`chunkextents`](@ref) in a GeometryOps `FlexibleRTree`.
-Structured spaces may return any native hierarchy; indexes need not share a
-type or expose one common node-extent representation.
-"""
-function chunkindex end
-
-"""
-    candidatechunks!(out::Vector{Int}, index, dstcap; radius = 0.0) -> out
-
-Replace `out` with ascending unique chunk numbers from `index` that may lie
-within `radius` radians of `dstcap`. False positives are allowed; false
-negatives are not. A native index specializes this query operation directly.
-"""
-function candidatechunks! end
-
-"""
-    chunkat(space::RegridSpace, i::Integer) -> Int
-    chunkat(space::RegridSpace, p::GO.UnitSphericalPoint) -> Union{Int,Nothing}
-
-Return the chunk containing cell index `i` or point `p`. The fallback scans
-all chunks; structured spaces should provide an `O(1)` or `O(log nchunks)`
-method. The point form returns `nothing` outside the space's coverage.
-"""
-function chunkat end
-
-function chunkat(space::RegridSpace, i::Integer)
-    i = Int(i)
-    1 <= i <= ncells(space) || throw(BoundsError(space, i))
-    for c in 1:nchunks(space)
-        i in ownedindices(space, c) && return c
-    end
-    throw(ArgumentError(
-        "cell index $i of $(typeof(space)) belongs to no chunk; chunks must " *
-        "partition 1:ncells(space)"))
+function _ownedindices(grid, chunk::Integer, ch = _chunks(grid))
+    ch === nothing || return _asrange(GridInterface.parentpositions(ch[Int(chunk)]))
+    Int(chunk) == 1 || throw(BoundsError(grid, Int(chunk)))
+    return 1:Int(ncells(grid))
 end
 
-function chunkat(space::RegridSpace, p::US.UnitSphericalPoint)
-    i = cellat(space, p)
+# A subset's positions are strictly ascending, so a contiguous one is its range:
+# a full-width tile then takes the arithmetic index map, not a lookup.
+_asrange(pos::AbstractUnitRange) = pos
+function _asrange(pos::AbstractVector{<:Integer})
+    isempty(pos) && return pos
+    lo, hi = Int(first(pos)), Int(last(pos))
+    return hi - lo + 1 == length(pos) ? (lo:hi) : pos
+end
+
+# One cap per chunk, in chunk order, read when asked.
+function _chunkextents(grid)
+    ch = _chunks(grid)
+    ch === nothing && return Cap[convert(Cap, GridInterface.grid_extent(grid))]
+    return Cap[convert(Cap, GridInterface.grid_extent(c)) for c in ch]
+end
+
+function _chunkextent(grid, chunk::Integer, ch = _chunks(grid))
+    ch === nothing || return convert(Cap, GridInterface.grid_extent(ch[Int(chunk)]))
+    Int(chunk) == 1 || throw(BoundsError(grid, Int(chunk)))
+    return convert(Cap, GridInterface.grid_extent(grid))
+end
+
+function _chunkat(grid, i::Integer, ch = _chunks(grid))
+    1 <= i <= Int(ncells(grid)) || throw(BoundsError(grid, Int(i)))
+    ch === nothing && return 1
+    return Int(GridInterface.chunkat(ch, Int(i)))
+end
+
+function _chunkat(grid, p::US.UnitSphericalPoint)
+    i = GridInterface.cellat(grid, p)
     i === nothing && return nothing
-    return chunkat(space, i)
+    return _chunkat(grid, Int(i))
 end
 
+# The chunk whose positions are exactly `inds`, or `nothing`.
+function _ownchunk(grid, inds::AbstractUnitRange{<:Integer}, ch = _chunks(grid))
+    (ch === nothing || isempty(inds)) && return nothing
+    chunk = ch[GridInterface.chunkat(ch, Int(first(inds)))]
+    owned = GridInterface.parentpositions(chunk)
+    # Strictly ascending positions with the range's ends and length are the range.
+    return (length(owned) == length(inds) && Int(first(owned)) == Int(first(inds)) &&
+            Int(last(owned)) == Int(last(inds))) ? chunk : nothing
+end
+
+# The chunk lists a plan holds while it builds, for the helpers a build reaches
+# with a space alone (`_subtree`). A dynamic scope rather than an argument: the
+# space-level builders between the plan and the tree are extension points.
+struct HeldChunks{D,CD,S,CS}
+    dst_space::D
+    dst_chunks::CD
+    src_space::S
+    src_chunks::CS
+end
+const HELD_CHUNKS = ScopedValue{Union{Nothing,HeldChunks}}(nothing)
+
+# Run `f()` with `held` in scope.
+_holdingchunks(f, held::HeldChunks) = @with HELD_CHUNKS => held f()
+
+# `grid`'s chunk list from the scope, else resolved here.
+_heldchunks(grid) = _heldchunks(HELD_CHUNKS[], grid)
+_heldchunks(::Nothing, grid) = _chunks(grid)
+_heldchunks(h::HeldChunks, grid) =
+    grid === h.dst_space ? h.dst_chunks : grid === h.src_space ? h.src_chunks : _chunks(grid)
+
 # --------------------------------------------------------------------------
-# Array storage
+# Trees
+# --------------------------------------------------------------------------
+
+# The grid's tree for an intent; the sweep tree is what the dual-tree searches descend.
+_celltree(grid, hint = GridInterface.ForSweeps()) = GridInterface.treeify(grid; leaf_capacity = hint)
+
+_iswholespace(grid, inds::AbstractUnitRange{<:Integer}) =
+    first(inds) == 1 && length(inds) == Int(ncells(grid))
+_iswholespace(grid, inds) = false
+
+# A tree over `inds` whose leaves emit the grid's positions, with the leaf size
+# of the caller's intent: `ForSweeps` (the default) for the dual-tree searches,
+# `ForQueries` for point location. The whole grid is its tree; a chunk's own
+# positions take the chunk, so a typed chunk (a raster or structured tile, a
+# multi-level set's window) builds its own tree in O(1); any other index set is
+# the grid's `subtree`: its own tree restricted and rooted at the deepest node
+# holding the set, or an R-tree over the set for a grid with no tree of its own.
+function _subtree(grid, inds::AbstractUnitRange{<:Integer};
+    leaf_capacity = GridInterface.ForSweeps())
+    _iswholespace(grid, inds) && return _celltree(grid, leaf_capacity)
+    return _chunksubtree(grid, inds, _heldchunks(grid), leaf_capacity)
+end
+function _chunksubtree(grid, inds, ch, leaf_capacity)
+    chunk = _ownchunk(grid, inds, ch)
+    chunk === nothing || return GridInterface.subtree(grid, chunk; leaf_capacity)
+    return GridInterface.subtree(grid, inds; leaf_capacity)
+end
+_subtree(grid, inds::AbstractVector{<:Integer}; leaf_capacity = GridInterface.ForSweeps()) =
+    GridInterface.subtree(grid, inds; leaf_capacity)
+_subtree(grid, inds; leaf_capacity = GridInterface.ForSweeps()) =
+    GridInterface.subtree(grid, collect(Int, inds); leaf_capacity)
+
+# --------------------------------------------------------------------------
+# Execution hooks: plain functions with `Any` defaults
 # --------------------------------------------------------------------------
 
 """
-    chunkranges(space::RegridSpace, chunk, spatialsize::NTuple{NS,Int})
-        -> NTuple{NS,UnitRange{Int}}
+    chunkranges(grid, chunk, spatialsize::NTuple{NS,Int}) -> NTuple{NS,UnitRange{Int}}
 
 Return the rectangular array ranges that storage can read for `chunk` in one
 operation, in spatial-dimension order. Flattening that block must enumerate
-[`ownedindices`](@ref) in the same order, but the two contracts are distinct:
-`ownedindices` describes cell ownership and need not be a storage rectangle.
-Non-rectangular spaces must specialize this function.
+the chunk's positions (`parentpositions(chunks(grid)[chunk])`) in the same
+order. The default reads the chunk's positions and refuses a chunk that is not
+a rectangle of the array lattice; a grid whose chunks are rectangles it can
+name directly, as [`RasterGrid`](@ref) does, specializes this function.
 """
-function chunkranges end
+function chunkranges(grid, chunk::Integer, ::NTuple{1,Int})
+    inds = _ownedindices(grid, Int(chunk))
+    n = length(inds)
+    n == 0 && return (1:0,)
+    lo, hi = Int(first(inds)), Int(last(inds))
+    hi - lo + 1 == n || _notrectangular(grid, chunk)
+    return (lo:hi,)
+end
 
-# --------------------------------------------------------------------------
-# Manifold, point lookup, and cell charts
-# --------------------------------------------------------------------------
+function chunkranges(grid, chunk::Integer, ssz::NTuple{2,Int})
+    inds = _ownedindices(grid, Int(chunk))
+    n = length(inds)
+    n == 0 && return (1:0, 1:0)
+    n1 = ssz[1]
+    c1, r1 = fldmod1(Int(first(inds)), n1)
+    c2, r2 = fldmod1(Int(last(inds)), n1)
+    rows, cols = r1:r2, c1:c2
+    length(rows) * length(cols) == n || _notrectangular(grid, chunk)
+    k = 0
+    for c in cols, r in rows
+        k += 1
+        @inbounds Int(inds[k]) == r + (c - 1) * n1 || _notrectangular(grid, chunk)
+    end
+    return (rows, cols)
+end
 
-"""
-    manifold(space::RegridSpace) -> GeometryOpsCore.Manifold
+chunkranges(grid, chunk::Integer, ssz::Tuple) = throw(ArgumentError(
+    "a regrid flattens over one or two spatial dimensions, got $(length(ssz))"))
 
-Return the geometry manifold. Source and destination manifolds must match;
-regridding does not reproject coordinates.
-"""
-function manifold end
-
-"""
-    cellat(space::RegridSpace, p::GO.UnitSphericalPoint) -> Union{Int,Nothing}
-
-Return the index containing `p`, or `nothing` outside coverage. Point-based
-methods require this optional interface. Assign boundary points consistently to
-an incident cell.
-"""
-function cellat end
-
-"""
-    cellcentroid(space::RegridSpace, i::Int) -> GO.UnitSphericalPoint
-
-Return an interior centroid for cell `i`. Point-sampling methods require this
-optional interface on the destination. Prefer a direct calculation over
-building the polygon.
-"""
-function cellcentroid end
-
-"""
-    hasanalyticlocation(space::RegridSpace) -> Bool
-
-Whether `space` answers both [`cellat`](@ref) and [`cellneighbors`](@ref), so
-an [`AnalyticLocator`](@ref) can walk it. Defaults to `false`.
-"""
-hasanalyticlocation(::RegridSpace) = false
+_notrectangular(grid, chunk) = throw(ArgumentError(
+    "chunk $chunk of $(typeof(grid)) is not a rectangle of the array lattice, " *
+    "so it cannot be read in one block; define " *
+    "`GlobalRegridding.chunkranges(::$(typeof(grid)), chunk, spatialsize)`"))
 
 """
-    cellneighbors(space::RegridSpace, i::Int)
+    destinationdims(grid, sampling) -> Tuple or nothing
 
-The local indices of the cells sharing at least a vertex with cell `i`, as an
-iterable collection. Required when [`hasanalyticlocation`](@ref) is `true`.
-"""
-function cellneighbors end
-
-"""
-    cellcap(space::RegridSpace, i::Int) -> SphericalCap
-
-A spherical cap bounding cell `i`. The fallback unions the polygon's vertices
-with a small margin; a space with a closed-form cap should specialize it.
-"""
-cellcap(space::RegridSpace, i::Int) = _packedcellcap(space, i)
-
-"""
-    cellcorners(space::RegridSpace, i::Int)
-
-The corner vertices of cell `i` as unit-sphere points, without the closing
-repeat and without any densification vertices. The fallback reads every
-exterior vertex of [`getcell`](@ref), which is correct and slow; a space whose
-polygons are densified should return its true corners.
-"""
-cellcorners(space::RegridSpace, i::Int) = _ringpoints(getcell(space, i))
-
-"""
-    hascellchart(space::RegridSpace) -> Bool
-
-Return whether cells have a structured chart suitable for interpolation.
-Defaults to `false`; chart-based methods require `true` from the source space.
-"""
-hascellchart(::RegridSpace) = false
-
-"""
-    chartaxes(space::RegridSpace) -> (xs, ys)
-
-Return strictly monotonic cell-centre coordinates for each separable lattice
-axis. Required when [`hascellchart`](@ref) is `true`.
-"""
-function chartaxes end
-
-"""
-    chartcoords(space::RegridSpace, p) -> Union{Tuple{Real,Real},Nothing}
-
-Convert `p` to native chart coordinates, or return `nothing` outside the chart.
-Coordinates must use the same branch as [`chartaxes`](@ref), except on periodic
-axes.
-"""
-function chartcoords end
-
-"""
-    chartlocalindex(space::RegridSpace, ix::Int, iy::Int) -> Int
-
-Return the space's local index for the cell at lattice index `(ix, iy)`.
-Required when [`hascellchart`](@ref) is `true`.
-"""
-function chartlocalindex end
-
-"""
-    chartperiod(space::RegridSpace) -> (px, py)
-
-Return each axis period in native coordinates, or `nothing` for no wrap.
-Defaults to `(nothing, nothing)`.
-"""
-function chartperiod end
-
-"""
-    chartspacing(space::RegridSpace) -> (Δx, Δy)
-
-Return upper bounds, in radians, on adjacent-centre distance along each axis.
-Required when [`hascellchart`](@ref) is `true`.
-"""
-function chartspacing end
-
-# `chartposition` is the old name of `chartlocalindex` and forwards to it, so a
-# call of the old name answers the same with a deprecation warning. Only
-# callers are carried: a space that defines the old name supplies no chart
-# hook, and `_chart_required` names the new one.
-
-"""
-    chartposition(space::RegridSpace, ix::Int, iy::Int) -> Int
-
-Deprecated. Use [`chartlocalindex`](@ref), which this forwards to, so existing
-calls keep their old behaviour exactly.
-"""
-function chartposition end
-
-@deprecate chartposition(space::RegridSpace, ix::Int, iy::Int) chartlocalindex(space, ix, iy) false
-
-# --------------------------------------------------------------------------
-# Output labelling and target resolution
-# --------------------------------------------------------------------------
-
-"""
-    destinationdims(space::RegridSpace, sampling) -> Tuple or nothing
-
-Return the `DimensionalData` dimensions that label a result over this space,
+Return the `DimensionalData` dimensions that label a result over this grid,
 fastest dimension first, with lookups carrying `sampling`. The default is
-`nothing`: the result keeps one flat `Cell` axis over `1:ncells(space)`.
+`nothing`: the result keeps one flat `Cell` axis over `1:ncells(grid)`. A
+transparent wrapper answers for the grid it wraps.
 """
-destinationdims(::RegridSpace, ::DD.Lookups.Sampling) = nothing
+destinationdims(::Any, ::DD.Lookups.Sampling) = nothing
+destinationdims(g::GridInterface.AbstractWrappedGrid, sampling::DD.Lookups.Sampling) =
+    destinationdims(parent(g), sampling)
 
 """
     dimsource(lookup) -> `from` target or nothing
@@ -353,15 +193,15 @@ and a regrid given no `from` names it instead of asking for `xdim`.
 dimsource(::Any) = nothing
 
 """
-    _asspace(space, name) -> RegridSpace
-    _asspace(space, name, src_space) -> RegridSpace
+    _asgrid(x, name) -> grid
+    _asgrid(x, name, src_grid) -> grid
 
-Resolve a `to` or `from` argument into a [`RegridSpace`](@ref). A space stands
-for itself, and a dimensional raster or a tuple of dimensions names the
+Resolve a `to` or `from` argument into a GridInterface grid. A grid stands for
+itself, and a dimensional raster or a tuple of dimensions names the
 [`RasterGrid`](@ref) over its lattice — a dimension that already names cells
 ([`dimsource`](@ref)) is refused rather than read as one. Packages that supply
-spaces extend the two-argument form for their own target spellings, and the
-three-argument form when the destination depends on the resolved source space.
+grids extend the two-argument form for their own target spellings, and the
+three-argument form when the destination depends on the resolved source grid.
 `name` names the keyword in error messages.
 """
-function _asspace end
+function _asgrid end

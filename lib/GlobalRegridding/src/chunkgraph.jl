@@ -18,7 +18,7 @@
 """
     SpaceStamp
 
-A cheap, serializable snapshot of the parts of a [`RegridSpace`](@ref) that a
+A cheap, serializable snapshot of the parts of a grid that a
 dependency relation is derived from: the name of the space's type, its cell and
 chunk counts, and a digest over its covering chunk caps.
 
@@ -48,15 +48,15 @@ const _EMPTY_STAMP = SpaceStamp(Symbol(""), 0, 0, UInt64(0))
 const _STAMP_SEED = 0x63_68_75_6e_6b_67_72_66 % UInt
 
 """
-    spacestamp(space::RegridSpace) -> SpaceStamp
+    spacestamp(grid) -> SpaceStamp
 
 Fingerprint `space` for dependency-graph identity.
 
-The digest covers the *name* of the space's type, [`ncells`](@ref),
-[`nchunks`](@ref), and every covering cap [`chunkextents`](@ref) reports, in
-chunk order. Cost is one `chunkextents` call plus `O(nchunks)` hashing; on a
-`DGGSpace` the extents are a stored field, on a `RasterGrid` they are `nchunks`
-rectangle-to-cap conversions.
+The digest covers the *name* of the grid's type, `ncells`, the number of
+`chunks(grid)`, and every chunk's covering cap (`grid_extent` of the chunk), in
+chunk order. Cost is one `grid_extent` per chunk plus `O(nchunks)` hashing; on
+a DGG level grid a chunk's extent is its root cell's node cap, on a
+`RasterGrid` a rectangle-to-cap conversion.
 
 # What a stamp match does and does not establish
 
@@ -67,7 +67,7 @@ not. Specifically, equal stamps still permit:
 - A 64-bit digest collision. Unlikely, and silent when it happens.
 - Two spaces of the same type *name* with different type **parameters** — a
   different grid system, element type or index type behind the same
-  `DGGSpace`/`RasterGrid` name. Only the name is stamped, because rendering a
+  `HierarchicalLevelGrid`/`RasterGrid` name. Only the name is stamped, because rendering a
   full parametric type is [measured] 0.79 ms on a `RasterGrid`, which is more
   than building the relation. In practice a parameter that changes the relation
   changes a cap or a count as well, but the type parameters themselves are not
@@ -93,7 +93,7 @@ Nothing cheaper is sound, and nothing sound is cheap: the only exact check is to
 rebuild the relation and compare it, which is the work the identity exists to
 avoid.
 """
-spacestamp(space::RegridSpace) = _spacestamp(space, chunkextents(space))
+spacestamp(space) = _spacestamp(space, _chunkextents(space))
 
 function _spacestamp(space, caps::AbstractVector{<:SphericalCap})
     # `nameof`, not the full parametric type: rendering a `RasterGrid`'s type to
@@ -153,7 +153,7 @@ has is the graph it wants; it costs two [`spacestamp`](@ref) calls and builds no
 relation. Callers that check repeatedly should compute the stamp once and keep
 it, rather than restamping per column.
 """
-dependency_identity(dst_space::RegridSpace, src_space::RegridSpace;
+dependency_identity(dst_space, src_space;
         radius::Real = 0.0, narrow::Symbol = :none) =
     DependencyIdentity(spacestamp(dst_space), spacestamp(src_space),
         _checkedradius(radius), narrow)
@@ -242,7 +242,7 @@ free of the space type parameters.
 # Chunk extents
 
 A graph built from spaces also retains the two covering-cap vectors it was
-derived from — [`chunkextents`](@ref) of each side — because they are its own
+derived from — `grid_extent` of each chunk, each side — because they are its own
 inputs and it would otherwise throw them away for every consumer to rebuild.
 [`destinationextents`](@ref), [`sourceextents`](@ref) and their singular forms
 read them; [`hasextents`](@ref) says whether a graph carries them at all, which
@@ -252,8 +252,8 @@ This is where per-chunk cap metadata *lives*. A consumer that needs a chunk's
 extent — the lazy executor weighs a wave's blocks by how much of each source
 chunk a destination tile can reach — reads it off the relation both sides
 already agree on, rather than keeping a private copy per array, per worker or
-per column. The vectors are shared by reference: on a `DGGSpace` they are the
-space's own stored field, and a [`restrict`](@ref) row view shares its parent's.
+per column. The vectors are shared by reference: read once from the grids when
+the relation is built, and a [`restrict`](@ref) row view shares its parent's.
 
 # Identity
 
@@ -386,7 +386,7 @@ hasextents(g::ChunkDependencyGraph) = g.extents
     sourceextents(g::ChunkDependencyGraph) -> Vector{Cap}
 
 Return the covering spherical cap of every chunk of each side, in chunk order,
-as [`chunkextents`](@ref) reported it when the relation was built.
+as `grid_extent` of each chunk reported them when the relation was built.
 
 The result is the graph's own vector, shared by reference and **not** to be
 mutated. `destinationextents` is indexed by the *destination space's* chunk
@@ -679,8 +679,8 @@ plan's back. See [`dependencies`](@ref).
 
 # Method
 
-The destination side is reduced to its covering spherical caps via
-[`chunkextents`](@ref). Each destination cap is then handed to
+The destination side is reduced to its covering spherical caps,
+`grid_extent` of each chunk. Each destination cap is then handed to
 [`candidatechunks!`](@ref) on [`chunkindex`](@ref)`(src_space)` — *the same
 query, on the same index, that a lazy read issues for that destination*.
 
@@ -735,7 +735,7 @@ length(consumersof(graph, 7))    # initial refcount for source chunk 7
 Graphs.connected_components(graph)   # independent groups of work
 ```
 """
-chunk_dependency_graph(dst_space::RegridSpace, src_space::RegridSpace;
+chunk_dependency_graph(dst_space, src_space;
     radius::Real = 0.0) =
     _builddependencies(dst_space, src_space, radius, nothing, nothing)
 
@@ -744,15 +744,15 @@ chunk_dependency_graph(dst_space::RegridSpace, src_space::RegridSpace;
 # `refine(dstchunk, srcchunk) -> Bool` returning `false` asserts the pair cannot
 # contribute at this radius and drops the edge; `narrow` is the Symbol that
 # names the phase in the graph's identity. See `plan_regrid`.
-function _builddependencies(dst_space::RegridSpace, src_space::RegridSpace,
+function _builddependencies(dst_space, src_space,
         radius::Real, refine, narrow)
     r = _checkedradius(radius)
     tag = _narrowtag(refine, narrow)
     # Both cap vectors are the graph's own input — the destination's directly,
     # the source's through its stamp — so take each once and keep it, rather
     # than paying `chunkextents` twice here and again in every consumer.
-    dstcaps = chunkextents(dst_space)
-    srccaps = chunkextents(src_space)
+    dstcaps = _chunkextents(dst_space)
+    srccaps = _chunkextents(src_space)
     id = DependencyIdentity(_spacestamp(dst_space, dstcaps),
         _spacestamp(src_space, srccaps), r, tag)
     return _chunkgraph(id, dstcaps, chunkindex(src_space), srccaps, r, refine)
@@ -1051,11 +1051,11 @@ plan   = plan_regrid(data; to = piece, from = src_space, lazy = true,
                      dependencies = view)
 ```
 """
-function subspace_dependencies(g::ChunkDependencyGraph{T}, subspace::RegridSpace,
+function subspace_dependencies(g::ChunkDependencyGraph{T}, subspace,
         destinations) where {T}
     _requireextents(g)
     rows = _restrictionrows(g, destinations)
-    subcaps = chunkextents(subspace)
+    subcaps = _chunkextents(subspace)
     length(subcaps) == length(rows) || throw(ArgumentError(
         "$subspace has $(length(subcaps)) chunks, but $(length(rows)) " *
         "destination chunks of $g were selected; a sub-space relation must " *
@@ -1139,8 +1139,8 @@ relation, which is the work this exists to avoid.
 Cost is two `spacestamp` calls. A caller validating repeatedly should stamp once
 and compare [`dependency_identity`](@ref) records directly.
 """
-function validate_dependencies(g::ChunkDependencyGraph, dst_space::RegridSpace,
-        src_space::RegridSpace; radius::Real = 0.0, narrow::Symbol = :none,
+function validate_dependencies(g::ChunkDependencyGraph, dst_space,
+        src_space; radius::Real = 0.0, narrow::Symbol = :none,
         destinations = nothing)
     r = _checkedradius(radius)
     _checkstamp(g, :destination, g.id.dst, spacestamp(dst_space))

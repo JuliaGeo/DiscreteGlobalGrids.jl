@@ -46,11 +46,11 @@ mutable struct T7CountingMethod{M<:AbstractRegriddingMethod} <: AbstractRegriddi
 end
 
 T7CountingMethod(inner) = T7CountingMethod(inner, 0)
-GR.supportradius(m::T7CountingMethod, space::RegridSpace) =
+GR.supportradius(m::T7CountingMethod, space) =
     GR.supportradius(m.inner, space)
 
 function buildweights!(coo::WeightCOO, m::T7CountingMethod,
-    dst::RegridSpace, dst_inds, src::RegridSpace, src_inds)
+    dst, dst_inds, src, src_inds)
     countbuild!(m)
     return buildweights!(coo, m.inner, dst, dst_inds, src, src_inds)
 end
@@ -61,10 +61,10 @@ struct T7RadiusMethod <: AbstractRegriddingMethod
     radius::Float64
 end
 
-GR.supportradius(m::T7RadiusMethod, ::RegridSpace) = m.radius
+GR.supportradius(m::T7RadiusMethod, ::Any) = m.radius
 
 function buildweights!(coo::WeightCOO, m::T7RadiusMethod,
-    dst::RegridSpace, dst_inds, src::RegridSpace, src_inds)
+    dst, dst_inds, src, src_inds)
     for (j, p) in enumerate(dst_inds)
         centre = cellcentroid(dst, p)
         for (k, q) in enumerate(src_inds)
@@ -89,7 +89,7 @@ end
 T10ScopeNearest() = T10ScopeNearest(Bool[], ReentrantLock())
 
 GR.outputsampling(::T10ScopeNearest) = DD.Lookups.Points()
-GR.supportradius(::T10ScopeNearest, space::RegridSpace) =
+GR.supportradius(::T10ScopeNearest, space) =
     supportradius(NearestCell(), space)
 
 struct T10ScopeSampler{S}
@@ -97,7 +97,7 @@ struct T10ScopeSampler{S}
     method::T10ScopeNearest
 end
 
-GR.sampler(m::T10ScopeNearest, space::RegridSpace) =
+GR.sampler(m::T10ScopeNearest, space) =
     T10ScopeSampler(GR.sampler(NearestCell(), space), m)
 
 function GR.weightsat!(row::GR.WeightRow, s::T10ScopeSampler, p)
@@ -111,15 +111,15 @@ end
 struct T9NoReach <: AbstractRegriddingMethod end
 
 GR.outputsampling(::T9NoReach) = DD.Lookups.Points()
-GR.sampler(::T9NoReach, space::RegridSpace) = GR.sampler(BarycentricPoint(), space)
+GR.sampler(::T9NoReach, space) = GR.sampler(BarycentricPoint(), space)
 
 # The source chunks a destination tile's stencils name, taken from an operator
 # built over the whole domain by the chunk-pair builder, so nothing a tile build
 # does takes part in the answer.
-function t9_owners(whole::Matrix{Float64}, space::RegridSpace, dinds)
+function t9_owners(whole::Matrix{Float64}, space, dinds)
     out = Set{Int}()
     for i in dinds, j in axes(whole, 2)
-        iszero(whole[Int(i), j]) || push!(out, Int(GR.chunkat(space, j)))
+        iszero(whole[Int(i), j]) || push!(out, Int(chunkat(space, j)))
     end
     return sort!(collect(out))
 end
@@ -166,7 +166,7 @@ GR.knownempty(x::T8Presence, nd::Tuple{Vararg{AbstractUnitRange}}) =
 
 # Reference connectivity from current pairwise chunk caps.
 function t8_pairs(dst, src; radius = 0.0)
-    dcaps, scaps = GR.chunkextents(dst), GR.chunkextents(src)
+    dcaps, scaps = chunkextents(dst), chunkextents(src)
     return [(d, s) for d in eachindex(dcaps) for s in eachindex(scaps)
             if US.spherical_distance(dcaps[d].point, scaps[s].point) <=
                dcaps[d].radius + scaps[s].radius + radius]
@@ -176,8 +176,8 @@ end
 # the tree descent is checked against. It reads `chunkextents`, the one way to
 # obtain a space's chunk caps.
 function t7_pairwise(dst, dstchunk, src; radius = 0.0)
-    dcap = GR.chunkextents(dst)[dstchunk]
-    return [s for (s, scap) in enumerate(GR.chunkextents(src))
+    dcap = chunkextents(dst)[dstchunk]
+    return [s for (s, scap) in enumerate(chunkextents(src))
             if US.spherical_distance(dcap.point, scap.point) <=
                dcap.radius + scap.radius + radius]
 end
@@ -252,8 +252,8 @@ end
         # Chunk extents come back indexed by chunk number, which is what the
         # descent's leaf indices mean — and the relation carries the very
         # vectors it was built from, so there is one copy of each, not two.
-        @test GR.sourceextents(graph) == GR.chunkextents(srcspace)
-        @test GR.destinationextents(graph) == GR.chunkextents(dstspace)
+        @test GR.sourceextents(graph) == chunkextents(srcspace)
+        @test GR.destinationextents(graph) == chunkextents(dstspace)
 
         # The relation's rows ARE the per-destination-cap queries: one
         # `chunkindex(src)`, one `candidatechunks!` per `chunkextents(dst)`
@@ -266,13 +266,13 @@ end
         # antimeridian and whole-sphere cases.
         index = GR.chunkindex(srcspace)
         @test index isa GR.FlexibleRTrees.RTree
-        srccaps = GR.chunkextents(srcspace)
+        srccaps = chunkextents(srcspace)
         srcboxes = map(cap -> convert(GR.Extents.Extent, cap), srccaps)
         for capacity in (2, 3, 16)
             packed = GR.FlexibleRTrees.RTree(GR.FlexibleRTrees.HPR(), srccaps;
                 extents = srcboxes, nodecapacity = capacity)
             for c in 1:nchunks(dstspace)
-                dcap = GR.chunkextents(dstspace)[c]
+                dcap = chunkextents(dstspace)[c]
                 @test GR.candidatechunks!(Int[], packed, dcap) ==
                       t7_pairwise(dstspace, c, srcspace)
             end
@@ -1153,8 +1153,8 @@ end
         A = LazyRegridArray(T7Counting(field, (4, 2)), plan)
 
         @test GR.hasextents(graph)
-        @test GR.destinationextents(graph) == GR.chunkextents(dstspace)
-        @test GR.sourceextents(graph) == GR.chunkextents(srcspace)
+        @test GR.destinationextents(graph) == chunkextents(dstspace)
+        @test GR.sourceextents(graph) == chunkextents(srcspace)
         @test GR.destinationextent(graph, 2) === GR.destinationextents(graph)[2]
         @test GR.sourceextent(graph, 3) === GR.sourceextents(graph)[3]
         # Shared by reference, not copied, through every derived object.
@@ -1291,8 +1291,8 @@ end
         ndst = Int(ncells(dst))
         @test nchunks(dst) == 1
 
-        owner = Int(GR.chunkat(src, cellat(src, cellcentroid(dst, 1))))
-        @test all(Int(GR.chunkat(src, cellat(src, cellcentroid(dst, i)))) == owner
+        owner = Int(chunkat(src, cellat(src, cellcentroid(dst, 1))))
+        @test all(Int(chunkat(src, cellat(src, cellcentroid(dst, i)))) == owner
                   for i in 1:ndst)
 
         weights = GR.tileweights(BarycentricPoint(), dst, 1:ndst, src,
@@ -1303,7 +1303,7 @@ end
         # Cap overlap alone names only the chunk the destination sits in: the
         # other three own sites whose own cells the destination never touches,
         # so an intersection with a radius-free row would drop their weights.
-        caps, dcap = GR.chunkextents(src), GR.chunkextents(dst)[1]
+        caps, dcap = chunkextents(src), chunkextents(dst)[1]
         @test [s for s in weights.sourcechunks
                if US.spherical_distance(dcap.point, caps[s].point) <=
                   dcap.radius + caps[s].radius] == [owner]

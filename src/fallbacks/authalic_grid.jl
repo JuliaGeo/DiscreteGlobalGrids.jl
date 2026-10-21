@@ -209,6 +209,10 @@ cell_centroid(grid::AuthalicGrid, c::AbstractCellIndex) =
 cell_corners(grid::AuthalicGrid, c::AbstractCellIndex) =
     map(p -> geodetic_point(grid.transform, p), cell_corners(grid.grid, c))
 
+# The tight boundary-derived cap, so that a wrapped grid without a closed-form
+# cap pays nothing for a looser generic bound.
+cell_cap(grid::AuthalicGrid, c::AbstractCellIndex) = points_cap(cell_boundary(grid, c))
+
 # A closed-form base cap can stay closed-form through the latitude warp. The
 # centre is transformed exactly as the cell centroid is, while the angular
 # radius is multiplied by the warp's Lipschitz constant. For a base cap
@@ -216,24 +220,16 @@ cell_corners(grid::AuthalicGrid, c::AbstractCellIndex) =
 #
 #     d(Φp, Φv) <= authalic_stretch(transform) * d(p, v) <= Lr.
 #
-# Keep the old tight boundary-derived fallback for systems that have no cheap
-# cap: it avoids making every authalic grid pay for a looser generic bound.
-function cell_cap(grid::AuthalicGrid, c::AbstractCellIndex)
-    return _authalic_cell_cap(grid, c, cell_cap_is_cheap(grid.grid))
-end
-
-_authalic_cell_cap(grid::AuthalicGrid, c::AbstractCellIndex, ::Val{false}) =
-    points_cap(cell_boundary(grid, c))
-
-function _authalic_cell_cap(grid::AuthalicGrid, c::AbstractCellIndex, ::Val{true})
+# The wrapped grids with a closed-form `cell_cap` (HEALPix and IGeo7 level
+# grids) route `cell_cap(::AuthalicGrid{<:TheirLevelGrid}, c)` here, beside
+# their own overrides; `PartialGrid` forwards to its complete grid.
+function _stretched_cell_cap(grid::AuthalicGrid, c::AbstractCellIndex)
     cap = cell_cap(grid.grid, c)
     radius = authalic_stretch(grid.transform) * Float64(cap.radius)
     radius > Float64(pi) / 2 && return full_sphere_cap()
     return SphericalCap(
         geodetic_point(grid.transform, cap.point), nextfloat(radius))
 end
-
-cell_cap_is_cheap(grid::AuthalicGrid) = cell_cap_is_cheap(grid.grid)
 
 # The one input-side warp: the caller's point is in the geodetic frame this grid
 # publishes, and the grid underneath speaks authalic.

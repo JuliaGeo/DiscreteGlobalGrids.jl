@@ -33,6 +33,7 @@ using GridInterface.Structured: AbstractStructuredGrid, TopDownQuadtreeCursor, T
 import GridInterface.Structured: isstructured
 import GridInterface.Structured: nfaces, facesize, facevertex, faceposition, facecell, blockextent
 import GridInterface.Structured: hasfaceaxes, faceaxes, facecoords, faceperiod, facelocalindex
+import GridInterface.Structured: facecross, facefan
 # Dual-cell answers are fixed-capacity, as GridInterface's rings are.
 import SmallCollections
 using SmallCollections: SmallVector

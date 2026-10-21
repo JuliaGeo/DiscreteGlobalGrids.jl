@@ -1120,7 +1120,9 @@ end
                     GR.pairblock(Conservative(), dst, 1:ncells(dst), src, 1:ncells(src)))
             end
 
-            # The cap over the corners covers the ring the clipper measures.
+            # The cap over the corners covers the ring the clipper measures. A
+            # cell against a pole is a triangle with the pole as one corner.
+            polar(space, i) = any(p -> abs(p[3]) == 1.0, cellcorners(space, i))
             for space in (fine, geographic(12, 4; lat = (70.0, 90.0)),
                     geographic(12, 4; lat = (-90.0, -70.0)))
                 @test all(1:ncells(space)) do i
@@ -1129,7 +1131,9 @@ end
                         GR.US._contains(cap, USPoint(GI.x(q), GI.y(q), GI.z(q)))
                     end
                 end
-                @test all(i -> length(cellcorners(space, i)) == 4, 1:ncells(space))
+                @test all(i -> length(cellcorners(space, i)) == (polar(space, i) ? 3 : 4),
+                    1:ncells(space))
+                @test count(i -> polar(space, i), 1:ncells(space)) == (space === fine ? 96 : 12)
             end
 
             @testset "lattice neighbours" begin
@@ -1139,9 +1143,10 @@ end
                 @test length(ring) == 8
                 @test Set(ring) == Set(GR.localindex(fine, 5 + dx, 5 + dy)
                     for dx in -1:1, dy in -1:1 if (dx, dy) != (0, 0))
-                @test length(cellneighbors(fine, GR.localindex(fine, 5, 1))) == 5
+                # A polar cell touches every other cell of its row at the pole.
+                @test length(cellneighbors(fine, GR.localindex(fine, 5, 1))) == nx - 1 + 3
                 corner = cellneighbors(fine, GR.localindex(fine, 1, 1))
-                @test length(corner) == 5
+                @test length(corner) == nx - 1 + 3
                 @test GR.localindex(fine, nx, 1) in corner
                 @test GR.localindex(fine, nx, 2) in corner
                 @test GR.localindex(fine, 1, 1) ∉ corner
@@ -1150,12 +1155,16 @@ end
                 f(s, i) = (cellneighbors(s, i); @allocated cellneighbors(s, i))
                 @test f(fine, interior) == 0 skip = VERSION < v"1.12"
 
+                # Without the period the columns stop at the antimeridian, and
+                # these rows stop short of the poles: a corner cell has three
+                # neighbours.
                 open = RasterGrid(DD.DimArray(zeros(nx, ny),
                     (DD.X(range(-175, 175; length = nx)), DD.Y(range(-85, 85; length = ny))));
                     xperiod = nothing)
                 @test length(cellneighbors(open, GR.localindex(open, 1, 1))) == 3
                 @test length(cellneighbors(open, GR.localindex(open, nx, ny))) == 3
                 @test length(cellneighbors(open, GR.localindex(open, 1, 5))) == 5
+                @test GR.localindex(open, nx, 5) ∉ cellneighbors(open, GR.localindex(open, 1, 5))
             end
 
             @testset "locatecell agrees between locators" begin

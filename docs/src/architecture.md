@@ -239,6 +239,33 @@ deliberately does not: its callback closes over the original array and indexes i
 handles it is given, so a sweep over blocks would hand it block indices to read from the
 whole cube.
 
+## Trees
+
+Every tree here is a `GeometryOps.SpatialTreeInterface` tree whose leaves emit grid
+positions, and GridInterface's tree verbs read it as it is. This package supplies the tree
+and three node properties; the verbs are GridInterface's.
+
+| verb | what this package supplies |
+|---|---|
+| `treeify(grid, n::Integer)` | the grid's own tree with up to `n` cells per leaf: a `HierarchicalGridCursor` over the system's hierarchy for a level grid or a `PartialGrid`, an `IndexTree` over cell caps for a grid without a system |
+| `leaf_capacity(grid, hint)` | the leaf size an intent asks for: `ForSweeps` is 49 cells, two IGeo7 refinements above the leaf level; `ForQueries` is the one-cell tree `treeify(grid)` builds |
+| `subtree(grid, cells)` | nothing: GridInterface restricts `treeify(grid, n)` through its `MaskedCursor`, which keeps a child only while `position_span` says it may hold a member, and starts at the deepest node that alone may hold one |
+
+A hierarchy cursor costs O(1) to build. A node is one cell, its children are the cell's
+`children`, and its extent is the system's `node_extent` cap, computed when a traversal
+reaches it. Two properties of its nodes let generic code use it well:
+
+- `GridInterface.position_span(node)` bounds the grid positions beneath a node, so a
+  restriction prunes by index arithmetic and reads no geometry. A sorted-subtree window
+  answers its index range; a materialised selection, its two ends; a raster tile
+  rectangle, a `LatticeBlock`; a Copernicus DEM tile rectangle, a `TileRows` bound whose
+  row runs are exact against a range of members.
+- `SpatialTreeInterface.node_extent_is_expensive` on the node type tells a dual-tree
+  sweep whether to carry child extents or recompute them per visit. The hierarchy cursor
+  and the DEM block cursor compute caps on demand and declare them expensive; the index
+  tree, the raster tile cursor and the memoised DEM cursor store theirs and declare them
+  cheap.
+
 ## Regridding
 
 Regridding lives in a separate package, `GlobalRegridding`, which owns the verbs and does
@@ -255,7 +282,8 @@ location, neighbours and face charts are read through GridInterface's verbs (`ce
 What a DGGS grid contributes is the idea that a chunk is a non-empty ancestor subtree,
 chosen at whichever level lands closest to a target cell count; `mockchunks(grid,
 LevelChunks(l))` names another level. A chunk's extent is then its root cell's cap, O(1),
-and a chunk's tree is the grid's own hierarchy cursor started at that root. Chunk discovery
+and a chunk's tree is the grid's hierarchy cursor restricted to the chunk, rooted at the
+chunk's own node in O(depth) by the generic `subtree` described above. Chunk discovery
 packs the chunk extents in one R-tree per plan, O(chunks log chunks) and nothing per cell.
 
 What a package may still extend is execution, not geometry: plain GlobalRegridding functions

@@ -19,7 +19,7 @@ The plotting API is experimental and may change.
 
 ## Quick start
 
-Use Julia 1.11 or later. In the REPL, install the packages and a Makie backend:
+Use Julia 1.11 or later; the allocation-free fast paths are guaranteed on 1.12 and later. In the REPL, install the packages and a Makie backend:
 
 ```julia
 using Pkg

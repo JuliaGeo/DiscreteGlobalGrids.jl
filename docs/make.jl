@@ -53,7 +53,8 @@ if FAST_DOCS
     # Keep every page in the build so references and @docs blocks are checked.
     # These pages contain the examples that need graphics, downloads, optional
     # development packages, or large datasets. Convert their @example blocks
-    # to ordinary Julia code fences in the staged copy only.
+    # to ordinary Julia code fences in the staged copy only, and drop their
+    # @setup blocks, which only feed those examples.
     skipped_example_pages = [
         joinpath(DOCS_SOURCE, "index.md"),
         joinpath(DOCS_SOURCE, "all_dggs.md"),
@@ -62,6 +63,7 @@ if FAST_DOCS
     ]
     for page in skipped_example_pages
         source = read(page, String)
+        source = replace(source, r"```@setup[^\n]*\n.*?```\n"s => "")
         write(page, replace(source, r"```@example[^\n]*" => "```julia"))
     end
     @info "Fast docs mode: skipped executable examples" pages = relpath.(skipped_example_pages, DOCS_SOURCE)

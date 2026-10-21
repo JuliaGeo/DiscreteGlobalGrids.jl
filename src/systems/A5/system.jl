@@ -104,7 +104,7 @@ end
 """
     has_sorted_subtrees(::A5System) -> Bool
 
-`false`: no [`descendant_range`](@ref DiscreteGlobalGrids.descendant_range) contract is asserted across the level-0
+`false`: no [`descendant_range`](@ref DGG.descendant_range) contract is asserted across the level-0
 to level-1 quintant fan-out.
 
   - `treeify` uses selection mode and materializes root indices;
@@ -128,7 +128,7 @@ has_direct_location(::A5System) = true
 A5's four Hilbert children cover their parent's area but can extend beyond its
 footprint. The measured descendant-to-cell-cap ratio reaches `1.45363`, with an
 extrapolated bound of `1.47078`; `1.75` preserves the
-[`node_extent`](@ref DiscreteGlobalGrids.node_extent) covering invariant.
+[`node_extent`](@ref DGG.node_extent) covering invariant.
 """
 cap_inflation(::A5System) = 1.75
 

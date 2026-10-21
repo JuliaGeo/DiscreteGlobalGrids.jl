@@ -41,7 +41,12 @@ falls into three groups:
 |---|---|---|
 | declarations | `has_congruent_refinement`, [`has_sorted_subtrees`](@ref), [`has_direct_location`](@ref), [`maxneighbors`](@ref), `maxring`, `winding`, `cap_inflation`, [`node_extent`](@ref) | the engines take a faster route once a system promises the property holds |
 | store I/O | `idrank`, `idselect`, `idvalid`, `idcell`, `register_grid!` | `dggwrite` and `dggread` |
-| fast paths | `cellat`, `localindex`, `neighbors`, `ring`, `cell_area`, `cell_extent`, `getcell`, `ancestor`, `descendants`, `subtree` | speed; the generic implementations already answer every one of them |
+| fast paths | `cellat`, `localindex`, `neighbors`, `ring`, `cell_area`, `cell_extent`, `getcell`, `ancestor`, `descendants` | speed; the generic implementations already answer every one of them |
+
+Trees need no method of their own: `treeify` builds the system's hierarchy
+cursor from `children` and [`node_extent`](@ref), and GridInterface's
+`subtree(grid, cells)` restricts it to any subset; see
+[Trees](architecture.md#Trees).
 
 This page implements the thirteen for a longitude/latitude lattice, runs the
 conformance suites over it, exercises the package's high-level API, and then

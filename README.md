@@ -23,7 +23,7 @@ package provides plotting with Makie.
 
 ## Quick start
 
-Use Julia 1.11 or later. In the REPL, install the package from this repository:
+Use Julia 1.11 or later; the allocation-free fast paths are guaranteed on 1.12 and later. In the REPL, install the package from this repository:
 
 ```julia
 using Pkg

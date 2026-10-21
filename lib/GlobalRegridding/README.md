@@ -21,7 +21,7 @@ latitude in degrees.  Other packages like [DiscreteGlobalGrids.jl](../../README.
 
 ## Quick start
 
-Use Julia 1.11 or later.  In the REPL, type:
+Use Julia 1.11 or later; the allocation-free fast paths are guaranteed on 1.12 and later. In the REPL, type:
 ```julia
 using Pkg
 Pkg.add("GlobalRegridding")

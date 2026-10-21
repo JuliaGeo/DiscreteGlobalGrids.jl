@@ -674,15 +674,12 @@ end
             @test isempty(intersect(rep.fallbacks, [:cellat, :neighbors, :cell_geometry, :cell_extent]))
         end
 
-        # A regional raster reaching a pole passes every law but the suite's
-        # open-fan winding, which winds a closed ring about the vertex: an open
-        # fan spanning less than a half turn turns by nothing about it whatever
-        # its order. The fan is counter-clockwise about the north pole seen
-        # from outside: its cells' longitudes increase.
+        # A regional raster reaching a pole passes every law. Its pole is an
+        # open fan of the whole polar row, counter-clockwise about the north
+        # pole seen from outside: its cells' longitudes increase.
         polar = grid(-35.0:10.0:35.0, 55.0:10.0:85.0)
         rep = GIC.check_grid(polar; name = "regional to the pole")
-        @test failing(rep) == filter(f -> startswith(f, "dual / vertex fans wind CCW about the vertex"), failing(rep))
-        @test length(failing(rep)) <= 1
+        @test failing(rep) == String[]
         V = GrI.GridAndVertices(polar)
         pole = only(v for v in 1:GrI.nvertices(V) if length(GrI.vertex_cells(V, v)) > 4)
         fan = collect(GrI.vertex_cells(V, pole))

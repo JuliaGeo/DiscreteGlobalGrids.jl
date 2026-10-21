@@ -200,6 +200,11 @@ grid = DGG.levelgrid(sys, 4)
 test_grid(grid)
 ```
 
+```@setup extending
+sys = LonLatSystem()
+grid = DGG.levelgrid(sys, 4)
+```
+
 `test_system` checks the hierarchy, one level grid and a sample multi-level
 set, at the levels given:
 
@@ -385,9 +390,8 @@ An optional method must return what the generic implementation returns, and the
 conformance suite is where that is checked. The `cellat` law group now checks
 the direct-location implementation:
 
-```@example extending
-test_grid_interface(grid)
-nothing # hide
+```julia
+test_grid(grid)
 ```
 
 ## Write and read a DGGS store

@@ -253,7 +253,8 @@ GrI.cell_geometry_is_expensive(::ToyLonLatSpace) = true
 # A full-longitude block's perimeter cap is the whole sphere; the bowed
 # latitude band bounds it instead, so row chunks keep bounded extents.
 function GrS.blockextent(g::ToyLonLatSpace, f, ir::UnitRange{Int}, jr::UnitRange{Int})
-    cap = invoke(GrS.blockextent, Tuple{Any,Any,UnitRange{Int},UnitRange{Int}}, g, f, ir, jr)
+    cap = invoke(GrS.blockextent,
+        Tuple{GrS.AbstractStructuredGrid,Any,UnitRange{Int},UnitRange{Int}}, g, f, ir, jr)
     cap.radius < Float64(pi) && return cap
     return toy_bandcap(g.lat0 + (first(jr) - 1) * dlat(g), g.lat0 + last(jr) * dlat(g),
         dlon(g))

@@ -262,9 +262,18 @@ end
     # over-select, but no longer rejects a pair the native index holds. The
     # graph still deliberately builds from the native index rather than relying
     # on this workload-specific containment.
+    #
+    # Under the IGEO7 placement (vertex 0 at 11.2°E) the containment is no
+    # longer exact: four native pairs fall outside the cap join, with caps
+    # 1.2e-7 to 6.6e-7 rad apart and zero overlap area between the chunk's
+    # cells and the tile. So it is the native index over-selecting at the cap
+    # tolerance, not a contribution the caps drop, and that is what is pinned.
     capjoin = capjoin_pairs(dst, src)
     native = graph_pairs(graph)
-    @test isempty(setdiff(native, capjoin))
+    dcaps, scaps = GR.chunkextents(dst), GR.chunkextents(src)
+    capgap((d, s)) = GO.UnitSpherical.spherical_distance(dcaps[d].point, scaps[s].point) -
+                     (dcaps[d].radius + scaps[s].radius)
+    @test all(p -> capgap(p) < 1e-6, setdiff(native, capjoin))
     @test !isempty(setdiff(capjoin, native))
 end
 

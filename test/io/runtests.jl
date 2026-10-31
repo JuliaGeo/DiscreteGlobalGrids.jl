@@ -29,6 +29,10 @@ using .ChunkedLookups
     include("read.jl")
     include("write.jl")
     include("stores.jl")
+    # Where the cells are: the IGEO7 placement and declared geodetic latitude.
+    include("placement.jl")
+    # How a ranges store counts its intervals, and the base-7 line it counts on.
+    include("ranges_count.jl")
     include("subzone_store.jl")
     # A stored axis as a region, and the traversal that follows its chunks.
     # Both round-trip through a real store, so both live behind the same skip.

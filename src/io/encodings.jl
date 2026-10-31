@@ -26,7 +26,7 @@ from a store's vocabulary through [`ENCODING_REGISTRY`](@ref).
 """
 module Encodings
 
-import ..DiscreteGlobalGrids: AbstractGrid, AbstractCellIndex,
+import ..DiscreteGlobalGrids: AbstractGrid, AbstractCellIndex, AuthalicGrid,
     HierarchicalLevelGrid, IGeo7System, HEALPixSystem, Z7Cell, LevelIndex,
     ncells, cellindex, level, rawid
 # The Z7 digit tables, validity predicate and inverse-rank walk are the system's
@@ -43,7 +43,8 @@ import ..DGGSFormatError
 export CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding
 export ENCODING_REGISTRY, encodingname, register_encoding!
 export idrank, idselect, idcount_between, idvalid, idcell, idtype, idlevel
-export idranges, write_eligible, validate_ranges, cellaxis, storedid
+export structural_count_between, RANGES_COUNTS
+export idranges, write_eligible, validate_ranges, checkrangescount, cellaxis, storedid
 
 # ===========================================================================
 # The grid side: id arithmetic over one complete level
@@ -218,6 +219,38 @@ function idcount_between(grid::AbstractGrid, lo::Integer, hi::Integer)
     return upper - idrank(grid, a)
 end
 
+"""
+    structural_count_between(grid::AbstractGrid, lo::Integer, hi::Integer) -> Int
+
+The number of positions of `grid`'s structural id line in the INCLUSIVE
+interval `[lo, hi]`; zero when `hi < lo`.
+
+A structural line has a position for every well-formed id at the level, also
+for ids that name no cell. For Z7 that is the base-7 place value of the digit
+string (`IGeo7.z7_to_monotonic`), on which the pentagons' deleted branches keep
+their slots; the IGEO7 range stores written by z7py and xdggs-dggrid4py count
+their intervals this way. A grid without such phantom ids has no second line,
+and the generic method is [`idcount_between`](@ref).
+
+The difference to [`idcount_between`](@ref) over an interval is the number of
+phantom slots inside it, which is zero unless the interval crosses a
+pentagon's deleted branch.
+"""
+structural_count_between(grid::AbstractGrid, lo::Integer, hi::Integer) =
+    idcount_between(grid, lo, hi)
+
+"""
+    RANGES_COUNTS
+
+How a ranges store counts its intervals, as a store's `ranges_count` declares
+it: `:existence` counts the cells inside `[start, stop]`
+([`idcount_between`](@ref)), and `:structural` every position of the grid's
+structural line ([`structural_count_between`](@ref)). The data arrays hold one
+value per counted position, so the two disagree exactly when an interval
+crosses ids that name no cell.
+"""
+const RANGES_COUNTS = (:existence, :structural)
+
 # --- IGEO7 / Z7: the existence model ---------------------------------------
 #
 # A level-L Z7 id is a base cell and L base-7 digits, tail-padded with the 7
@@ -280,6 +313,40 @@ function idlevel(::_Z7Grid, id::Integer)
     return Int(IGeo7._z7_leading_resolution(UInt64(id)))
 end
 
+# --- IGEO7 / Z7: the structural line ---------------------------------------
+#
+# The same digit walk without the deletion: every level-L digit string has a
+# position, `12*7^L` of them, so the count below an id is its place value read
+# in base 7, made total on ids that are not level-L strings the way `idrank` is.
+
+# The number of level-`L` digit strings, phantoms included, whose packed id is
+# strictly below `x`.
+function _z7_slotrank(x::UInt64, L::Int)
+    b = Int(x >> 60)
+    b >= IGeo7.Z7_NUM_BASES && return IGeo7.Z7_NUM_BASES * (@inbounds IGeo7.POW7[L+1])
+    cnt = b * (@inbounds IGeo7.POW7[L+1])
+    @inbounds for j in 1:L
+        e = IGeo7._z7_digit(x, j)
+        w = IGeo7.POW7[L-j+1]
+        # A pad digit here: every string sharing the prefix sits below `x`.
+        e == 7 && return cnt + 7 * w
+        cnt += e * w
+    end
+    # The string equal to the prefix has an all-7 tail, which is maximal, so it
+    # is >= x and contributes nothing.
+    return cnt
+end
+
+function structural_count_between(grid::_Z7Grid, lo::Integer, hi::Integer)
+    a = UInt64(lo)
+    b = UInt64(hi)
+    b < a && return 0
+    L = grid.level
+    upper = b == typemax(UInt64) ? IGeo7.Z7_NUM_BASES * IGeo7.POW7[L+1] :
+            _z7_slotrank(b + one(UInt64), L)
+    return Int(upper - _z7_slotrank(a, L))
+end
+
 # --- HEALPix nested: the contiguous model ----------------------------------
 
 const _HPXGrid = HierarchicalLevelGrid{HEALPixSystem}
@@ -308,6 +375,21 @@ idvalid(grid::_HPXGrid, id::Integer) = 0 <= id < ncells(grid)
 # No `idlevel`: the default `nothing` is the correct answer here and not a gap.
 # Every level-L nested id is also a well-formed level-(L+1) id, so an id names
 # no level of its own and a reader cannot be told one.
+
+# --- the authalic wrapper: ids are not geometry ------------------------------
+#
+# `AuthalicGrid` reads a grid's geometry at geodetic latitude and leaves every
+# id where it is, so its id arithmetic is the arithmetic of the grid it wraps.
+# This lets a store that declares geodetic cells use the same layouts.
+
+idtype(grid::AuthalicGrid) = idtype(parent(grid))
+idcell(grid::AuthalicGrid, id::Integer) = idcell(parent(grid), id)
+idrank(grid::AuthalicGrid, id::Integer) = idrank(parent(grid), id)
+idselect(grid::AuthalicGrid, r::Integer) = idselect(parent(grid), r)
+idvalid(grid::AuthalicGrid, id::Integer) = idvalid(parent(grid), id)
+idlevel(grid::AuthalicGrid, id::Integer) = idlevel(parent(grid), id)
+structural_count_between(grid::AuthalicGrid, lo::Integer, hi::Integer) =
+    structural_count_between(parent(grid), lo, hi)
 
 # ===========================================================================
 # The encoding side
@@ -468,17 +550,24 @@ row per run. `merge` chooses what counts as a run:
     single run the other.
 
 Both encode the same axis, and [`cellaxis`](@ref) reads either back to it. The
-difference is interop: `:step` is what a structural-count reader needs, and what
-the published IGEO7 range stores hold.
+difference is interop with readers that count on the structural line (z7py,
+xdggs-dggrid4py; see [`structural_count_between`](@ref)). A `:step` row never
+crosses a pentagon's deleted branch, so both counts agree on every row, and
+`dggwrite` declares `ranges_count = "structural"` for an IGEO7 store written
+this way. A `:rank` row can cross one, and `dggwrite` then declares
+`"existence"`.
 
 Throws a `DGGSFormatError` when `ids` is not [`write_eligible`](@ref) for
 [`RangesEncoding`](@ref).
 
-!!! note "Runs across a pentagon's deleted branch"
-    Under `:rank` a structural-count reader overcounts an interval by the
-    phantoms inside it — 4 116 against 3 432 on the whole res-3 level. The three
-    published IGEO7 range stores contain no such interval, because they lie off
-    the pentagon chains entirely.
+!!! note "The published IGEO7 range stores"
+    The stores z7py writes hold runs that are contiguous on the structural line
+    (`IGeo7.z7_to_monotonic`). Those runs cross digit rollovers, so they are not
+    `:step` runs, and off the pentagon chains they are exactly the `:rank` runs.
+    Across a pentagon's deleted branch they keep the phantom slots and fill
+    them in the data arrays, which [`checkrangescount`](@ref) detects. Under
+    `:rank` a structural-count reader overcounts an interval by the phantoms
+    inside it (4 116 against 3 432 on the whole res-3 level).
 """
 function idranges(grid::AbstractGrid, ids::AbstractVector; merge::Symbol=:rank)
     merge in (:rank, :step) || throw(ArgumentError(
@@ -557,19 +646,73 @@ function rangeindex(grid::AbstractGrid, ranges::AbstractMatrix)
 end
 
 """
-    validate_ranges(grid::AbstractGrid, ranges::AbstractMatrix, declared::Integer)
+    validate_ranges(grid::AbstractGrid, ranges::AbstractMatrix, declared::Integer;
+        ranges_count = nothing)
 
 Check an `(n, 2)` inclusive-range array against the length the store declares
 for its data arrays, and throw a `DGGSFormatError` naming the failure otherwise.
 
 [`rangeindex`](@ref)'s structural checks, and then the normative one: the total
 cell count is `declared`. That last comparison is what catches an
-expansion-semantics disagreement — an exclusive `stop`, a wrong step, a
-structural rather than existence count — before a single data byte is read.
+expansion-semantics disagreement (an exclusive `stop`, a wrong step) before a
+single data byte is read. `ranges_count` is the store's declared count model,
+one of [`RANGES_COUNTS`](@ref) or `nothing`; see [`checkrangescount`](@ref).
 """
-function validate_ranges(grid::AbstractGrid, ranges::AbstractMatrix, declared::Integer)
-    offsets = last(rangeindex(grid, ranges))
-    checkcount(grid, offsets[end], declared)
+function validate_ranges(grid::AbstractGrid, ranges::AbstractMatrix, declared::Integer;
+    ranges_count::Union{Symbol,Nothing}=nothing)
+    starts, stops, _, offsets = rangeindex(grid, ranges)
+    checkrangescount(grid, starts, stops, offsets[end], declared, ranges_count)
+    return nothing
+end
+
+"""
+    checkrangescount(grid, starts, stops, total, declared, ranges_count)
+
+Check the existence count `total` of the intervals `starts[i]:stops[i]`
+against the `declared` length of the data, under the store's declared count
+model `ranges_count` (one of [`RANGES_COUNTS`](@ref), or `nothing` when the
+store does not say).
+
+An `:existence` store is checked with [`checkcount`](@ref). A `:structural`
+store is read the same way when its intervals hold no phantom slots, because
+the two counts then agree. When they do hold phantom slots, the data arrays
+carry a value for each of them and the axis of cells no longer lines up with
+the data, so this throws `DGGSFormatError(check = :structural_phantom_slots)`;
+reading such a store needs a data view that skips those slots, which this
+reader does not have yet. A store that declares no count model and whose
+length matches only the structural count gets the same error, because that is
+the cause of the mismatch, rather than a bare `:count_mismatch`.
+"""
+function checkrangescount(grid::AbstractGrid, starts::AbstractVector,
+    stops::AbstractVector, total::Integer, declared::Union{Integer,Nothing},
+    ranges_count::Union{Symbol,Nothing})
+    ranges_count === nothing || ranges_count in RANGES_COUNTS || throw(ArgumentError(
+        "a ranges count is one of $(RANGES_COUNTS), not $(repr(ranges_count))"))
+    mismatch = declared !== nothing && total != declared
+    if ranges_count === :structural || (ranges_count === nothing && mismatch)
+        structural = 0
+        for i in eachindex(starts, stops)
+            structural += structural_count_between(grid, starts[i], stops[i])
+        end
+        phantoms = structural - total
+        if phantoms != 0 && (ranges_count === :structural || structural == declared)
+            what = ranges_count === :structural ?
+                   "the store counts its ranges on the structural line" :
+                   "the store declares no `ranges_count`, and its length " *
+                   "$declared is the structural count of its ranges, not the " *
+                   "existence count $total"
+            throw(DGGSFormatError(check=:structural_phantom_slots,
+                declared=declared === nothing ? structural : Int(declared),
+                observed=Int(total),
+                detail="$what. $phantoms positions inside its intervals are " *
+                       "pentagon deleted-branch slots that name no cell of level " *
+                       "$(level(grid)), and the data arrays hold a value for each. " *
+                       "Reading such a store needs a data view that skips those " *
+                       "slots, which this reader does not have yet. Ranges " *
+                       "written with `merge = :step` never cross such a slot."))
+        end
+    end
+    declared === nothing || checkcount(grid, total, declared)
     return nothing
 end
 

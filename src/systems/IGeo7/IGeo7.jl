@@ -26,6 +26,7 @@ const USPoint = GO.UnitSphericalPoint{Float64}
 # Dependency order: identifiers, lattice arithmetic, geometry, adjacency, then
 # the public system interface.
 include("z7.jl")
+include("monotonic.jl")
 include("engine.jl")
 include("z7grid.jl")
 include("gbt.jl")
@@ -45,5 +46,7 @@ export IGeo7System,
     subtree_border_count,
     z7_hex,
     z7_string
+
+public IGEO7_VERT0_LON, IGEO7_ORIENTATION, z7_to_monotonic, z7_from_monotonic
 
 end # module IGeo7

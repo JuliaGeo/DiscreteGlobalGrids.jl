@@ -86,6 +86,11 @@ chart and [`Z7Cell`](@ref) identifiers. Level `r` contains `10·7^r + 2` cells:
 twelve pentagons and `10·7^r - 10` hexagons. Hexagons have seven children and
 pentagons six; child cells can overhang the parent boundary.
 
+Geometry is published in the IGEO7 placement, icosahedron vertex 0 at
+[`IGEO7_VERT0_LON`](@ref) `= 11.2`°E, on the unit (authalic) sphere. Wrap the
+system in [`AuthalicSystem`](@ref) to read and locate cells in geodetic
+latitude, which is how dggal and the IGEO7 DGGS Zarr stores define the grid.
+
 [`cell_area`](@ref) measures the published great-circle corner ring.
 [`equal_area_steradians`](@ref) returns the distinct nominal Snyder-chart area.
 """
@@ -301,7 +306,7 @@ package then reads as great-circle arcs.
 """
 function DGG.cell_boundary(::IGeo7System, c::Z7Cell)
     out = Helpers.empty_small_list(Val(6), USPoint(1.0, 0.0, 0.0))
-    for p in cell_boundary_cartesian(c.id; closed_ring=false)
+    for p in cell_boundary_cartesian(c.id; closed_ring=false, orientation=IGEO7_ORIENTATION)
         out = Helpers.small_push(out, USPoint(p[1], p[2], p[3]))
     end
     return out
@@ -314,7 +319,8 @@ The centre of `c` on the unit sphere, strictly interior to the cell: the cell's
 physical lattice point pulled back through the Snyder chart, and for a pentagon
 exactly the icosahedron vertex it surrounds.
 """
-DGG.cell_centroid(::IGeo7System, c::Z7Cell) = USPoint(_cell_center_xyz(c.id, _geometry_checked(c.id)))
+DGG.cell_centroid(::IGeo7System, c::Z7Cell) =
+    USPoint(from_grid(IGEO7_ORIENTATION, _cell_center_xyz(c.id, _geometry_checked(c.id))))
 
 """
     _analytical_cell_cap(c::Z7Cell) -> SphericalCap
@@ -327,7 +333,7 @@ edges used by `cell_boundary`.
 """
 function _analytical_cell_cap(c::Z7Cell)
     res = _geometry_checked(c.id)
-    p = _cell_center_xyz(c.id, res)
+    p = from_grid(IGEO7_ORIENTATION, _cell_center_xyz(c.id, res))
     return GO.UnitSpherical.SphericalCap(
         USPoint(p[1], p[2], p[3]), @inbounds CELL_CAP_RADIUS[res+1])
 end
@@ -347,7 +353,8 @@ incident cell by ascending Voronoi margin; exact ties may differ across
 floating-point platforms.
 """
 DGG.cellat(g::IGeo7LevelGrid, p::GO.UnitSphericalPoint) =
-    Z7Cell(_xyz_to_z7((Float64(p[1]), Float64(p[2]), Float64(p[3])), g.level))
+    Z7Cell(_xyz_to_z7(to_grid(IGEO7_ORIENTATION,
+        (Float64(p[1]), Float64(p[2]), Float64(p[3]))), g.level))
 
 # `cell_area` uses the boundary ring; `equal_area_steradians` reports the
 # distinct Snyder-chart area.

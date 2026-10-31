@@ -61,6 +61,12 @@ stores each ID; `:ranges` stores intervals; `:implicit` requires a complete leve
 `merge=:step` joins integer-adjacent IDs. `merge=:rank` joins consecutive valid
 cells and requires a rank-aware reader.
 
+An IGEO7 store declares where its cells are and how its ranges count: the
+11.2°E placement (`dggs_vert0_lon`), `igeo7_wgs84_geodetic_conversion = true`
+for a cube on `AuthalicSystem(IGeo7System())` (`false` otherwise), and
+`ranges_count = "structural"` for `merge=:step` or `"existence"` for
+`merge=:rank`. [`dggread`](@ref) applies the first two and checks the third.
+
 `target=:xdggs` writes a store the Python package xdggs opens with
 `xdggs.decode`: the dense encoding, and a grid that xdggs or one of its plugins
 registers, checked by [`require_xdggs_readable`](@ref) before writing. See

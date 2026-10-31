@@ -115,6 +115,13 @@ end
 "angular distance in degrees between a UnitSphericalPoint and an (lon, lat)"
 lldist(p, lon, lat) = ISEA.angdist((p[1], p[2], p[3]), ISEA.lonlat_to_xyz(lon, lat))
 
+# The DGGRID dumps are ISEA7H with vertex 0 at 11.25°E. IGEO7 places vertex 0
+# at 11.2°E and is otherwise the same grid, so a dumped centre moves by the
+# vertex shift in longitude only. That rotation about the pole is exact, and
+# the dumps stay a full-precision oracle for the IGEO7 placement.
+const DGGRID_TO_IGEO7_DLON = I.IGEO7_VERT0_LON - ISEA.ISEA_LON0
+igeo7_lon(lon) = lon + DGGRID_TO_IGEO7_DLON
+
 "Strictly ascending."
 ascending(v) = issorted(v; lt=(<=))
 
@@ -251,21 +258,58 @@ const CLEAN = (0, "")
     @testset "3b. oracle dggrid_res0_centers.csv vs cell_centroid" begin
         g0 = DGG.levelgrid(S, 0)
         worst = 0.0
+        worst_isea = 0.0
         n = 0
         for line in eachline(joinpath(VECTORS, "dggrid_res0_centers.csv"))
             isempty(strip(line)) && continue
             p = split(line, ',')
             b = parse(Int, p[1])
             c = Z7Cell(I.z7_from_string(lpad(string(b), 2, '0')))
-            worst = max(worst, lldist(DGG.cell_centroid(g0, c),
-                parse(Float64, p[2]), parse(Float64, p[3])))
+            lon, lat = parse(Float64, p[2]), parse(Float64, p[3])
+            worst = max(worst, lldist(DGG.cell_centroid(g0, c), igeo7_lon(lon), lat))
+            # the 11.25°E placement is still reachable through the orientation
+            worst_isea = max(worst_isea, ISEA.angdist(
+                ISEA.lonlat_to_xyz(I.cell_center(c.id; orientation=ISEA.ORIENT_IDENTITY)...),
+                ISEA.lonlat_to_xyz(lon, lat)))
             n += 1
         end
         @test n == 12
         @test worst <= 1e-8
+        @test worst_isea <= 1e-8
         # ...and a LOWER guard, so nobody "fixes" the residual: it belongs to
         # the dump's own print precision (~5.9e-9 deg), not to this package.
         @test worst > 1e-10
+        @test worst_isea > 1e-10
+    end
+
+    @testset "3c. IGEO7 placement, vertex 0 at 11.2°E" begin
+        @test I.IGEO7_VERT0_LON == 11.2
+        @test ISEA.Orientation(; vert0_lon=ISEA.ISEA_LON0) === ISEA.ORIENT_IDENTITY
+        @test !I.IGEO7_ORIENTATION.identity
+        g0 = DGG.levelgrid(S, 0)
+        lon, lat = ISEA.xyz_to_lonlat(Tuple(DGG.cell_centroid(g0, pentagon(0, 0))))
+        @test lon ≈ 11.2 atol = 1e-12
+        @test lat ≈ ISEA.ISEA_LAT_HI atol = 1e-12
+        @test I.cell_center(pentagon(0, 0).id) == (lon, lat)
+        # the identity orientation is the historical 11.25°E ISEA7H placement
+        lon0, lat0 = I.cell_center(pentagon(0, 0).id; orientation=ISEA.ORIENT_IDENTITY)
+        @test lon0 ≈ 11.25 atol = 1e-12
+        @test lat0 ≈ lat atol = 1e-12
+        # point location agrees between the system and the module API, and
+        # each placement reads back the id of its own cell centre
+        g9 = DGG.levelgrid(S, 9)
+        t = Tally()
+        for (lon, lat) in ((24.7, 59.4), (-120.3, 37.1), (179.99, -10.0), (0.0, -89.9))
+            z = I.lonlat_to_z7(lon, lat, 9)
+            check!(t, DGG.cellat(g9, lon, lat).id == z, "cellat != lonlat_to_z7 at $((lon, lat))")
+            zi = I.lonlat_to_z7(lon, lat, 9; orientation=ISEA.ORIENT_IDENTITY)
+            p = I.cell_center(zi; orientation=ISEA.ORIENT_IDENTITY)
+            check!(t, I.lonlat_to_z7(p..., 9; orientation=ISEA.ORIENT_IDENTITY) == zi,
+                "11.25 frame does not decode its own centre at $((lon, lat))")
+            q = DGG.cell_centroid(g9, Z7Cell(z))
+            check!(t, DGG.cellat(g9, q) == Z7Cell(z), "centroid not in own cell at $((lon, lat))")
+        end
+        @test verdict(t) == CLEAN
     end
 
     # =======================================================================
@@ -289,8 +333,8 @@ const CLEAN = (0, "")
             npos = 0
             for (z, lon, lat) in rows
                 c = Z7Cell(z)
-                worst = max(worst, lldist(DGG.cell_centroid(grid, c), lon, lat))
-                DGG.cellat(grid, lon, lat) == c || (ndecode += 1)
+                worst = max(worst, lldist(DGG.cell_centroid(grid, c), igeo7_lon(lon), lat))
+                DGG.cellat(grid, igeo7_lon(lon), lat) == c || (ndecode += 1)
                 # the published cell is a cell of this grid, at this level
                 DGG.globalindex(grid, c) === nothing && (npos += 1)
             end

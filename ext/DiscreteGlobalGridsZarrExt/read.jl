@@ -256,7 +256,10 @@ function describedgrid(desc::StoreDescription)
         declared=desc.gridname,
         detail="the store declares no refinement level, and a stored cell axis " *
                "is read at one level; pass `description` to assert it."))
-    return DiscreteGlobalGrids.levelgrid(system, desc.level)
+    # The declared placement is checked and a declared geodetic latitude
+    # applied here, so the axis's geometry is where the store says its cells are.
+    return DiscreteGlobalGrids.levelgrid(
+        DiscreteGlobalGrids.describedsystem(desc, system), desc.level)
 end
 
 # --- the axis length --------------------------------------------------------
@@ -324,7 +327,8 @@ function storedaxis(enc::RangesEncoding, grid, group, snap, desc, n, validate, s
     # Kilobytes even for a store of tens of millions of cells, and the axis is
     # arithmetic over it from there: `(n, 2)` as Zarr declares it, which is
     # `(2, n)` in Julia's own order.
-    return cellaxis(enc, grid, permutedims(Array(z)); declared_length=n)
+    return cellaxis(enc, grid, permutedims(Array(z)); declared_length=n,
+        ranges_count=desc.ranges_count)
 end
 
 storedaxis(enc::ImplicitEncoding, grid, group, snap, desc, n, validate, samples) =

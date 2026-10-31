@@ -207,7 +207,7 @@ function _write(identifier, opengroup, src; encoding=:auto,
         # The description first: the manifest marker records the level and the
         # grid name the axis was validated at, and those are the description's
         # to say, not the plan's.
-        desc = _description(system(grid), level(grid), enc, layers)
+        desc = _description(system(grid), level(grid), enc, layers, merge)
         target === :xdggs && DGG.require_xdggs_readable(desc)
         arrays = _arrayplan(enc, coord, layers, celldim, plan, manifest, desc)
         snapshot = StoreSnapshot(identifier=identifier, attrs=_groupattrs(src),
@@ -772,13 +772,28 @@ function _layername(A)
     return "layer"
 end
 
-function _description(sys, lev, enc, layers)
-    name, ref = _gridname(sys)
+function _description(sys, lev, enc, layers, merge::Symbol=:step)
+    # Placement and latitude are declared from the system, so a reader puts the
+    # cells where this one has them: `AuthalicSystem(IGeo7System())` is stored
+    # as `igeo7` with geodetic latitude.
+    base, orientation, conversion = DGG.storedsystem(sys)
+    name, ref = _gridname(base)
     return StoreDescription(gridname=name, system=ref.system, idscheme=ref.idscheme,
         level=lev, encoding=enc, coordinate=_coordinatename(enc),
         spatial_dimension=SPATIAL_DIMENSION,
-        variables=String[n for (n, _) in layers])
+        variables=String[n for (n, _) in layers],
+        orientation=orientation, geodetic_conversion=conversion,
+        ranges_count=_ranges_count(name, enc, merge))
 end
+
+# How the stored intervals count, for a reader that needs to know. Z7 runs of
+# integer-adjacent ids (`:step`) never cross a pentagon's deleted branch, so
+# both counts agree and the store declares the structural line the published
+# IGEO7 stores use. Runs of consecutive cells (`:rank`) can cross one and count
+# existing cells only.
+_ranges_count(name, enc, merge) = nothing
+_ranges_count(name, ::RangesEncoding, merge) =
+    name == "igeo7" ? (merge === :step ? :structural : :existence) : nothing
 
 _coordinatename(::RangesEncoding) = CELL_RANGES_ARRAY
 _coordinatename(::DenseEncoding) = CELL_IDS_ARRAY

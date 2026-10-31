@@ -291,7 +291,7 @@ end
 
 # `Centroid()` buys a working set, so the law is per cell rather than per
 # sweep: one window per task, whatever the sweep's length. The two sequential
-# fixtures are 47,659 and 117,649 cells — 2.47x apart, and both past the
+# fixtures are 47,651 and 117,649 cells — 2.47x apart, and both past the
 # 16,384-slot cap — so both pay for one window of exactly the same size, and a
 # sweep that grew its cache with the collection, or rebuilt it per cell,
 # differs here. The threaded sweep then pays one such window per task and no
@@ -301,7 +301,9 @@ end
     sys = DGG.IGeo7System()
     coverage = CellVector(query(sys, MultiOrderCoverage(TILE); level=10))
     sub = CellVector(rooted_pg(sys, 1, 6))
-    @test length(coverage) == 47659
+    # 47 651 under the IGEO7 placement (vertex 0 at 11.2°E); the same tile
+    # shifted 0.05° west gives the 47 659 cells of the 11.25°E placement.
+    @test length(coverage) == 47651
     @test length(sub) == 7^6
     perslot = sizeof(Int) + sizeof(typeof(cell_centroid(sub.grid, sub[1])))
     window = 16384 * perslot

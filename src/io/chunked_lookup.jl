@@ -48,7 +48,7 @@ import ..DiscreteGlobalGrids.CellLookups: AbstractCellLookup, _subset,
 import ..Encodings
 using ..Encodings: CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding,
     cellaxis, idrank, idselect, idcount_between, idvalid, idcell, idtype, idlevel,
-    rangeindex, checkcount, storedid
+    rangeindex, checkcount, checkrangescount, storedid
 # From `errors.jl`, which the including module reads before this file.
 import ..DGGSFormatError
 
@@ -302,7 +302,8 @@ end
 encoding(::ChunkedCellVector{<:Any,<:AbstractGrid,<:RangesSource}) = RangesEncoding()
 
 """
-    cellaxis(RangesEncoding(), grid, ranges::AbstractMatrix; declared_length=nothing)
+    cellaxis(RangesEncoding(), grid, ranges::AbstractMatrix; declared_length=nothing,
+        ranges_count=nothing)
 
 Build the axis of a `compression: "ranges"` store from its `(n, 2)` array of
 inclusive `[start, stop]` raw ids alone. Zero data IO: the length, every id, and
@@ -311,13 +312,16 @@ every index are closed-form rank/select arithmetic.
 The rows are checked for shape and disjointness as they are indexed, and
 `declared_length`, when given, against the closed-form count — the normative
 check that the axis and the data agree, and the one that catches an
-expansion-semantics disagreement before a byte is read.
+expansion-semantics disagreement before a byte is read. `ranges_count` is the
+count model the store declares (`:existence`, `:structural` or `nothing`), see
+[`checkrangescount`](@ref).
 """
 function Encodings.cellaxis(::RangesEncoding, grid::AbstractGrid,
-    ranges::AbstractMatrix; declared_length::Union{Integer,Nothing}=nothing)
+    ranges::AbstractMatrix; declared_length::Union{Integer,Nothing}=nothing,
+    ranges_count::Union{Symbol,Nothing}=nothing)
     starts, stops, rstart, offsets = rangeindex(grid, ranges)
     total = offsets[end]
-    declared_length === nothing || checkcount(grid, total, declared_length)
+    checkrangescount(grid, starts, stops, total, declared_length, ranges_count)
     return ChunkedCellVector(grid, RangesSource(starts, stops, rstart, offsets), total)
 end
 

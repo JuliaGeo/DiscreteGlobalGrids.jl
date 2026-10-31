@@ -188,6 +188,33 @@ point) carries no string machinery.
 end
 
 # ---------------------------------------------------------------------------
+# IGEO7 placement on the globe
+# ---------------------------------------------------------------------------
+
+"""
+    IGEO7_VERT0_LON
+
+Longitude of icosahedron vertex 0 under IGEO7: `11.2` degrees east, as used by
+dggal, dggrid4py and the DGGS Zarr stores they write (`dggs_vert0_lon`). The
+shared ISEA grid frame keeps the historical `11.25` ([`ISEA_LON0`](@ref)), and
+[`IGEO7_ORIENTATION`](@ref) rotates between the two. Cell ids do not depend on
+this value, but the location of every cell does: the same id under `11.25`
+lies 0.05 degrees further east.
+"""
+const IGEO7_VERT0_LON = 11.2
+
+"""
+    IGEO7_ORIENTATION
+
+[`Orientation`](@ref) of the IGEO7 placement, vertex 0 at
+[`IGEO7_VERT0_LON`](@ref). This is the default of every lon/lat entry point in
+this module and the orientation [`IGeo7System`](@ref) publishes its geometry
+in. Pass `orientation = ORIENT_IDENTITY` to get the 11.25°E placement of the
+DGGRID ISEA7H default instead.
+"""
+const IGEO7_ORIENTATION = Orientation(; vert0_lon=IGEO7_VERT0_LON)
+
+# ---------------------------------------------------------------------------
 # Public encode API (design Section 4.1)
 # ---------------------------------------------------------------------------
 
@@ -201,7 +228,7 @@ function _cell_center_xyz(z::UInt64, res::Int)
 end
 
 """
-    cell_center(z7; orientation=ORIENT_IDENTITY) -> (lon, lat)
+    cell_center(z7; orientation=IGEO7_ORIENTATION) -> (lon, lat)
 
 Center of `z7` as `(longitude, latitude)` in degrees. Pentagon centers are
 icosahedron vertices; hexagon centers are obtained from the lattice point via
@@ -210,22 +237,23 @@ the slot map and Snyder inverse. `orientation` rotates the result.
 Throws [`InvalidZ7Error`](@ref) for invalid ids and for resolution-20 ids
 (valid for prefix arithmetic, no geometry).
 """
-function cell_center(z7::UInt64; orientation::Orientation=ORIENT_IDENTITY)
+function cell_center(z7::UInt64; orientation::Orientation=IGEO7_ORIENTATION)
     res = _geometry_checked(z7)
     return xyz_to_lonlat(from_grid(orientation, _cell_center_xyz(z7, res)))
 end
 cell_center(z7::Unsigned; kwargs...) = cell_center(UInt64(z7); kwargs...)
 
 """
-    cell_boundary_cartesian(z7; closed_ring=true, orientation=ORIENT_IDENTITY)
+    cell_boundary_cartesian(z7; closed_ring=true, orientation=IGEO7_ORIENTATION)
         -> Helpers.SmallList{7,NTuple{3,Float64}}
 
 Boundary of `z7` as unit-sphere `xyz` tuples: six corners for a hexagon and
-five for a pentagon. Rings wind counterclockwise (seen from outside the sphere)
-under the identity orientation; `closed_ring=true` repeats the first corner.
+five for a pentagon. Rings wind counterclockwise seen from outside the sphere
+(an orientation is a rotation and keeps the winding); `closed_ring=true`
+repeats the first corner.
 """
 function cell_boundary_cartesian(z7::UInt64; closed_ring::Bool=true,
-    orientation::Orientation=ORIENT_IDENTITY)
+    orientation::Orientation=IGEO7_ORIENTATION)
     res = _geometry_checked(z7)
     base = z7_base_cell(z7)
     pent = z7_is_pentagon(z7)
@@ -264,13 +292,13 @@ cell_boundary_cartesian(z7::Unsigned; kwargs...) =
     cell_boundary_cartesian(UInt64(z7); kwargs...)
 
 """
-    cell_boundary(z7; closed_ring=true, orientation=ORIENT_IDENTITY)
+    cell_boundary(z7; closed_ring=true, orientation=IGEO7_ORIENTATION)
         -> Vector{NTuple{2,Float64}}
 
 [`cell_boundary_cartesian`](@ref) in `(lon, lat)` degrees **[contract]**.
 """
 function cell_boundary(z7::UInt64; closed_ring::Bool=true,
-    orientation::Orientation=ORIENT_IDENTITY)
+    orientation::Orientation=IGEO7_ORIENTATION)
     cart = cell_boundary_cartesian(z7; closed_ring, orientation)
     return NTuple{2,Float64}[xyz_to_lonlat(p) for p in cart]
 end
@@ -430,7 +458,7 @@ The three corner bases of Snyder face `f`, nearest-first to the unit vector
 end
 
 """
-    lonlat_to_z7(lon, lat, res; orientation=ORIENT_IDENTITY) -> UInt64
+    lonlat_to_z7(lon, lat, res; orientation=IGEO7_ORIENTATION) -> UInt64
 
 Return the Z7 cell containing `(lon, lat)` in degrees at resolution `res`.
 The containing face's corner bases are tried nearest-first, with the rounding
@@ -439,7 +467,7 @@ tie fallback applied only after ordinary decoding fails.
 Throws [`InvalidZ7Error`](@ref) (`:resolution_range`) for `res ∉ 0:19`.
 """
 function lonlat_to_z7(lon::Real, lat::Real, res::Integer;
-    orientation::Orientation=ORIENT_IDENTITY)
+    orientation::Orientation=IGEO7_ORIENTATION)
     0 <= res <= MAX_RESOLUTION || throw(InvalidZ7Error(
         :resolution_range, zero(UInt64), _z7_int(res), MAX_RESOLUTION))
     return _xyz_to_z7(to_grid(orientation, lonlat_to_xyz(Float64(lon), Float64(lat))), Int(res))
@@ -476,7 +504,7 @@ function _xyz_to_z7(p::NTuple{3,Float64}, r::Int)
 end
 
 """
-    lonlat_to_cell(lon, lat, res; orientation=ORIENT_IDENTITY) -> UInt64
+    lonlat_to_cell(lon, lat, res; orientation=IGEO7_ORIENTATION) -> UInt64
 
 Alias of [`lonlat_to_z7`](@ref): the Z7 `UInt64` *is* the cell id
 (design Section 3).
@@ -682,7 +710,7 @@ function index_to_cell(index::Integer, res::Integer)
 end
 
 """
-    lonlat_to_index(lon, lat, res; orientation=ORIENT_IDENTITY) -> Int
+    lonlat_to_index(lon, lat, res; orientation=IGEO7_ORIENTATION) -> Int
 
 Dense full-world index of the res-`res` cell containing `(lon, lat)`
 (degrees) — [`lonlat_to_z7`](@ref) composed with [`cell_to_index`](@ref),

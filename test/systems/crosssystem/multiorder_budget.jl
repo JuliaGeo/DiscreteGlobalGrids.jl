@@ -530,10 +530,19 @@ end
     end
 end
 
+# The IGeo7 rows were placed against the 11.25°E ISEA placement. IGEO7 puts
+# vertex 0 at 11.2°E, the same grid turned 0.05° west about the pole, so the
+# rows move with it and the speck stays in the overhang annulus it was placed
+# in. Unshifted, the speck lands elsewhere relative to the cells and the
+# covering misses 1 (Alps) and 2 (California) of its 49 sample points.
+const IGEO7_DLON = DGG.IGeo7.IGEO7_VERT0_LON - DGG.ISEA.ISEA_LON0
+
 @testset "a refusal in one part never loses another: $label" for
         (label, sys, bx, by, bw, sx, sy) in
-        (("IGeo7 Alps", DGG.IGeo7System(), 0.0, 40.0, 8.0, 10.05, 46.05),
-         ("IGeo7 California", DGG.IGeo7System(), -125.0, 32.0, 8.0, -119.95, 30.05),
+        (("IGeo7 Alps", DGG.IGeo7System(), 0.0 + IGEO7_DLON, 40.0, 8.0,
+             10.05 + IGEO7_DLON, 46.05),
+         ("IGeo7 California", DGG.IGeo7System(), -125.0 + IGEO7_DLON, 32.0, 8.0,
+             -119.95 + IGEO7_DLON, 30.05),
          ("A5 Alps", DGG.A5System(), 4.0, 40.0, 5.0, 10.05, 46.05),
          ("A5 south", DGG.A5System(), -6.0, -58.0, 5.0, 0.05, -59.95),
          ("H3 south", DGG.H3System(), -6.0, -28.0, 6.0, 0.05, -29.95))

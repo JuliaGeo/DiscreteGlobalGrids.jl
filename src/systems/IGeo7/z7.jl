@@ -54,7 +54,7 @@ Reasons: `:base_range`, `:bad_padding`, `:invalid_index`, `:deleted_digit`,
 `:digit_level`, `:child_digit`, `:no_children`, `:no_parent`, `:parent_res`,
 `:bad_length`, `:bad_base_char`, `:bad_digit_char`, `:bad_hex`,
 `:res20_geometry`, `:resolution_range`, `:descendant_res`,
-`:no_child_geometry`.
+`:no_child_geometry`, `:monotonic_res`, `:monotonic_range`.
 
 `input` is nonempty only for codec failures.
 """
@@ -135,6 +135,12 @@ function Base.showerror(io::IO, e::InvalidZ7Error)
         print(io, "cell ", _z7_hex(e.value), " is at resolution ", e.limit,
             " (MAX_RESOLUTION), so its children would be resolution ",
             Z7_MAX_RESOLUTION, " and have no geometry")
+    elseif r === :monotonic_res
+        print(io, "Z7 index ", _z7_hex(e.value), " is at resolution ", e.got,
+            ", not the requested ", e.limit, ", so it has no position on that ",
+            "resolution's base-7 line")
+    elseif r === :monotonic_range
+        print(io, "base-7 line position must be in 0:", e.limit, ", got ", e.got)
     else
         print(io, "invalid Z7 value ", _z7_hex(e.value), " (", r, ", got ", e.got,
             ", limit ", e.limit, ")")

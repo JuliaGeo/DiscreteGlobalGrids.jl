@@ -168,6 +168,8 @@ attrs → description → lookup; writing is lookup → description → attrs.
     names neither.
   - `variables`: the data variable names, or `nothing` when unknown.
   - `ellipsoid`, `orientation`, `geodetic_conversion`: grid parameters as read.
+  - `ranges_count`: how a ranges store counts its intervals, `:existence` or
+    `:structural` (see `Encodings.RANGES_COUNTS`).
   - `provenance`: verbatim source attributes keyed by convention name, enough
     to regenerate a value-identical store.
 
@@ -187,6 +189,7 @@ Base.@kwdef struct StoreDescription
     ellipsoid::Union{Ellipsoid,Nothing} = nothing
     orientation::Union{GridOrientation,Nothing} = nothing
     geodetic_conversion::Union{Bool,Nothing} = nothing
+    ranges_count::Union{Symbol,Nothing} = nothing
     provenance::Dict{String,Any} = Dict{String,Any}()
 end
 

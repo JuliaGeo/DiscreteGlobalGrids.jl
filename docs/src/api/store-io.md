@@ -126,6 +126,9 @@ describe_store
 Detection
 DiscreteGlobalGrids.Ellipsoid
 DiscreteGlobalGrids.GridOrientation
+DiscreteGlobalGrids.IGEO7_GRID_ORIENTATION
+DiscreteGlobalGrids.describedsystem
+DiscreteGlobalGrids.storedsystem
 DiscreteGlobalGrids.ellipsoid
 DiscreteGlobalGrids.DEFAULT_ELLIPSOID
 DiscreteGlobalGrids.ellipsoid_attrs
@@ -196,6 +199,9 @@ DiscreteGlobalGrids.encodingname
 DiscreteGlobalGrids.idrank
 DiscreteGlobalGrids.idselect
 DiscreteGlobalGrids.idcount_between
+DiscreteGlobalGrids.structural_count_between
+DiscreteGlobalGrids.RANGES_COUNTS
+DiscreteGlobalGrids.checkrangescount
 DiscreteGlobalGrids.idvalid
 DiscreteGlobalGrids.idcell
 ```

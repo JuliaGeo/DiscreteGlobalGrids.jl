@@ -146,6 +146,84 @@ function gridreference(canonical::AbstractString; store="", conventions=String[]
 end
 
 # ===========================================================================
+# Placement and latitude of the cells a store names
+# ===========================================================================
+
+"""
+    IGEO7_GRID_ORIENTATION
+
+The [`GridOrientation`](@ref) of IGEO7 cells: vertex 0 at
+`IGeo7.IGEO7_VERT0_LON` (11.2°E) and the standard ISEA latitude, azimuth 0.
+This is the placement [`IGeo7System`](@ref) publishes its geometry in, the one
+an IGEO7 store is checked against on read, and the one it declares on write.
+"""
+const IGEO7_GRID_ORIENTATION = GridOrientation(vert0_lon=IGeo7.IGEO7_VERT0_LON,
+    vert0_lat=ISEA.ISEA_LAT_HI, vert0_azimuth=0.0)
+
+"""
+    describedsystem(desc::StoreDescription, system) -> AbstractHierarchicalGridSystem
+
+The system a store's cells are read in. `system` is what the store's grid name
+resolves to in [`GRID_REFERENCE`](@ref). For IGEO7, the placement the store
+declares is checked against [`IGEO7_GRID_ORIENTATION`](@ref), and a store that
+declares geodetic latitude (`igeo7_wgs84_geodetic_conversion = true`) is read
+through [`AuthalicSystem`](@ref) on WGS84, so that its geometry and point
+location are in geodetic latitude.
+
+A declared placement other than IGEO7's throws a `DGGSFormatError`
+(`check = :orientation_mismatch`). The ids of such a store name cells at other
+locations, and reading them as IGEO7 would move every cell without an error. A
+store that declares neither placement nor geodetic latitude is read on the
+authalic sphere, as before. [`storedsystem`](@ref) is the inverse on write.
+"""
+describedsystem(::StoreDescription, system) = system
+
+function describedsystem(desc::StoreDescription, system::IGeo7System)
+    _checkorientation(desc.orientation, IGEO7_GRID_ORIENTATION, desc.gridname)
+    desc.geodetic_conversion === true || return system
+    return AuthalicSystem(system)
+end
+
+# The declared vertex has to be the system's own. Stores print their floats
+# with limited precision (the published IGEO7 stores carry 58.28252559 for the
+# latitude), so the comparison allows for that and for nothing more.
+function _checkorientation(declared::Union{GridOrientation,Nothing},
+    own::GridOrientation, name)
+    declared === nothing && return nothing
+    for (f, tol) in ((:vert0_lon, 1e-9), (:vert0_lat, 1e-8), (:vert0_azimuth, 1e-9))
+        d = getfield(declared, f)
+        d === nothing && continue
+        o = getfield(own, f)
+        isapprox(d, o; atol=tol) || throw(DGGSFormatError(
+            check=:orientation_mismatch, declared=d, observed=o,
+            detail="the store declares `$f = $d`, while `$name` cells are placed " *
+                   "at `$f = $o`. The same ids name other locations under the " *
+                   "declared placement, so they are not read as `$name` cells."))
+    end
+    return nothing
+end
+
+"""
+    storedsystem(sys) -> (system, orientation, geodetic_conversion)
+
+What a writer declares for cells of `sys`: the registered system its grid name
+stands for, the cells' placement, and whether their geometry is in geodetic
+latitude. For IGEO7 the placement is [`IGEO7_GRID_ORIENTATION`](@ref), and
+`AuthalicSystem(IGeo7System())` on WGS84 is written as `"igeo7"` with
+`geodetic_conversion = true`. Other systems declare neither (`nothing`). The
+inverse of [`describedsystem`](@ref).
+"""
+storedsystem(sys) = (sys, nothing, nothing)
+storedsystem(sys::IGeo7System) = (sys, IGEO7_GRID_ORIENTATION, false)
+
+function storedsystem(sys::AuthalicSystem{IGeo7System})
+    sys.transform == Helpers.WGS84_AUTHALIC || throw(ArgumentError(
+        "an IGEO7 store declares geodetic latitude on WGS84 only " *
+        "(`igeo7_wgs84_geodetic_conversion`); $sys uses another ellipsoid."))
+    return (parent(sys), IGEO7_GRID_ORIENTATION, true)
+end
+
+# ===========================================================================
 # Attribute plumbing
 # ===========================================================================
 
@@ -184,6 +262,18 @@ function _asbool(x, key, store, convs)
     throw(DGGSFormatError(check=:invalid_attribute_type, store=store,
         conventions=convs, declared=key, observed=x,
         detail="`$key` must be a boolean."))
+end
+
+# How a ranges store counts its intervals (`Encodings.RANGES_COUNTS`).
+_ranges_count(::Nothing, store, convs) = nothing
+
+function _ranges_count(x, store, convs)
+    v = _asstring(x, "ranges_count", store, convs)
+    c = Symbol(lowercase(strip(v)))
+    c in RANGES_COUNTS && return c
+    throw(DGGSFormatError(check=:unknown_ranges_count, store=store,
+        conventions=convs, declared=v,
+        detail="`ranges_count` is one of " * join(String.(RANGES_COUNTS), ", ") * "."))
 end
 
 """
@@ -384,6 +474,8 @@ function decode(c::ZarrDGGSConvention, s::StoreSnapshot, ::Detection)
         rotation_pattern=_asstring(get(dggs, "rotation_pattern", nothing),
             "rotation_pattern", store, convs))
 
+    ranges_count = _ranges_count(get(dggs, "ranges_count", nothing), store, convs)
+
     return StoreDescription(gridname=canonical, system=ref.system, idscheme=scheme,
         level=level, encoding=encoding, coordinate=coordinate,
         spatial_dimension=spatial,
@@ -391,6 +483,7 @@ function decode(c::ZarrDGGSConvention, s::StoreSnapshot, ::Detection)
                   arrays_on(s, spatial; exclude=(coordinate,)),
         ellipsoid=parse_ellipsoid(get(dggs, "ellipsoid", nothing); store, conventions=convs),
         orientation=_orientation_or_nothing(orientation),
+        ranges_count=ranges_count,
         provenance=Dict{String,Any}(conventionname(c) => deepcopy(dggs)))
 end
 
@@ -914,6 +1007,8 @@ function encode!(c::ZarrDGGSConvention, s::StoreSnapshot, d::StoreDescription)
     d.gridname == "healpix" && d.idscheme !== nothing &&
         (dggs["indexing_scheme"] = String(d.idscheme))
     d.ellipsoid === nothing || (dggs["ellipsoid"] = ellipsoid_attrs(d.ellipsoid))
+
+    d.ranges_count === nothing || (dggs["ranges_count"] = String(d.ranges_count))
 
     if d.orientation !== nothing
         o = d.orientation

@@ -230,12 +230,30 @@ end
 """
     ORIENT_IDENTITY
 
-Identity orientation — the standard ISEA IGEO7 placement of
-[`VERTICES`](@ref) (vertex 0 at 11.25°E, 58.28252559°N). Default for every
-geometric entry point; boundary rings wind counterclockwise seen from
-outside under it.
+Identity orientation, the standard ISEA placement of [`VERTICES`](@ref)
+(vertex 0 at 11.25°E, 58.28252559°N), which is also the DGGRID ISEA7H default.
+IGeo7 uses `IGeo7.IGEO7_ORIENTATION` (vertex 0 at 11.2°E) instead; pass this
+constant to reproduce the 11.25°E placement. Boundary rings wind
+counterclockwise seen from outside under any orientation.
 """
 const ORIENT_IDENTITY = Orientation(_IDENTITY_R)
+
+"""
+    Orientation(; vert0_lon) -> Orientation
+
+Rotation about the polar axis which places icosahedron vertex 0 at
+`vert0_lon` degrees east instead of the grid frame's [`ISEA_LON0`](@ref).
+Vertex latitude and azimuth keep their standard ISEA values, so only longitude
+changes between the world and the grid frame. `vert0_lon = ISEA_LON0` returns
+an orientation equal to [`ORIENT_IDENTITY`](@ref).
+"""
+function Orientation(; vert0_lon::Real)
+    δ = Float64(vert0_lon) - ISEA_LON0
+    iszero(δ) && return ORIENT_IDENTITY
+    c, s = cosd(δ), sind(δ)
+    # `to_grid` turns the world frame by -δ about z, `from_grid` turns it back.
+    return Orientation((c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0))
+end
 
 """
     to_grid(orientation, p) -> NTuple{3,Float64}

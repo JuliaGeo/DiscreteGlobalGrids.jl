@@ -105,10 +105,15 @@ else
             arrays=arrays)
     end
 
+    # An IGEO7 store declares where its cells are: the 11.2°E placement, and
+    # authalic (not geodetic) latitude for a plain `IGeo7System`. A ranges
+    # store written with the default `merge = :step` counts structurally.
     described(enc, coordinate) = DGG.StoreDescription(gridname="igeo7",
         system=SYS, idscheme=:z7int, level=LEVEL, encoding=enc,
         coordinate=coordinate, spatial_dimension="cell_ids",
-        variables=["elevation", "slope"])
+        variables=["elevation", "slope"],
+        orientation=DGG.IGEO7_GRID_ORIENTATION, geodetic_conversion=false,
+        ranges_count=enc isa DGG.RangesEncoding ? :structural : nothing)
 
     @testset "an eligible axis is written as ranges and reads back as itself" begin
         # The fixpoint: attrs -> description must return the description the

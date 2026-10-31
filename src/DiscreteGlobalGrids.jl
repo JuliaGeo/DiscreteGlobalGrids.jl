@@ -207,7 +207,8 @@ include("io/chunked_lookup.jl")
 using .Encodings: CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding,
     ENCODING_REGISTRY, encodingname, register_encoding!, cellaxis,
     idrank, idselect, idcount_between, idvalid, idcell, idtype,
-    idranges, write_eligible, validate_ranges
+    idranges, write_eligible, validate_ranges, RANGES_COUNTS, structural_count_between,
+    checkrangescount
 using .ChunkedLookups: ChunkManifest, nchunks, chunkof, chunkbounds,
     ChunkedCellVector, axisindex, chunkmanifest, ChunkedCellLookup
 

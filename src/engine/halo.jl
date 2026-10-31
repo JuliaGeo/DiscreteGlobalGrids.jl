@@ -322,7 +322,7 @@ const _SPAN_ALL = 2
 How much of the index block `lo:hi` of the subset's own complete level the
 subset holds: `_SPAN_NONE`, `_SPAN_SOME` or `_SPAN_ALL`.
 
-The block is a node's [`descendant_range`](@ref DiscreteGlobalGrids.descendant_range). Classification costs
+The block is a node's [`descendant_range`](@ref DGG.descendant_range). Classification costs
 O(log(number of windows)) for [`CellVector`](@ref) and O(log(number of cells))
 for [`PartialGrid`](@ref), without scanning the block.
 
@@ -658,7 +658,7 @@ end
 
 Every cell of the target level in index order, the descendants skipped and
 the rest tested. `O(1)` memory and canonical by construction, but `O(ncells)`
-time — the price of a system with no [`descendant_range`](@ref DiscreteGlobalGrids.descendant_range) to prune by, and
+time — the price of a system with no [`descendant_range`](@ref DGG.descendant_range) to prune by, and
 A5 is the only one. See the comment above this type for what a dedicated A5
 engine would have to prove first.
 """
@@ -739,7 +739,7 @@ subset's span can still be emitted as a halo cell. Nodes are descended only when
 the subset touches them or one of their same-level neighbours.
 
 `O(depth)` memory beyond the subset's own storage. A system with no
-[`descendant_range`](@ref DiscreteGlobalGrids.descendant_range) gets [`ScanHaloEngine`](@ref), for the same reason it
+[`descendant_range`](@ref DGG.descendant_range) gets [`ScanHaloEngine`](@ref), for the same reason it
 does at a subtree.
 
 This is not a system extension point because its subject is an arbitrary

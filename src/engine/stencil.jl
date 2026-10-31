@@ -190,7 +190,26 @@ neighbors(grid::AbstractGrid, p::Int, k::Integer = 1;
 
 ring(grid::AbstractGrid, p::Int, k::Integer;
         connectivity::Connectivity = Vertex()) =
-    _indices(grid, ring(grid, cellindex(grid, p), Int(k); connectivity))
+    _ring_indices(grid, grid, cellindex(grid, p), Int(k), connectivity)
+
+# The one-ring is `neighbors(grid, c, 1)` by contract (ring 1 is the whole
+# disc) and arrives in the system's fixed-capacity `SmallVector`, which the
+# conversion keeps; a wider ring's capacity depends on the run-time `k`, so its
+# container is not a compile-time fact and the conversion pins it to a
+# `Vector{Int}` instead of letting the answer's type depend on `k`.
+@inline function _ring_indices(sub, grid, c::AbstractCellIndex, k::Int, connectivity::Connectivity)
+    k == 1 && return _indices(sub, neighbors(grid, c, 1; connectivity))
+    return _vector_indices(sub, ring(grid, c, k; connectivity))
+end
+
+function _vector_indices(sub, cells)
+    out = Int[]
+    for nb in cells
+        p = localindex(sub, nb)
+        p === nothing || push!(out, p)
+    end
+    return out
+end
 
 """
     neighbors(sub::PartialGrid, p::Int, k = 1; connectivity = Vertex()) -> AbstractVector{Int}
@@ -214,7 +233,7 @@ form's out-of-set check to decide.
 
 ring(pg::PartialGrid, p::Int, k::Integer;
         connectivity::Connectivity = Vertex()) =
-    _indices(pg, ring(pg.complete, cellindex(pg, p), Int(k); connectivity))
+    _ring_indices(pg, pg.complete, cellindex(pg, p), Int(k), connectivity)
 
 @inline neighbors(cv::CellVector, p::Int, k::Integer = 1;
         connectivity::Connectivity = Vertex()) =
@@ -222,7 +241,7 @@ ring(pg::PartialGrid, p::Int, k::Integer;
 
 ring(cv::CellVector, p::Int, k::Integer;
         connectivity::Connectivity = Vertex()) =
-    _indices(cv, ring(cv.grid, cv[p], Int(k); connectivity))
+    _ring_indices(cv, cv.grid, cv[p], Int(k), connectivity)
 
 # The subtree's index block, or `nothing` when this grid is not one. The
 # count decides it: the ids are validated ascending and inside the root's range,

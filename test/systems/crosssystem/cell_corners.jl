@@ -101,7 +101,7 @@ end
             grid = levelgrid(sys, LEVEL)
             c = cellindex(grid, 1)
             cell_corners(grid, c)
-            @test @allocated(cell_corners(grid, c)) == 0 skip = VERSION < v"1.12"
+            @test @allocated(cell_corners(grid, c)) == 0 broken = VERSION < v"1.12"
         end
     end
 end

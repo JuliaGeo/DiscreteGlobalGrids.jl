@@ -4,6 +4,7 @@ using Test
 import Distributed
 import DiscreteGlobalGrids as DGG
 import GlobalRegridding as GR
+import GridInterface as GrI
 import Metis
 import KaHyPar_jll
 import Scotch
@@ -17,10 +18,10 @@ const Fixtures = Main.PartitionWorkerFixtures
 @testset "Copernicus regridding partition metadata" begin
     system = DGG.CopernicusDEMSystem(90)
     tile = DGG.cellat(DGG.levelgrid(system, 0), 0.5, 0.5)
-    source = DGG.DGGSpace(DGG.subtree(system, tile, 1); chunklevel=0)
+    source = GrI.mockchunks(DGG.subtree(system, tile, 1), GrI.LevelChunks(0))
     targetsystem = DGG.IGeo7System()
     root = DGG.cellat(DGG.levelgrid(targetsystem, 4), 0.5, 0.5)
-    destination = DGG.DGGSpace(DGG.subtree(targetsystem, root, 6); chunklevel=5)
+    destination = GrI.mockchunks(DGG.subtree(targetsystem, root, 6), GrI.LevelChunks(5))
     plan = GR.ChunkedPlan(GR.NearestCell(), GR.Weighted(1.0), destination, source;
         dependencies=true)
     relation = GR.dependencies(plan)
@@ -28,7 +29,7 @@ const Fixtures = Main.PartitionWorkerFixtures
     assignment = DGG.partition(problem, 2; algorithm=DGG.MetisPartition())
     @test GR.ncells(source) == 1_440_000
     @test problem.sourceweights == [GR.ncells(source)]
-    @test length(problem.ids) == GR.nchunks(destination) == 7
+    @test length(problem.ids) == GR._nchunks(destination) == 7
     @test problem.reads == [collect(GR.sourcesof(relation, row)) for row in 1:7]
     @test GR.dependencies(plan) === relation
     @test sort(reduce(vcat, [DGG.partchunks(assignment, p) for p in 1:2])) == 1:7

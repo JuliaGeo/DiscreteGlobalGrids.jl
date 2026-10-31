@@ -33,7 +33,7 @@ the level of [`rootcells`](@ref) and `last(levels(sys))` is
 A system without an intrinsic depth limit must still bound the range at the
 deepest level supported by its id encoding and `Int` cell counts.
 """
-function levels end
+levels
 
 """
     levelgrid(sys::AbstractHierarchicalGridSystem, l::Integer) -> AbstractGrid
@@ -55,7 +55,7 @@ one must not be O(cells).
 `l` outside [`levels(sys)`](@ref levels) throws an `ArgumentError`. For a
 subset of a level, see `PartialGrid`.
 """
-function levelgrid end
+levelgrid
 
 """
     ncells(sys::AbstractHierarchicalGridSystem, l::Integer) -> Int
@@ -106,7 +106,7 @@ in ascending canonical order, all at level `first(levels(sys))`.
 These are the roots the generic tree descent starts from, so this must be a
 small, cheap collection (12 for HEALPix, 122 for H3, 12 for IGeo7).
 """
-function rootcells end
+rootcells
 
 """
     Base.parent(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex) -> AbstractCellIndex
@@ -141,7 +141,7 @@ aperture.
 
 Calling it on a cell at `maxlevel(sys)` throws an `ArgumentError`.
 """
-function children end
+children
 
 """
     node_extent(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex) -> GO.UnitSpherical.SphericalCap
@@ -158,7 +158,7 @@ must validate the full descendant-geometry guarantee, including between sampled
 vertices. See [Collection and traversal contracts](@ref) for the complete
 pruning contract.
 """
-function node_extent end
+node_extent
 
 """
     maxneighbors(sys::AbstractHierarchicalGridSystem, connectivity::Connectivity = Vertex()) -> Union{Int,Nothing}
@@ -452,7 +452,7 @@ is [`parent(sys, c)`](@ref parent). `l > level(c)` throws an `ArgumentError` —
 an ancestor is never deeper than the cell, and a system with a closed-form
 answer (drop `level(c) - l` digits) should override rather than iterate.
 """
-function ancestor end
+ancestor
 
 """
     descendants(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, l::Integer)
@@ -487,7 +487,7 @@ than a parallel set of verbs taking `(sys, c, l)` argument tuples.
 over a known index range; elsewhere it materialises
 [`descendants`](@ref). `bucket_size` is [`PartialGrid`](@ref)'s.
 """
-function subtree end
+subtree
 
 """
     border_engine(sys, c, target::Int, connectivity)
@@ -608,7 +608,7 @@ Sibling ranges are disjoint and partition the parent's range in canonical order.
 
 `l < level(c)` throws an `ArgumentError`.
 """
-function descendant_range end
+descendant_range
 
 # The trait's obligation, diagnosed where it is first broken. Without this the
 # consumer sees a `MethodError` whose candidate list is other systems' methods.

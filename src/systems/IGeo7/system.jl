@@ -200,7 +200,7 @@ needs no sort. The count is `7^d` for a hexagon and `(5·7^d + 1)/6` for a
 pentagon, `d = l - level(c)`.
 
 Throws an `ArgumentError` for `l` outside `level(c):maxlevel`. This
-materialises — reach for [`descendant_range`](@ref DiscreteGlobalGrids.descendant_range) when indices will do.
+materialises — reach for [`descendant_range`](@ref DGG.descendant_range) when indices will do.
 """
 function DGG.descendants(::IGeo7System, c::Z7Cell, l::Integer)
     res = _geometry_checked(c.id)
@@ -336,7 +336,9 @@ end
 # complete grid, so rooted subtrees and compressed multi-root coverages take
 # this method too without duplicating dispatch here.
 DGG.Fallbacks.cell_cap(::IGeo7LevelGrid, c::Z7Cell) = _analytical_cell_cap(c)
-DGG.Fallbacks.cell_cap_is_cheap(::IGeo7LevelGrid) = Val(true)
+# closed form, so the authalic wrapper keeps it closed form (centre warped, radius stretched)
+DGG.Fallbacks.cell_cap(g::DGG.Fallbacks.AuthalicGrid{<:IGeo7LevelGrid}, c::Z7Cell) =
+    DGG.Fallbacks._stretched_cell_cap(g, c)
 
 """
     cellat(g::IGeo7LevelGrid, p::UnitSphericalPoint) -> Z7Cell
@@ -545,3 +547,11 @@ function subtree_border_count(::IGeo7System, c::Z7Cell, l::Integer)
         "IGeo7 descendant level must be in $res:$MAX_RESOLUTION, got $target"))
     return Int(_border_count(c.id, res, target))
 end
+
+# ===========================================================================
+# GridInterface shape traits
+# ===========================================================================
+
+# Cells are hexagons whose edges are great-circle arcs: one simple ring, convex.
+GridInterface.cellshape(::IGeo7LevelGrid) = GridInterface.ConvexCells()
+GridInterface.edgekind(::IGeo7LevelGrid) = GridInterface.GeodesicEdges()

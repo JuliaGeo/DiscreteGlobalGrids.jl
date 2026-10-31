@@ -33,7 +33,7 @@ import GeometryOpsCore as GOCore
 import GeoInterface as GI
 import Extents
 import ConservativeRegridding
-import ConservativeRegridding: Trees
+import GridInterface
 import GeometryOps: SpatialTreeInterface as STI
 
 const US = GO.UnitSpherical
@@ -90,6 +90,10 @@ function DGG.levelgrid(sys::MockSystem, l::Integer)
 end
 
 DGG.system(g::MockGrid) = g.system
+# Every mock cell is a geodesic quadrilateral at most 90 x 45 degrees: convex, as
+# the real systems declare their shapes. Undeclared, it would be `GeneralCells`
+# and ConservativeRegridding would clip it with the general clipper.
+GridInterface.cellshape(::MockGrid) = GridInterface.ConvexCells()
 DGG.level(g::MockGrid) = g.level
 DGG.ncells(g::MockGrid) = mock_ncells(g.level)
 
@@ -359,7 +363,7 @@ end
 
     # `getcell` is `cell_polygon . cellindex`, by index.
     @test collect(GI.getpoint(GI.getexterior(getcell(grid, 17)))) == closed
-    @test getcell === Trees.getcell
+    @test ncells === GridInterface.ncells
 
     # Areas: an octant is exactly pi/2 steradians, and eight of them are the
     # sphere. This is the closed-form check on the spherical area path.
@@ -538,37 +542,13 @@ end
     @test node_extent(SORTED, c).radius > FB.cell_cap(grid, c).radius
 end
 
-@testset "analytical cap enclosure" begin
-    # Unequal radii are part of the bound, not an inflation applied after solving
-    # a point-only problem.
-    caps = (
-        US.SphericalCap(sph(0.0, 0.0), deg2rad(0.5)),
-        US.SphericalCap(sph(2.0, 0.0), deg2rad(1.0)),
-        US.SphericalCap(sph(1.0, 2.0), deg2rad(0.25)),
-    )
-    cap_enclosure(caps) = FB._caps_cap(i -> @inbounds(caps[i]), length(caps))
-    enclosing = @inferred cap_enclosure(caps)
-    @test enclosing isa US.SphericalCap{Float64}
-    @test all(caps) do cap
-        US.spherical_distance(enclosing.point, cap.point) + cap.radius <= enclosing.radius
-    end
-
-    # The hot path derives caps twice but retains no batch or boundary buffer.
-    cap_enclosure(caps)
-    @test @allocated(cap_enclosure(caps)) == 0 skip = VERSION < v"1.12"
-    @test FB._caps_cap(i -> caps[i], 0).radius > pi
-    antipodal = (US.SphericalCap(sph(0.0, 0.0), 0.0),
-                 US.SphericalCap(sph(180.0, 0.0), 0.0))
-    @test cap_enclosure(antipodal).radius > pi
-end
-
 @testset "cursor: window mode" begin
     grid = levelgrid(SORTED, 3)
     tree = treeify(grid)
     @test tree isa DGG.HierarchicalGridCursor
     @test STI.isspatialtree(typeof(tree))
     @test STI.node_extent_is_expensive(typeof(tree))
-    @test Trees.ncells(tree) == ncells(grid)
+    @test STI.split_weight(tree) == ncells(grid)
     @test GOCore.best_manifold(tree) == GO.Spherical(; radius=1.0)
 
     # The tree's leaves are exactly the grid's indices, once each.
@@ -613,14 +593,13 @@ end
     @test cap == FB.cell_cap(grid, cellindex(grid, index))
     @test_throws ArgumentError STI.child_indices_extents(tree)
 
-    # `Trees.getcell` addresses the same index space at the root.
-    @test collect(GI.getpoint(GI.getexterior(Trees.getcell(tree, 5)))) ==
+    # `getcell` addresses the same index space at the root.
+    @test collect(GI.getpoint(GI.getexterior(DGG.getcell(tree, 5)))) ==
           collect(GI.getpoint(GI.getexterior(getcell(grid, 5))))
-    @test_throws BoundsError Trees.getcell(tree, ncells(grid) + 1)
-    # The frontier's work estimate is the node's own leaf window, not the
-    # whole grid `Trees.ncells` answers for.
-    @test Trees.split_weight(tree) == ncells(grid)
-    @test Trees.split_weight(leaf) == 1
+    @test_throws BoundsError DGG.getcell(tree, ncells(grid) + 1)
+    # The frontier's work estimate is the node's own leaf window.
+    @test STI.split_weight(tree) == ncells(grid)
+    @test STI.split_weight(leaf) == 1
 end
 
 @testset "cursor: selection mode" begin
@@ -716,7 +695,7 @@ end
     grid = PartialGrid(SORTED, 4, ids)
     tree = treeify(grid)
     @test tree isa DGG.HierarchicalGridCursor
-    @test Trees.ncells(tree) == 6
+    @test STI.split_weight(tree) == 6
     @test leaf_indices(tree) == collect(1:6)
 
     # Every node's window is a slice of the id vector, and children partition it.
@@ -729,22 +708,15 @@ end
         @test sort(covered) == collect(EN.node_indices(node))
     end
 
-    # A sparse internal node tightens its extent past the system's own
-    # `node_extent`, which is the one thing the cursor adds to the hierarchy.
-    tightened = false
+    # An internal node carries the system's own `node_extent`, however sparse
+    # its window: the cursor adds no tightening.
     walk(tree) do node
         STI.isleaf(node) && return
         node.level < 0 && return
-        count = length(EN.node_indices(node))
-        if 0 < count < RADIX^(4 - node.level)
-            if STI.node_extent(node).radius < node_extent(SORTED, node.id).radius
-                tightened = true
-            end
-        end
+        @test STI.node_extent(node) == node_extent(SORTED, node.id)
     end
-    @test tightened
 
-    # ... and it still covers what it claims to.
+    # ... and every node covers what it claims to.
     walk(tree) do node
         extent = STI.node_extent(node)
         for i in EN.node_indices(node)
@@ -787,7 +759,7 @@ end
     @test tree isa EN.IndexTreeNode
     @test STI.isspatialtree(typeof(tree))
     @test !STI.node_extent_is_expensive(typeof(tree))
-    @test Trees.ncells(tree) == 8
+    @test STI.split_weight(tree) == 8
     @test leaf_indices(tree) == collect(1:8)
     @test system(grid) === nothing && level(grid) === nothing
 
@@ -1083,13 +1055,12 @@ end
     @test length(query(octants, Intersects(small))) == 1
 end
 
-@testset "cellsize: a standalone grid measures an area of interest through its space" begin
+@testset "cellsize: a standalone grid measures an area of interest by probing" begin
     # The octants share one area, so a regional median equals the global one;
-    # the space route reaches it where the grid route has no hierarchy to sample.
+    # with no hierarchy to sample, the grid's cells are found under probe points.
     octants = OctantGrid()
     arctic = Extents.Extent(X = (-180.0, 180.0), Y = (75.0, 90.0))
-    @test cellsize(DGG.DGGSpace(octants); over = arctic) == cellsize(octants)
-    @test_throws "belongs to a grid system" cellsize(octants; over = arctic)
+    @test cellsize(octants; over = arctic) == cellsize(octants)
 end
 
 @testset "query: CentroidCovered" begin

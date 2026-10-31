@@ -82,7 +82,8 @@ Pkg.add(url = "https://github.com/JuliaGeo/DiscreteGlobalGrids.jl",
         subdir = "lib/DiscreteGlobalGridsVisualization")
 ```
 
-Julia 1.11 or newer is required. The tutorials import the packages needed
+Julia 1.11 or newer is required; the allocation-free fast paths are guaranteed
+on 1.12 and newer. The tutorials import the packages needed
 for each example. Plotting uses `DiscreteGlobalGridsVisualization` with a
 Makie backend; store I/O requires `using Zarr` to load `dggread` and `dggwrite`.
 Use `Pkg.develop(url = ...)` for a checkout you intend to edit.

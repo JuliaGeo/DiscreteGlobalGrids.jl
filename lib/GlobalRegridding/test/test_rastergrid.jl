@@ -3,6 +3,8 @@
 import DimensionalData as DD
 import DiskArrays
 import ConservativeRegridding as CR
+import GridInterface as GrI
+import GridInterfaceConformance as GIC
 import GeometryOps: SpatialTreeInterface as STI
 
 const GEOGRAPHIC_TO_UNIT_SPHERE = GO.UnitSpherical.UnitSphereFromGeographic()
@@ -61,12 +63,16 @@ function same_cells(a, b)
     return true
 end
 
-# Direct chart constructions used as references for edge-table fast paths.
+# Direct chart constructions used as references for edge-table fast paths: the
+# lattice corners of cell `(i, j)` through the chart itself.
 
-@noinline function reference_corners(space, ix, iy)
-    xlo, xhi, ylo, yhi = GR.cellbox(space, ix, iy)
+@noinline function reference_corners(space, i, j)
     t = space.native_to_unit_sphere
-    return (t((xlo, ylo)), t((xhi, ylo)), t((xhi, yhi)), t((xlo, yhi)))
+    function vertex(a, b)
+        ex, ey = GR._storagevertex(space, a, b)
+        return t((space.xedges[ex], space.yedges[ey]))
+    end
+    return (vertex(i, j), vertex(i + 1, j), vertex(i + 1, j + 1), vertex(i, j + 1))
 end
 
 @noinline function reference_cellring(corners::NTuple{4,USPoint})
@@ -80,9 +86,8 @@ end
 end
 
 @noinline function reference_cell(space, i)
-    ix, iy = GR.cellsubscript(space, i)
-    c = reference_corners(space, ix, iy)
-    return reference_cellring(space.ccw ? c : (c[4], c[3], c[2], c[1]))
+    a, b = GR._latticeindex(space, GR.cellsubscript(space, i)...)
+    return reference_cellring(reference_corners(space, a, b))
 end
 
 # Bitwise comparison includes signed zero and NaN payloads.
@@ -154,7 +159,7 @@ function tree_covers(space, node, ancestors = ())
 end
 
 function chunks_cover_dense(space)
-    caps = GR.chunkextents(space)
+    caps = chunkextents(space)
     return all(GR.US._contains(caps[c], p)
         for c in 1:nchunks(space)
         for i in ownedindices(space, c)
@@ -194,7 +199,11 @@ end
         no_inverse = RasterGrid(default_array;
             unit_sphere_to_native = nothing)
         @test !hascellchart(no_inverse)
-        @test_throws ArgumentError cellat(no_inverse, geographic_point(0.0, 0.0))
+        # Without an inverse chart a point is located by the structured
+        # grid's lattice walk rather than refused.
+        @test !GrI.location_is_analytic(no_inverse)
+        @test all(cellat(no_inverse, cellcentroid(no_inverse, i)) == i
+                  for i in 1:ncells(no_inverse))
 
         @test_throws ArgumentError RasterGrid(default_array;
             native_to_unit_sphere = GEOGRAPHIC_TO_UNIT_SPHERE,
@@ -277,8 +286,8 @@ end
 
         # Geometry queries never read raster values.
         celltree(space)
-        GR.chunkextents(space)
-        GR.chunkextent(space, 1)
+        chunkextents(space)
+        chunkextent(space, 1)
         GR.chunkindex(space)
         foreach(i -> getcell(space, i), 1:ncells(space))
         @test parent_x.reads == 0
@@ -303,44 +312,44 @@ end
 
         # `chunkat` inverts `ownedindices` without data reads.
         for s in (space, rows, cols, rg_forward())
-            @test all(GR.chunkat(s, i) == c
+            @test all(chunkat(s, i) == c
                       for c in 1:nchunks(s) for i in ownedindices(s, c))
         end
         @test parent_x.reads == 0
-        @test_throws BoundsError GR.chunkat(space, 0)
-        @test_throws BoundsError GR.chunkat(space, ncells(space) + 1)
+        @test_throws BoundsError chunkat(space, 0)
+        @test_throws BoundsError chunkat(space, ncells(space) + 1)
 
         # The point form is `cellat` composed with it, and answers nothing
         # exactly where `cellat` does.
-        @test GR.chunkat(space, cellcentroid(space, 12)) == GR.chunkat(space, 12)
+        @test chunkat(space, cellcentroid(space, 12)) == chunkat(space, 12)
         patch = RasterGrid(DD.DimArray(zeros(4, 2),
             (DD.X(0.0:10.0:30.0), DD.Y(0.0:10.0:10.0))))
-        @test GR.chunkat(patch, geographic_point(0.0, -80.0)) === nothing
+        @test chunkat(patch, geographic_point(0.0, -80.0)) === nothing
 
         # Regional chunk extents cover their cell geometry.
         region = RasterGrid(DD.DimArray(CountingChunked(zeros(8, 4), (4, 2)),
             (DD.X(-35.0:10.0:35.0), DD.Y(-15.0:10.0:15.0))))
-        caps = GR.chunkextents(region)
+        caps = chunkextents(region)
         @test all(GR.US._contains(caps[c], p)
                   for c in 1:nchunks(region)
                   for i in ownedindices(region, c)
                   for p in cellring(region, i))
         @test maximum(cap.radius for cap in caps) < pi / 2
 
-        # Chunk discovery is an implicit CR quadtree over the raster geometry,
-        # while ownership comes from the DiskArrays ranges above. It neither
-        # builds nor queries the old flat chunk tree.
+        # Chunk discovery packs each DiskArrays tile's `grid_extent` (the
+        # raster's analytic block extent) into the generic chunk index, while
+        # ownership comes from the DiskArrays ranges above. It neither builds
+        # nor queries the old flat chunk tree, and reads no data.
         index = GR.chunkindex(space)
-        @test index isa CR.Trees.TopDownQuadtreeCursor
-        @test index.grid isa GR.RasterGridView
-        @test index.grid.space === space
+        @test index isa GR.FlexibleRTrees.RTree
+        @test index.data == chunkextents(space)
         whole = SphericalCap(geographic_point(0.0, 0.0), Float64(pi))
         @test GR.candidatechunks!(Int[], index, whole) == collect(1:nchunks(space))
 
         # Any source boundary point reached by a query cap implies that its
         # DiskArrays chunk survived the hierarchy. This is the geometric
         # no-false-negative law, without demanding cap-overcoverage identity.
-        for dcap in GR.chunkextents(space)
+        for dcap in chunkextents(space)
             candidates = GR.candidatechunks!(Int[], index, dcap)
             for s in 1:nchunks(space)
                 touched = any(GR.US._contains(dcap, p)
@@ -362,13 +371,13 @@ end
         @test shiftedspace.native_to_unit_sphere isa GR._TwoArgumentNativeToUnitSphere
         @test shiftedspace.native_to_unit_sphere.f === shifted
         @test cellcentroid(shiftedspace, 1) == shifted(raster_lon()[1], raster_lat()[1])
-        @test CR.Trees.getvertex(shiftedindex.grid, 1, 1) ==
+        @test GR.facevertex(shiftedspace, 1, 1, 1) ==
               shifted(shiftedspace.xedges[1], shiftedspace.yedges[1])
         @test !isempty(cellring(shiftedspace, 1))
         @test GR.candidatechunks!(Int[], shiftedindex, whole) ==
               collect(1:nchunks(shiftedspace))
         selective = SphericalCap(cellcentroid(shiftedspace, 1), 0.0)
-        @test GR.chunkat(shiftedspace, 1) in
+        @test chunkat(shiftedspace, 1) in
               GR.candidatechunks!(Int[], shiftedindex, selective)
         @test parent_x.reads == 0
     end
@@ -384,23 +393,21 @@ end
         @test tree_covers(space, celltree(space, 1))
         @test tree_covers(space, celltree(space, [1, 9, 17, 25]))
 
-        # `ConservativeRegridding` addresses a cell tree as a cell source.
+        # The cursor is a GridInterface quadtree over the raster itself.
         tree = celltree(space)
-        @test Trees.ncells(tree) == GR.rastersize(space)
-        @test Trees.cell_index_count(tree) == ncells(space)
-        @test Trees.getcell(tree, 3) == getcell(space, 3)
-        @test GOCore.best_manifold(tree) == manifold(space)
+        @test (length(tree.irange), length(tree.jrange)) == GR.rastersize(space)
+        @test tree.grid === space
 
         # Split weights are the node's own window: children partition the parent.
-        @test Trees.split_weight(tree) == ncells(space)
-        @test sum(Trees.split_weight, STI.getchild(tree)) == Trees.split_weight(tree)
-        @test all(c -> Trees.split_weight(c) < Trees.split_weight(tree), STI.getchild(tree))
-        @test Trees.split_weight(celltree(space, [1, 9, 17, 25])) == 4
+        @test GrI.split_weight(tree) == ncells(space)
+        @test sum(GrI.split_weight, STI.getchild(tree)) == GrI.split_weight(tree)
+        @test all(c -> GrI.split_weight(c) < GrI.split_weight(tree), STI.getchild(tree))
+        @test GrI.split_weight(celltree(space, [1, 9, 17, 25])) == 4
 
         # Tree intersections account for every fine cell exactly once.
         coarse = RasterGrid(DD.DimArray(zeros(4, 2), (DD.X(-135.0:90.0:135.0), DD.Y(-45.0:90.0:45.0))))
-        areas = CR.intersection_areas(manifold(space), GOCore.False(),
-            celltree(coarse), celltree(space); progress = false)
+        areas = CR.intersection_areas(manifold(space), GOCore.False(), coarse, space;
+            dst_tree = celltree(coarse), src_tree = celltree(space), progress = false)
         @test size(areas) == (ncells(coarse), ncells(space))
         @test sum(areas) ≈ 4pi
         @test all(≈(4pi / ncells(coarse)), sum(areas; dims = 2))
@@ -410,8 +417,8 @@ end
         # And unchanged when the source's latitude lookup runs the other way.
         flipped = RasterGrid(DD.DimArray(zeros(8, 4),
             (DD.X(raster_lon()), DD.Y(reverse(raster_lat())))))
-        flipped_areas = CR.intersection_areas(manifold(space), GOCore.False(),
-            celltree(coarse), celltree(flipped); progress = false)
+        flipped_areas = CR.intersection_areas(manifold(space), GOCore.False(), coarse, flipped;
+            dst_tree = celltree(coarse), src_tree = celltree(flipped), progress = false)
         @test sum(flipped_areas) ≈ 4pi
         @test all(≈(4pi / ncells(coarse)), sum(flipped_areas; dims = 2))
     end
@@ -434,29 +441,22 @@ end
             (DD.Y(raster_lat()), DD.X(raster_lon()))))
 
         for space in (xfast, yfast)
-            whole = GR.subtree(space, 1:ncells(space))
-            @test whole isa Trees.TopDownQuadtreeCursor
-            @test whole.grid isa GR.RasterGridView
-            @test whole.grid.space === space
-            @test whole.grid.native_to_unit_sphere === space.native_to_unit_sphere
+            whole = subtree(space, 1:ncells(space))
+            @test whole isa GrS.TopDownQuadtreeCursor
+            @test whole.grid === space
             @test whole.leafsize == (4, 4)
-            @test Trees.ncells(whole) == GR.rastersize(space)
-            @test Trees.cell_index_count(whole) == ncells(space)
-            @test Trees.split_weight(whole) == ncells(space)
+            @test (length(whole.irange), length(whole.jrange)) == GrS.facesize(space, 1)
+            @test GrI.split_weight(whole) == ncells(space)
             @test sort!(leafindices!(Int[], whole)) == collect(1:ncells(space))
-            @test Trees.getcell(whole, 3) == getcell(space, 3)
-            @test GOCore.best_manifold(whole) == manifold(space)
 
             # One rectangular DiskArrays chunk keeps the raster's local leaf IDs even
             # though `ncells(cursor)` and split weight describe only its range.
             inds = ownedindices(space, 2)
-            chunk = GR.subtree(space, inds)
-            @test chunk isa Trees.TopDownQuadtreeCursor
-            @test chunk.grid.space === space
+            chunk = subtree(space, inds)
+            @test chunk isa GrS.TopDownQuadtreeCursor
+            @test chunk.grid === space
             @test chunk.leafsize == (4, 4)
-            @test prod(Trees.ncells(chunk)) == length(inds)
-            @test Trees.cell_index_count(chunk) == ncells(space)
-            @test Trees.split_weight(chunk) == length(inds)
+            @test GrI.split_weight(chunk) == length(inds)
             @test sort!(leafindices!(Int[], chunk)) == sort!(collect(inds))
         end
 
@@ -465,7 +465,7 @@ end
         @test child_construction_allocated(whole) == 0
 
         # Scattered indices use the common packed fallback.
-        @test GR.subtree(xfast, [1, 4, 9, 25]) isa GR.CellSpaceRTree
+        @test subtree(xfast, [1, 4, 9, 25]) isa GR.FlexibleRTrees.RTree
     end
 
 
@@ -488,8 +488,7 @@ end
                 r, ref = cellring(space, i), reference_cell(space, i)
                 length(r) == length(ref) && all(bitequal(r[k], ref[k]) for k in eachindex(r))
             end
-            @test all(GR.US._contains(
-                    GR._rastercellcap(space, GR.cellsubscript(space, i)...), p)
+            @test all(GR.US._contains(convert(GR.Cap, GrI.cell_extent(space, i)), p)
                 for i in 1:ncells(space) for p in ring_samples(space, i))
         end
 
@@ -510,14 +509,13 @@ end
             ybounds = (-90.0, 90.0))
         @test opaque.tables === nothing
         @test opaque.native_to_unit_sphere isa GR._TwoArgumentNativeToUnitSphere
-        @test GR.chartspacing(opaque) == (deg2rad(45.0), deg2rad(45.0))
-        opaque_grid = GR.RasterGridView(opaque)
-        delegated = GR._curvilinear_range_extent(opaque_grid, 2:7, 2:3)
-        routed = Trees.cell_range_extent(opaque_grid, 2:7, 2:3)
+        @test chartspacing(opaque) == (deg2rad(45.0), deg2rad(45.0))
+        delegated = GrS._blockextent(GOCore.best_manifold(opaque),
+            GR._RasterPerimeter(opaque), 1, 2:7, 2:3)
+        routed = GR.blockextent(opaque, 1, 2:7, 2:3)
         @test routed.point == delegated.point
         @test routed.radius == delegated.radius
-        @test all(GR.US._contains(
-                GR._rastercellcap(opaque, GR.cellsubscript(opaque, i)...), p)
+        @test all(GR.US._contains(convert(GR.Cap, GrI.cell_extent(opaque, i)), p)
             for i in 1:ncells(opaque) for p in ring_samples(opaque, i))
     end
 
@@ -526,7 +524,7 @@ end
         bands = RasterGrid(DD.DimArray(zeros(36, 18),
                 (DD.X(-175.0:10.0:175.0), DD.Y(-85.0:10.0:85.0)));
             chunks = ([1:36], [3(k-1)+1:3k for k in 1:6]))
-        caps = GR.chunkextents(bands)
+        caps = chunkextents(bands)
         north = geographic_point(0.0, 90.0)
         south = geographic_point(0.0, -90.0)
 
@@ -550,7 +548,7 @@ end
         straddling = RasterGrid(DD.DimArray(zeros(36, 18),
                 (DD.X(-175.0:10.0:175.0), DD.Y(-85.0:10.0:85.0)));
             chunks = ([1:36], [1:6, 7:12, 13:18]))
-        mid = GR.chunkextents(straddling)[2]
+        mid = chunkextents(straddling)[2]
         @test mid.radius < Float64(pi)
         @test all(GR.US._contains(mid, p)
                   for i in ownedindices(straddling, 2) for p in ring_samples(straddling, i))
@@ -559,7 +557,7 @@ end
         stripes = RasterGrid(DD.DimArray(zeros(36, 18),
                 (DD.X(-175.0:10.0:175.0), DD.Y(-85.0:10.0:85.0)));
             chunks = ([6(k-1)+1:6k for k in 1:6], [1:18]))
-        stripecaps = GR.chunkextents(stripes)
+        stripecaps = chunkextents(stripes)
         @test all(cap.radius < Float64(pi) for cap in stripecaps)
         @test all(GR.US._contains(stripecaps[c], p)
                   for c in 1:nchunks(stripes)
@@ -592,11 +590,10 @@ end
         warped = RasterGrid(DD.DimArray(warped_data,
                 (DD.X(-43.75:12.5:43.75), DD.Y(-15.0:10.0:15.0)));
             native_to_unit_sphere = InjectiveWarp())
-        warped_grid = GR.RasterGridView(warped)
         @test warped.tables === nothing
         nrectangles = 0
         for ilo in 1:8, ihi in ilo:8, jlo in 1:4, jhi in jlo:4
-            cap = Trees.cell_range_extent(warped_grid, ilo:ihi, jlo:jhi)
+            cap = GR.blockextent(warped, 1, ilo:ihi, jlo:jhi)
             @test all(GR.US._contains(cap, p)
                 for iy in jlo:jhi, ix in ilo:ihi
                 for p in ring_samples(warped, GR.localindex(warped, ix, iy)))
@@ -608,7 +605,7 @@ end
 
         # A point that escaped the old whole-range cap must not prune its owning
         # DiskArrays chunk from candidate discovery.
-        escaped = Trees.getvertex(warped_grid, 2, 5)
+        escaped = GR.facevertex(warped, 1, 2, 5)
         old_fixed_samples = map(0:15) do j
             edge, step = divrem(j, 4)
             u = step / 4
@@ -623,7 +620,7 @@ end
             p -> GR.US.spherical_distance(old_centre, p), old_fixed_samples))
         @test GR.US.spherical_distance(old_centre, escaped) > old_radius
         escaped_query = SphericalCap(escaped, 0.0)
-        owning = GR.chunkat(warped, GR.localindex(warped, 1, 4))
+        owning = chunkat(warped, GR.localindex(warped, 1, 4))
         @test owning in GR.candidatechunks!(Int[], GR.chunkindex(warped), escaped_query)
         @test warped_data.reads == 0
 
@@ -632,16 +629,168 @@ end
         large = RasterGrid(DD.DimArray(zeros(70_000, 2),
                 (DD.X(1.0:70_000.0), DD.Y(-5.0:10.0:5.0)));
             native_to_unit_sphere = LargeIndexChart())
-        large_grid = GR.RasterGridView(large)
-        large_cap = Trees.cell_range_extent(large_grid, 65_537:69_999, 1:2)
+        large_cap = GR.blockextent(large, 1, 65_537:69_999, 1:2)
         @test all(GR.US._contains(large_cap, p)
             for ix in (65_537, 67_768, 69_999), iy in 1:2
             for p in ring_samples(large, GR.localindex(large, ix, iy)))
 
         # The earned geographic range path remains allocation-free once
         # compiled; general coverage is delegated even when it is less cheap.
-        geographic_grid = GR.RasterGridView(rg_forward())
-        Trees.cell_range_extent(geographic_grid, 2:7, 2:3)
-        @test (@allocated Trees.cell_range_extent(geographic_grid, 2:7, 2:3)) == 0
+        geographic = rg_forward()
+        GR.blockextent(geographic, 1, 2:7, 2:3)
+        @test (@allocated GR.blockextent(geographic, 1, 2:7, 2:3)) == 0
+    end
+
+    @testset "conformance" begin
+        lat(step) = (-90 + step / 2):step:(90 - step / 2)
+        lon180(step) = (-180 + step / 2):step:(180 - step / 2)
+        lon360(step) = (step / 2):step:(360 - step / 2)
+        grid(x, y) = RasterGrid(DD.DimArray(zeros(length(x), length(y)), (DD.X(x), DD.Y(y))))
+        lonlat(space, c) = UNIT_SPHERE_TO_GEOGRAPHIC(cellcentroid(space, c))
+        failing(rep) = ["$(r.family) / $(r.law): $(r.detail)" for r in rep.results if r.status === :fail]
+
+        global10 = grid(lon180(10.0), lat(10.0))
+        polecentred = grid(lon180(10.0), -90.0:10.0:90.0)
+        east360 = grid(lon360(10.0), lat(10.0))
+        descending = grid(lon180(10.0), reverse(lat(10.0)))
+        westward = grid(reverse(lon180(10.0)), lat(10.0))
+        ymajor = RasterGrid(DD.DimArray(zeros(18, 36), (DD.Y(lat(10.0)), DD.X(lon180(10.0)))))
+        regional = grid(-35.0:10.0:35.0, -15.0:10.0:15.0)
+
+        # Every law GridInterface states, on each layout a raster comes in.
+        for (name, space) in (
+                "global 1°" => grid(lon180(1.0), lat(1.0)),
+                "global 10°" => global10,
+                "pole-centred" => polecentred,
+                "0..360" => east360,
+                "descending latitude" => descending,
+                "descending latitude, 0..360" => grid(lon360(10.0), reverse(lat(10.0))),
+                "descending longitude" => westward,
+                "Y-major" => ymajor,
+                "regional" => regional,
+                "coarse" => rg_forward())
+            rep = GIC.check_grid(space; name)
+            @test failing(rep) == String[]
+            @test isempty(intersect(rep.fallbacks, [:cellat, :neighbors, :cell_geometry, :cell_extent]))
+        end
+
+        # A regional raster reaching a pole passes every law. Its pole is an
+        # open fan of the whole polar row, counter-clockwise about the north
+        # pole seen from outside: its cells' longitudes increase.
+        polar = grid(-35.0:10.0:35.0, 55.0:10.0:85.0)
+        rep = GIC.check_grid(polar; name = "regional to the pole")
+        @test failing(rep) == String[]
+        V = GrI.GridAndVertices(polar)
+        pole = only(v for v in 1:GrI.nvertices(V) if length(GrI.vertex_cells(V, v)) > 4)
+        fan = collect(GrI.vertex_cells(V, pole))
+        @test GrI.vertex_isopen(V, pole)
+        @test fan == [GR.localindex(polar, ix, 4) for ix in 1:8]
+        @test issorted([lonlat(polar, c)[1] for c in fan])
+
+        # The poles: a polar cell is a triangle with the pole as one corner, has
+        # a neighbour across each of its three edges, and touches every other
+        # cell of its row at the pole.
+        nx, ny = 36, 18
+        for (c, pole) in ((GR.localindex(global10, 5, 1), geographic_point(0.0, -90.0)),
+                          (GR.localindex(global10, 5, ny), geographic_point(0.0, 90.0)))
+            @test length(cellcorners(global10, c)) == 3
+            @test length(cellring(global10, c)) == 4
+            @test any(p -> p == pole, cellcorners(global10, c))
+            @test GrI.cell_contains(global10, c, pole)
+            @test length(GrI.neighbors(global10, c; connectivity = GrI.Edge())) == 3
+            vertex = collect(GrI.neighbors(global10, c))
+            @test length(vertex) == nx - 1 + 3
+            @test allunique(vertex) && !(c in vertex)
+        end
+        @test GrI.maxneighbors(global10, GrI.Vertex()) === nothing
+        @test GrI.maxneighbors(regional, GrI.Vertex()) == 8
+        @test GrI.isglobal(global10) && GrI.isglobal(descending) && GrI.isglobal(ymajor)
+        @test !GrI.isglobal(regional) && !GrI.isglobal(polar)
+        @test polecentred.yedges[1] == -90.0 && polecentred.yedges[end] == 90.0
+        @test length(cellcorners(polecentred, 1)) == 3
+        # The pole itself belongs to a cell of the polar row.
+        @test GR.cellsubscript(global10, cellat(global10, geographic_point(0.0, 90.0)))[2] == ny
+        @test GR.cellsubscript(global10, cellat(global10, geographic_point(0.0, -90.0)))[2] == 1
+
+        # The antimeridian: the first and last columns are neighbours on a
+        # raster spanning the period, whatever its origin, and not on a region.
+        for space in (global10, east360, descending, ymajor)
+            west = GR.localindex(space, 1, 9)
+            east = GR.localindex(space, nx, 9)
+            @test east in GrI.neighbors(space, west; connectivity = GrI.Edge())
+            @test west in GrI.neighbors(space, east; connectivity = GrI.Edge())
+            @test length(GrI.neighbors(space, west)) == 8
+        end
+        @test !(GR.localindex(regional, 8, 2) in GrI.neighbors(regional, GR.localindex(regional, 1, 2)))
+        @test length(GrI.neighbors(regional, GR.localindex(regional, 1, 2))) == 5
+
+        # Edge neighbours are counter-clockwise from the one across the ring's
+        # first edge, so a cell's neighbours come south, east, north, west in
+        # every layout.
+        for space in (global10, east360, descending, westward, ymajor)
+            c = cellat(space, geographic_point(5.0, 5.0))
+            edges = collect(GrI.neighbors(space, c; connectivity = GrI.Edge()))
+            @test [round.(lonlat(space, q); digits = 6) for q in edges] ==
+                  [(5.0, -5.0), (15.0, 5.0), (5.0, 15.0), (-5.0, 5.0)]
+        end
+
+        # Points exactly on a cell edge, on the antimeridian and at the poles
+        # land in a cell that contains them.
+        for space in (global10, east360, descending, westward, ymajor),
+                p in (geographic_point(10.0, 0.0), geographic_point(5.0, 10.0),
+                      geographic_point(10.0, 10.0), geographic_point(180.0, 5.0),
+                      geographic_point(-180.0, 5.0), geographic_point(180.0, -10.0),
+                      geographic_point(0.0, 90.0), geographic_point(0.0, -90.0),
+                      geographic_point(180.0, 90.0))
+            c = cellat(space, p)
+            @test c isa Int
+            @test GrI.cell_contains(space, c, p)
+        end
+        # The outer edges, where the inverse chart lands an ulp outside the
+        # axes, belong to the end cells.
+        for (lon, column) in ((-40.0, 1), (40.0, 8)), lat in (0.0, 5.0, -20.0, 20.0)
+            c = cellat(regional, geographic_point(lon, lat))
+            @test c isa Int && GR.cellsubscript(regional, c)[1] == column
+            @test GrI.cell_contains(regional, c, geographic_point(lon, lat))
+        end
+        @test cellat(regional, geographic_point(5.0, 25.0)) === nothing
+        @test cellat(regional, geographic_point(45.0, 5.0)) === nothing
+
+        # A point just outside the chart can lie under the geodesic bulge of a
+        # boundary cell's edge: it is inside that cell, and located there.
+        top = cellat(regional, geographic_point(5.0, 15.0))
+        mid = LinearAlgebra.normalize(geographic_point(0.0, 20.0) + geographic_point(10.0, 20.0))
+        bulged = LinearAlgebra.normalize(0.01 * cellcentroid(regional, top) + 0.99 * mid)
+        @test UNIT_SPHERE_TO_GEOGRAPHIC(bulged)[2] > 20.0
+        @test GrI.cell_contains(regional, top, bulged)
+        @test cellat(regional, bulged) == top
+
+        # A descending or Y-major lookup keeps the cells, their neighbours and
+        # their storage chunks; only the lattice is reordered to ascend.
+        for space in (descending, westward, ymajor)
+            @test !GrS.facecolumnmajor(space, 1)
+            xs, ys = GrS.faceaxes(space, 1)
+            @test issorted(xs) && issorted(ys)
+            @test same_cells(global10, space)
+            for c in (1, 100, ncells(space))
+                f = cellat(global10, cellcentroid(space, c))
+                @test Set(round.(Tuple(cellcentroid(space, q)); digits = 10) for q in GrI.neighbors(space, c)) ==
+                      Set(round.(Tuple(cellcentroid(global10, q)); digits = 10) for q in GrI.neighbors(global10, f))
+            end
+        end
+        @test GrS.facecolumnmajor(global10, 1)
+        chunked = RasterGrid(DD.DimArray(CountingChunked(zeros(36, 18), (12, 6)),
+            (DD.X(lon180(10.0)), DD.Y(reverse(lat(10.0))))))
+        @test nchunks(chunked) == 9
+        for c in 1:nchunks(chunked)
+            owned = ownedindices(chunked, c)
+            xr, yr = GR.chunkbox(chunked, c)
+            @test collect(owned) == vec([GR.localindex(chunked, ix, iy) for ix in xr, iy in yr])
+            tree = celltree(chunked, c)
+            @test tree isa GrS.TopDownQuadtreeCursor
+            @test sort!(collect(GrI.subtree_indices(tree))) == collect(owned)
+            @test all(chunkat(chunked, i) == c for i in owned)
+        end
+        @test chunks_cover_dense(chunked)
     end
 end

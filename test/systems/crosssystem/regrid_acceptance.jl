@@ -17,6 +17,7 @@ module RegridAcceptanceTests
 using Test
 import DiscreteGlobalGrids as DGG
 import GlobalRegridding as GR
+import GridInterface as GrI
 import DimensionalData as DD
 import DiskArrays
 import GeometryOps as GO
@@ -85,8 +86,8 @@ const DEM = demtiles(NaN32)
 const PLAN = DGG.plan_regrid(DEM; to = SYS, lazy = true)
 const DST = PLAN.dst_space
 const POLE = GO.UnitSphericalPoint(0.0, 0.0, -1.0)
-const POLARCHUNK = GR.chunkat(DST, POLE)
-const POLARCELLS = GR.ownedindices(DST, POLARCHUNK)
+const POLARCHUNK = GR._chunkat(DST, POLE)
+const POLARCELLS = GR._ownedindices(DST, POLARCHUNK)
 
 # The tile row those cells lie in — the fan-in the chunk pairs have to find.
 const POLARTILE = (NY - CHUNK + 1):NY
@@ -107,7 +108,7 @@ agree(a, b) = length(a) == length(b) &&
 # can reach — whole source rows, so the retained cells' weights are unchanged
 # and the two answers are comparable exactly.
 function eagerreference()
-    g = DST.grid
+    g = DST
     tolonlat = GO.UnitSpherical.GeographicFromUnitSphere()
     top = maximum(tolonlat(p)[2] for i in POLARCELLS
                   for p in DGG.cell_boundary(g, DGG.cellindex(g, i)))
@@ -124,19 +125,19 @@ end
         @test isempty(reads(DEM))
         @test PLAN isa GR.ChunkedPlan
         # A 0.1° source area-matches IGeo7 level 7.
-        @test DGG.level(DST.grid) == 7
+        @test DGG.level(DST) == 7
         A = parent(DGG.regrid(DEM; to = SYS, lazy = true))
         @test size(A) == (DGG.ncells(DST),)
         @test isempty(reads(DEM))
         @test GR.residency(A).loads == 0
 
-        # The chunk under test is named by `chunkat`, which is one binary search
-        # over the chunk windows. Against the scan it replaces: a wrong window
-        # would move the whole file onto a chunk that is not the pole's, where
-        # every read assertion below would still pass.
-        @test POLARCHUNK == findfirst(c -> GR.cellat(DST, POLE) in GR.ownedindices(DST, c),
-            1:GR.nchunks(DST))
-        @test GR.cellat(DST, POLE) in POLARCELLS
+        # The chunk under test is named by `chunkat`, which is one `ancestor`
+        # lookup on the grid's level chunks. Against the scan it replaces: a
+        # wrong chunk would move the whole file onto one that is not the pole's,
+        # where every read assertion below would still pass.
+        @test POLARCHUNK == findfirst(c -> GrI.cellat(DST, POLE) in GR._ownedindices(DST, c),
+            1:GR._nchunks(DST))
+        @test GrI.cellat(DST, POLE) in POLARCELLS
     end
 
     held, heldstats = (resetreads!(DEM); polarchunk(DEM; budget = 2^30))

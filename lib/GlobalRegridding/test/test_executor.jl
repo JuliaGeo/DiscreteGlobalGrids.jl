@@ -14,7 +14,7 @@ end
 CountingMethod(; kw...) = CountingMethod(ToyDiagonalMethod(; kw...), 0)
 
 function buildweights!(coo::WeightCOO, method::CountingMethod,
-    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
+    dst_space, dst_inds, src_space, src_inds)
     countbuild!(method)
     return buildweights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
 end
@@ -381,7 +381,7 @@ end
         first = copy(dst)
         # Two accumulators and no third vector: a per-application reference would
         # cost another `8 * nwide` bytes on top.
-        @test (@allocated GR.applyplan!(dst, plan, src)) < 3 * 8 * nwide skip = VERSION < v"1.12"
+        @test (@allocated GR.applyplan!(dst, plan, src)) < 3 * 8 * nwide
         @test dst == first
     end
 

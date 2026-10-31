@@ -36,6 +36,7 @@ export MAX_RESOLUTION,
     cell_to_children_7,
     cell_to_children_size,
     cell_to_parent,
+    cell_to_vertexes,
     child_pos_to_cell,
     get_base_cell,
     get_pentagons,
@@ -52,7 +53,8 @@ export MAX_RESOLUTION,
     lonlat_to_cell,
     max_grid_disk_size,
     num_cells,
-    res0_cells
+    res0_cells,
+    vertex_to_cartesian
 
 const MAX_RESOLUTION = 15
 const H3Index = UInt64
@@ -86,6 +88,7 @@ function _check_resolution(resolution::Integer)
 end
 
 const _to_id = to_uint64_id
+const _ZERO6 = ntuple(_ -> H3Index(0), Val(6))
 
 function lonlat_to_cell(lon::Real, lat::Real, resolution::Integer)
     res = _check_resolution(resolution)
@@ -188,6 +191,39 @@ function boundary_verts(id)
         (cφ * cos(v.lng), cφ * sin(v.lng), sin(v.lat))
     end
     return verts, n
+end
+
+"""
+    cell_to_vertexes(id) -> NTuple{6,H3Index}
+
+libh3's `cellToVertexes`: the ids of the cell's true vertices (the corners
+where three cells meet), in the cell's boundary order, into a fixed tuple. A
+pentagon has five, and the sixth slot is `0`. Allocation-free.
+"""
+function cell_to_vertexes(id)
+    buf = Ref(_ZERO6)
+    err = GC.@preserve buf ccall((:cellToVertexes, H3_jll.libh3), H3Error,
+        (H3Index, Ptr{H3Index}), _to_id(id), Base.unsafe_convert(Ptr{H3Index}, buf))
+    _check(err, "cellToVertexes")
+    return buf[]
+end
+
+"""
+    vertex_to_cartesian(v) -> NTuple{3,Float64}
+
+libh3's `vertexToLatLng` for a vertex id, straight onto the unit sphere. The
+same vertex id names the same point from every cell that shares it, so cells
+sharing a vertex get bit-identical coordinates.
+"""
+function vertex_to_cartesian(v)
+    out = Ref{LatLng}()
+    _check(ccall((:vertexToLatLng, H3_jll.libh3), H3Error,
+                 (H3Index, Ref{LatLng}), _to_id(v), out),
+           "vertexToLatLng")
+    λ = out[].lng
+    φ = out[].lat
+    cφ = cos(φ)
+    return (cφ * cos(λ), cφ * sin(λ), sin(φ))
 end
 
 function get_resolution(id)
@@ -371,7 +407,6 @@ end
 # Seven slots covers both stack-buffer calls below: `maxGridDiskSize(1)` is 7,
 # and a cell has at most seven children.
 const _ZERO7 = ntuple(_ -> H3Index(0), Val(7))
-const _ZERO6 = ntuple(_ -> H3Index(0), Val(6))
 
 """
     grid_ring_unsafe_1(id) -> Union{NTuple{6,H3Index},Nothing}

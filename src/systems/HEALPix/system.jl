@@ -199,7 +199,9 @@ function DGG.Fallbacks.cell_cap(g::HEALPixLevelGrid, c::DGG.LevelIndex)
     ix, iy, face = nested_to_xyf(DGG.checked_id(g, c), nside)
     return _subtree_cap(ix, iy, face, nside)
 end
-DGG.Fallbacks.cell_cap_is_cheap(::HEALPixLevelGrid) = Val(true)
+# closed form, so the authalic wrapper keeps it closed form (centre warped, radius stretched)
+DGG.Fallbacks.cell_cap(g::DGG.Fallbacks.AuthalicGrid{<:HEALPixLevelGrid}, c::DGG.LevelIndex) =
+    DGG.Fallbacks._stretched_cell_cap(g, c)
 
 # ===========================================================================
 # Location
@@ -296,3 +298,11 @@ function DGG.ring(g::HEALPixLevelGrid, c::DGG.LevelIndex, ::Val{K};
     K == 1 && return DGG.one_ring(g, c, connectivity)
     return DGG.shell_ring(g, c, Val(K), connectivity)
 end
+
+# ===========================================================================
+# GridInterface shape traits
+# ===========================================================================
+
+# Cells are equal-area quadrilaterals whose edges are curves of the projection: one simple ring, not promised convex.
+GridInterface.cellshape(::HEALPixLevelGrid) = GridInterface.SimpleCells()
+GridInterface.edgekind(::HEALPixLevelGrid) = GridInterface.CurvedEdges()

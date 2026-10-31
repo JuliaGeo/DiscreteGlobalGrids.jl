@@ -303,6 +303,13 @@ function partitionproblem(graph::GR.ChunkDependencyGraph;
         order)
 end
 
+# The cells chunk `k` of `grid` holds; a grid declaring no chunks is one chunk.
+function _chunkcells(grid, k::Integer)
+    ch = chunks(grid)
+    ch === nothing && return ncells(grid)
+    return length(GridInterface.parentpositions(ch[Int(k)]))
+end
+
 function partitionproblem(plan::GR.ChunkedPlan;
         weights=nothing, sourceweights=nothing, ids=nothing, sourceids=nothing,
         order=nothing)
@@ -311,9 +318,8 @@ function partitionproblem(plan::GR.ChunkedPlan;
         "ChunkedPlan has no dependency relation; construct it with dependencies enabled"))
     nwork = GR.ndestinationchunks(graph)
     nresources = GR.nsourcechunks(graph)
-    defaultweights = [Float64(length(GR.ownedindices(plan.dst_space, row)))
-                      for row in 1:nwork]
-    defaultsources = [Float64(length(GR.ownedindices(plan.src_space, source)))
+    defaultweights = [Float64(_chunkcells(plan.dst_space, row)) for row in 1:nwork]
+    defaultsources = [Float64(_chunkcells(plan.src_space, source))
                       for source in 1:nresources]
     return partitionproblem(graph;
         weights=weights === nothing ? defaultweights : weights,

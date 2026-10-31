@@ -92,11 +92,15 @@ A regridding partition assigns **destination chunks**. Source chunks remain
 read dependencies: several partitions may need the same source.
 
 ```@example partitioning
+import GridInterface
+
 source = DGG.levelgrid(DGG.HEALPixSystem(), 1)
 target = DGG.levelgrid(DGG.HEALPixSystem(), 2)
 values = ones(DGG.ncells(source))
-regridplan = DGG.plan_regrid(values; from=DGG.DGGSpace(source; chunklevel=0),
-    to=DGG.DGGSpace(target; chunklevel=1), method=DGG.NearestCell(), lazy=true)
+regridplan = DGG.plan_regrid(values;
+    from=GridInterface.mockchunks(source, GridInterface.LevelChunks(0)),
+    to=GridInterface.mockchunks(target, GridInterface.LevelChunks(1)),
+    method=DGG.NearestCell(), lazy=true)
 assignment = DGG.partition(regridplan, 4)
 destination_chunks = DGG.partchunks(assignment, 1)
 source_chunks = DGG.partsources(assignment, 1)
@@ -105,7 +109,9 @@ source_chunks = DGG.partsources(assignment, 1)
 (; destination_chunks, source_chunks)
 ```
 
-This reads the dependency relation the plan already owns.
+`mockchunks` keeps each grid's cells and reads them in the ancestor chunks of
+the level named: 12 source chunks and 48 destination chunks here.
+Partitioning reads the dependency relation the plan already owns.
 It builds neither regridding weights nor a replacement dependency graph.
 The relation is conservative: a listed source may be ruled out when the
 actual interpolation or overlap weights are built.

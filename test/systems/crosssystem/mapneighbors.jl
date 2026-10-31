@@ -201,7 +201,7 @@ end
                 nb in (Disc(2), Ring(2), Disc(3), Ring(3))
             foreachneighbors(s, cv; neighborhood = nb, connectivity = conn)
             @test @allocated(foreachneighbors(s, cv; neighborhood = nb,
-                connectivity = conn)) == 0 skip = VERSION < v"1.12"
+                connectivity = conn)) == 0 broken = VERSION < v"1.12"
         end
     end
     @test !isempty(filter(carried, DGG.systems()))

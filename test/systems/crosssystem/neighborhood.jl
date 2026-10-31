@@ -108,7 +108,7 @@ lookup_neighbor_bytes(lk, conn) =
             # inside inline builders and boxes the isbits result. The package's
             # normal bounds mode keeps this hot call allocation-free.
             @test lookup_neighbor_bytes(lk, conn) == 0 skip =
-                VERSION < v"1.12" || Base.JLOptions().check_bounds == 1
+                Base.JLOptions().check_bounds == 1
         end
     end
 end
@@ -177,7 +177,7 @@ end
     end; n)
     it = neighbors(coverage)
     sweeploop(it)
-    @test @allocated(sweeploop(it)) == 0 skip = VERSION < v"1.12"
+    @test @allocated(sweeploop(it)) == 0 broken = VERSION < v"1.12"
 end
 
 end # module NeighborhoodTests

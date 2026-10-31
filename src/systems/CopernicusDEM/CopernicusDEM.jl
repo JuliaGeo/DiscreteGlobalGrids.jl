@@ -40,7 +40,8 @@ import ..Helpers
 import GeometryOps as GO
 import GeometryOpsCore as GOCore
 import GeometryOps: SpatialTreeInterface as STI
-import ConservativeRegridding: Trees
+import GeometryOps.SpatialTreeInterface: split_weight, subtree_indices
+import GridInterface
 const US = GO.UnitSpherical
 # The two-argument constructor belongs to the UnionAll.
 const SphericalCap = US.SphericalCap

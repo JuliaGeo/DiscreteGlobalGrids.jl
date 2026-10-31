@@ -20,8 +20,10 @@
 module ChunkGraphOracles
 
 import GlobalRegridding as GR
+import GridInterface as GrI
 import GeoInterface as GI
 import GeometryOps as GO
+import GeometryOpsCore as GOCore
 
 const US = GO.UnitSpherical
 const USPoint = GO.UnitSphericalPoint{Float64}
@@ -41,7 +43,7 @@ graph_pairs(g) = Set((d, Int(s)) for d in 1:GR.ndestinationchunks(g)
     demanded_pairs(dst, src; radius = 0.0) -> Set{Tuple{Int,Int}}
 
 Every pair a lazy read can ask for: one `candidatechunks!` per destination cap
-on the source space's own chunk index. A relation that does not contain this set
+(`grid_extent` of each destination chunk) on the source grid's chunk index. A relation that does not contain this set
 cannot back a refcount, because a source it retired is still going to be
 demanded.
 
@@ -54,7 +56,7 @@ function demanded_pairs(dst, src; radius = 0.0)
     index = GR.chunkindex(src)
     out = Set{Tuple{Int,Int}}()
     buf = Int[]
-    for (d, cap) in pairs(GR.chunkextents(dst))
+    for (d, cap) in pairs(GR._chunkextents(dst))
         GR.candidatechunks!(buf, index, cap; radius)
         for s in buf
             push!(out, (d, s))
@@ -66,14 +68,14 @@ end
 """
     capjoin_pairs(dst, src; radius = 0.0) -> Set{Tuple{Int,Int}}
 
-Brute-force `DilatedIntersects` over `chunkextents(dst) × chunkextents(src)` —
+Brute-force `DilatedIntersects` over the chunk extents of `dst × src` —
 the definition of the relation the deleted latitude-sorted join computed, and a
 second superset of the geometric truth. It is *not* a bound on the graph in
 either direction on the shipped native hierarchies; see the testsets that pin
 that.
 """
 capjoin_pairs(dst, src; radius = 0.0) =
-    let dcaps = GR.chunkextents(dst), scaps = GR.chunkextents(src),
+    let dcaps = GR._chunkextents(dst), scaps = GR._chunkextents(src),
         hits = GR.DilatedIntersects(Float64(radius))
 
         Set((d, s) for d in eachindex(dcaps), s in eachindex(scaps)
@@ -103,7 +105,7 @@ function eager_pairs(dst, src; method = GR.Conservative())
     out = Set{Tuple{Int,Int}}()
     for j in axes(W, 2), i in axes(W, 1)
         iszero(W[i, j]) && continue
-        d, s = GR.chunkat(dst, i), GR.chunkat(src, j)
+        d, s = GR._chunkat(dst, i), GR._chunkat(src, j)
         # A partial space reports `nothing` for an index it does not cover.
         (d === nothing || s === nothing) && continue
         push!(out, (Int(d), Int(s)))
@@ -127,12 +129,12 @@ index, which is what makes it an oracle rather than a second opinion.
 `O(ncells(dst) * ncells(src))`; for small spaces only.
 """
 function contributing_pairs(dst, src; radius = 0.0)
-    op = GR._intersectionoperator(GR.manifold(dst))
+    op = GR._intersectionoperator(GOCore.best_manifold(dst))
     nd, ns = Int(GR.ncells(dst)), Int(GR.ncells(src))
-    dcells = [GR.getcell(dst, i) for i in 1:nd]
-    scells = [GR.getcell(src, j) for j in 1:ns]
-    dchunk = [GR.chunkat(dst, i) for i in 1:nd]
-    schunk = [GR.chunkat(src, j) for j in 1:ns]
+    dcells = [GrI.cell_geometry(dst, i) for i in 1:nd]
+    scells = [GrI.cell_geometry(src, j) for j in 1:ns]
+    dchunk = [GR._chunkat(dst, i) for i in 1:nd]
+    schunk = [GR._chunkat(src, j) for j in 1:ns]
     r = Float64(radius)
     dring = r > 0 ? [cellvertices(dst, i) for i in 1:nd] : nothing
     sring = r > 0 ? [cellvertices(src, j) for j in 1:ns] : nothing
@@ -154,7 +156,7 @@ end
 
 "Cell rings carry unit-sphere points, not geographic ones."
 cellvertices(space, i) = [USPoint(GI.x(p), GI.y(p), GI.z(p))
-                          for p in GI.getpoint(GI.getexterior(GR.getcell(space, i)))]
+                          for p in GI.getpoint(GI.getexterior(GrI.cell_geometry(space, i)))]
 
 """
     ringdistance(a, b) -> Float64

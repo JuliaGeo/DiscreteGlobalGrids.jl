@@ -104,7 +104,7 @@ DGG.neighbors(cg::CountingGrid, x, k::Int; kwargs...) =
 
 # Uncounted forwards: the scan engine walks indices off the grid itself.
 DGG.ncells(cg::CountingGrid) = DGG.ncells(cg.inner)
-DGG.cellindex(cg::CountingGrid, i) = DGG.cellindex(cg.inner, i)
+DGG.cellindex(cg::CountingGrid, i::Int) = DGG.cellindex(cg.inner, i)
 DGG.level(cg::CountingGrid) = DGG.level(cg.inner)
 
 # The same engine, field for field, reading a counting grid.

@@ -63,7 +63,7 @@ Every level-`l` descendant of the region's cells, as one [`CellVector`](@ref).
 
 The expansion never assumes a cell's descendants are contiguous or ascending in
 the deeper level. Where [`has_sorted_subtrees`](@ref) holds it merges one
-[`descendant_range`](@ref DiscreteGlobalGrids.descendant_range) per cell; elsewhere (A5) it resolves
+[`descendant_range`](@ref DGG.descendant_range) per cell; elsewhere (A5) it resolves
 [`descendants`](@ref) to indices and sorts them. Both paths visit every cell of
 the region, and the second visits every leaf it names.
 

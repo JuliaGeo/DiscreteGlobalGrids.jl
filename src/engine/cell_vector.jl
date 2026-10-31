@@ -223,7 +223,7 @@ end
     CellVector(sys, level, ids::AbstractVector)
 
 A read-only `AbstractVector` of canonical cell IDs at one level of one system.
-`cv[i]` returns an ID; [`localindex`](@ref DiscreteGlobalGrids.localindex)`(cv, cell)` returns its position or
+`cv[i]` returns an ID; [`localindex`](@ref DGG.localindex)`(cv, cell)` returns its position or
 `nothing`. `collect(cv)` creates an ordinary vector. `CellVector(cv)` returns
 `cv` unchanged.
 
@@ -488,7 +488,7 @@ outside the cells the vector holds. Same contract as [`cellat`](@ref) on a
 grid, restricted to the subset: a point inside the level grid but outside this
 vector answers `nothing` rather than naming a cell that is not here.
 
-[`localindex`](@ref DiscreteGlobalGrids.localindex) is the same question answered as an index.
+[`localindex`](@ref DGG.localindex) is the same question answered as an index.
 """
 function cellat(cv::CellVector, p::GO.UnitSphericalPoint)
     c = cellat(cv.grid, p)

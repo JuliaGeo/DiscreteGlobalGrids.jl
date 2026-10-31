@@ -13,3 +13,8 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 [sources]
 DiscreteGlobalGridsVisualization = {path = ".."}
 DiscreteGlobalGrids = {path = "../../.."}
+
+[compat]
+# GeoMakie 0.7.17 calls `Makie.timed_ticklabelspace_reset`, which Makie 0.24.16
+# removed (MakieOrg/GeoMakie.jl#398).
+Makie = "0.24.0 - 0.24.15"

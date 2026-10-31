@@ -28,23 +28,25 @@ end
 struct G4RadiusMethod <: AbstractRegriddingMethod
     radius::Float64
 end
-GR.supportradius(m::G4RadiusMethod, ::RegridSpace) = m.radius
+GR.supportradius(m::G4RadiusMethod, ::Any) = m.radius
 
 planned_dependencies(dst, src; radius = 0.0, kw...) =
     GR.dependencies(ChunkedPlan(G4RadiusMethod(radius), Weighted(0.5), dst, src;
         dependencies = true, kw...))
 
-# A space that counts every question the relation machinery asks it.
-# `chunkextents` is that question: the destination caps a relation is built by
+# A grid that counts every question the relation machinery asks it. The chunk
+# extents are that question: the destination caps a relation is built by
 # querying with, the caps the identity stamp hashes, and the vector the generic
-# `chunkindex` packs all come through it, so this counter is nonzero exactly
-# when a relation is being derived from this space and zero when nothing is.
-mutable struct G4ProbeSpace{S<:RegridSpace} <: RegridSpace
+# `chunkindex` packs all come through `_chunkextents`, so this counter is
+# nonzero exactly when a relation is being derived from this grid and zero
+# when nothing is.
+mutable struct G4ProbeSpace{S} <: GrI.AbstractWrappedGrid
     space::S
     queries::Int
 end
-G4ProbeSpace(space::RegridSpace) = G4ProbeSpace(space, 0)
-GR.chunkextents(p::G4ProbeSpace) = (p.queries += 1; GR.chunkextents(p.space))
+G4ProbeSpace(space) = G4ProbeSpace(space, 0)
+Base.parent(p::G4ProbeSpace) = p.space
+GR._chunkextents(p::G4ProbeSpace) = (p.queries += 1; GR._chunkextents(p.space))
 
 # A source chunk index that counts the queries a builder makes of it. ONE query
 # implementation defines every edge, so the counter and the pairs together say
@@ -63,49 +65,33 @@ function GR.candidatechunks!(out::Vector{Int}, ix::E2QueryIndex, dstcap::GR.Cap;
     return GR.candidatechunks!(out, ix.inner, dstcap; radius)
 end
 
-struct E2QuerySpace{S<:RegridSpace,I} <: RegridSpace
+struct E2QuerySpace{S,I} <: GrI.AbstractWrappedGrid
     space::S
     index::E2QueryIndex{I}
 end
 
-E2QuerySpace(space::RegridSpace) =
+E2QuerySpace(space) =
     E2QuerySpace(space, E2QueryIndex(GR.chunkindex(space), Threads.Atomic{Int}(0)))
 
+Base.parent(s::E2QuerySpace) = s.space
 GR.chunkindex(s::E2QuerySpace) = s.index
-GR.chunkextents(s::E2QuerySpace) = GR.chunkextents(s.space)
-ncells(s::E2QuerySpace) = ncells(s.space)
-getcell(s::E2QuerySpace, i::Int) = getcell(s.space, i)
-manifold(s::E2QuerySpace) = manifold(s.space)
-hascellchart(s::E2QuerySpace) = hascellchart(s.space)
-cellcentroid(s::E2QuerySpace, i::Int) = cellcentroid(s.space, i)
-cellat(s::E2QuerySpace, x) = cellat(s.space, x)
-nchunks(s::E2QuerySpace) = nchunks(s.space)
-ownedindices(s::E2QuerySpace, c::Int) = ownedindices(s.space, c)
-celltree(s::E2QuerySpace) = celltree(s.space)
-ncells(p::G4ProbeSpace) = ncells(p.space)
-getcell(p::G4ProbeSpace, i::Int) = getcell(p.space, i)
-manifold(p::G4ProbeSpace) = manifold(p.space)
-hascellchart(p::G4ProbeSpace) = hascellchart(p.space)
-cellcentroid(p::G4ProbeSpace, i::Int) = cellcentroid(p.space, i)
-cellat(p::G4ProbeSpace, x) = cellat(p.space, x)
-nchunks(p::G4ProbeSpace) = nchunks(p.space)
-ownedindices(p::G4ProbeSpace, c::Int) = ownedindices(p.space, c)
-celltree(p::G4ProbeSpace) = celltree(p.space)
 
-# A space that genuinely IS a sub-space of another: its chunks are `chunks` of
+# A grid that genuinely IS a sub-grid of another: its chunks are `chunks` of
 # the parent, in that order, and its cells are those chunks' cells renumbered
 # `1:n`. Its geometry is the parent's, so its chunk caps ARE the parent's caps
 # for those chunks — which is precisely the precondition
 # `subspace_dependencies` checks before re-stamping a row view onto it. This is
-# the shape `scripts/copdem_production.jl`'s per-column destination has.
-struct E1Subspace{S<:RegridSpace} <: RegridSpace
+# the shape `scripts/copdem_production.jl`'s per-column destination has. Each
+# chunk is a `Subset` of this grid rooted at the parent's chunk number, whose
+# extent is that parent chunk's.
+struct E1Subspace{S} <: GrI.AbstractGrid
     parent::S
     chunks::Vector{Int}
     cells::Vector{Int}                  # local index -> parent local index
     spans::Vector{UnitRange{Int}}       # local cells of each local chunk
 end
 
-function E1Subspace(parent::RegridSpace, chunks)
+function E1Subspace(parent, chunks)
     cells = Int[]
     spans = UnitRange{Int}[]
     for c in chunks
@@ -116,14 +102,15 @@ function E1Subspace(parent::RegridSpace, chunks)
     return E1Subspace(parent, collect(Int, chunks), cells, spans)
 end
 
-ncells(s::E1Subspace) = length(s.cells)
-nchunks(s::E1Subspace) = length(s.chunks)
-getcell(s::E1Subspace, i::Int) = getcell(s.parent, s.cells[i])
-manifold(s::E1Subspace) = manifold(s.parent)
-ownedindices(s::E1Subspace, c::Int) = s.spans[c]
-# `chunkextents` is public but not exported, so this must name it to extend it
-# rather than define a second function that the generic fallback would shadow.
-GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
+GrI.ncells(s::E1Subspace) = length(s.cells)
+GrI.cell_geometry(s::E1Subspace, i::Integer) = getcell(s.parent, s.cells[i])
+GrI.cell_centroid(s::E1Subspace, i::Integer) = cellcentroid(s.parent, s.cells[i])
+GrI.cell_extent(s::E1Subspace, i::Integer) = GrI.cell_extent(s.parent, s.cells[i])
+GOCore.best_manifold(s::E1Subspace) = manifold(s.parent)
+GrI.chunks(s::E1Subspace) =
+    [GrI.Subset(s, s.spans[k]; root = s.chunks[k]) for k in eachindex(s.chunks)]
+GrI.grid_extent(c::GrI.Subset{<:E1Subspace}) =
+    GrI.grid_extent(GrI.chunks(parent(c).parent)[c.root])
 
 @testset "chunk dependency graph" begin
 
@@ -197,9 +184,9 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
         # own boundary. The two relations then CROSS, and the pairs on the
         # index's side of the difference are demands no refcount predicted.
         #
-        # A `RasterGrid` source is the shipped case: its index is a quadtree
-        # cursor over cells whose leaves straddle chunk boundaries, and it
-        # answers with whole chunks that the chunk's own cap would reject.
+        # A `RasterGrid` source with tiles out of step with its quadtree's
+        # splits is the case that once diverged; its index now packs the
+        # tiles' own caps, and the demands must still be edges.
         raster = misalignedraster(360, 180, 37, 23)
         dst = ToyLonLatSpace(24, 12; chunks = (2, 2))
 
@@ -235,8 +222,7 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
                 ToyLonLatSpace(8, 4; chunks = (2, 1)), 0.0),
             ("toy source, support", ToyLonLatSpace(12, 6; chunks = (3, 2)),
                 ToyLonLatSpace(8, 4; chunks = (2, 1)), 0.2),
-            # The shipped raster path: a quadtree cursor whose leaves straddle
-            # chunk boundaries, so its answers are not the chunk caps'.
+            # A raster whose tiles straddle its quadtree's splits.
             ("raster source", ToyLonLatSpace(24, 12; chunks = (2, 2)),
                 misalignedraster(36, 18, 7, 5), 0.0),
             ("raster source, support", ToyLonLatSpace(24, 12; chunks = (2, 2)),
@@ -288,10 +274,8 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
         #
         # Right: the relation must stay inside the brute-force cap join, which
         # is what "conservative bound" means as opposed to "any superset at
-        # all". That half holds where the source's chunk index is the generic
-        # one over the caps `chunkextents` reports. On a native hierarchy the
-        # two relations CROSS in both directions — pinned in the testset below —
-        # so the raster arm asserts what is true there instead, and says so.
+        # all". That half holds wherever the source's chunk index is the generic
+        # one over the caps `chunkextents` reports, which every grid now takes.
         generic = (
             ("toy source", ToyLonLatSpace(12, 6; chunks = (3, 2)),
                 ToyLonLatSpace(8, 4; chunks = (2, 1))),
@@ -324,10 +308,9 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
             eager = eager_pairs(dst, src)
             @test !isempty(eager)
             @test eager ⊆ rows
-            # The right-hand containment does not hold on a native hierarchy and
-            # is not meant to: the quadtree answers whole chunks for a
-            # straddling leaf. Both supersets still dominate the eager weights,
-            # which is the invariant that matters for correctness.
+            # The raster's index packs its tiles' caps, so the right-hand
+            # containment holds here too.
+            @test rows ⊆ capjoin_pairs(dst, src)
             @test eager ⊆ capjoin_pairs(dst, src)
         end
     end
@@ -344,19 +327,15 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
                   capjoin_pairs(dst, src; radius)
         end
 
-        # A native hierarchy is a different matter. The raster quadtree
-        # answers whole chunks for a straddling leaf without testing each
-        # chunk's own cap, so it holds pairs the cap join rejects; and the cap
-        # join holds pairs the quadtree never reaches. The two relations CROSS
-        # in both directions — measured here, so the cap join cannot be used as
-        # a bound on the graph in either direction, only as a second superset of
-        # the geometric truth.
+        # A raster takes the same generic index: its tiles' `grid_extent`
+        # (the analytic block caps) packed in the R-tree, with no quadtree walk
+        # of its own. So a raster whose tiles straddle the quadtree's splits is
+        # answered by exactly the cap join too.
         rdst = ToyLonLatSpace(24, 12; chunks = (2, 2))
         rsrc = misalignedraster(36, 18, 7, 5)
         native = graph_pairs(GR.chunk_dependency_graph(rdst, rsrc))
         capjoin = capjoin_pairs(rdst, rsrc)
-        @test !isempty(setdiff(native, capjoin))
-        @test !isempty(setdiff(capjoin, native))
+        @test native == capjoin
         # Both still dominate the geometric truth; that is the invariant, and
         # it is the one a builder change must keep.
         truth = contributing_pairs(rdst, rsrc)
@@ -814,7 +793,7 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
         sel = [2, 5, 6, 9]
         sub = E1Subspace(dst, sel)
         @test nchunks(sub) == length(sel)
-        @test GR.chunkextents(sub) == GR.chunkextents(dst)[sel]
+        @test chunkextents(sub) == chunkextents(dst)[sel]
         # The toy owns its cells under the name the generics dispatch on. Spelt
         # `cellindices`, this is a `MethodError` and every row below is built
         # over a sub-space nobody can enumerate.
@@ -866,7 +845,7 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
         # one thing that makes the re-stamp unsound, so it is the one thing
         # checked exactly rather than approximately.
         other = E1Subspace(ToyLonLatSpace(12, 6; lat = (-80.0, 80.0), chunks = (3, 2)), sel)
-        @test GR.chunkextents(other) != GR.chunkextents(dst)[sel]
+        @test chunkextents(other) != chunkextents(dst)[sel]
         @test_throws ArgumentError GR.subspace_dependencies(g, other, sel)
         # A relation with no extents has nothing to compare against.
         bare = GR.ChunkDependencyGraph(GR.DependencyIdentity(), [1, 1], Int32[],
@@ -891,7 +870,7 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
         # default, and one spelled `cellindices` would leave `ownedindices` a
         # `MethodError`; both would go unnoticed everywhere else here.
         @test GR.supportradius(method, src) == 0.1
-        @test GR.ownedindices(G4ProbeSpace(src), 1) == GR.ownedindices(src, 1)
+        @test ownedindices(G4ProbeSpace(src), 1) == ownedindices(src, 1)
 
         # The default builds one, at the plan's own radius, in every spelling of
         # the constructor — keyword and both positional forms. It is the default
@@ -1029,7 +1008,7 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
         # the global space the graph and its views are stamped against.
         @test_throws ArgumentError adopt(; dependencies = GR.restrict(g, [1, 2]))
         onechunk = ToyLonLatSpace(12, 2; chunks = (12, 2))
-        @test GR.nchunks(onechunk) == 1
+        @test nchunks(onechunk) == 1
         @test_throws ArgumentError adopt(; dependencies = GR.restrict(g, [1]),
             d = onechunk)
         @test_throws ArgumentError adopt(; dependencies = g, d = onechunk)
@@ -1047,23 +1026,20 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
         # behaviourally.
         #
         # Structurally: the duplicate spellings are gone from the module — not
-        # merely unexported — and `chunkextents` is a required hook rather than
-        # a fallback that collects caps back out of a compatibility tree.
+        # merely unexported — and so are the space hooks: a chunk's extent is
+        # `grid_extent` of the chunk `chunks(grid)` hands out, read by one
+        # private helper, and no grid declares a cap vector of its own.
         for name in (:connectedchunks, :connectedchunks!, :connectedchunkpairs,
-                     :chunktree, :RasterFlatTree, :_collectextents!)
+                     :chunktree, :RasterFlatTree, :_collectextents!,
+                     :chunkextents, :chunkextent, :RegridSpace, :nchunks,
+                     :ownedindices)
             @test !isdefined(GR, name)
         end
         @test :chunktree ∉ names(GlobalRegridding)
         @test !Base.ispublic(GR, :chunktree)
-        # No method for the abstract space type: nothing can fall back to a tree.
-        @test !hasmethod(GR.chunkextents, Tuple{RegridSpace})
-        @test hasmethod(GR.chunkextents, Tuple{ToyLonLatSpace})
-        @test hasmethod(GR.chunkextents, Tuple{RasterGrid})
-        # `chunkextent` survives with a cheap specialization, which is the whole
-        # reason to keep the singular form at all.
-        @test hasmethod(GR.chunkextent, Tuple{RegridSpace,Int})
-        @test which(GR.chunkextent, Tuple{RasterGrid,Int}).sig !==
-              which(GR.chunkextent, Tuple{RegridSpace,Int}).sig
+        @test chunkextents(ToyLonLatSpace(8, 4; chunks = (4, 2))) ==
+              [convert(GR.Cap, GrI.grid_extent(c))
+               for c in GrI.chunks(ToyLonLatSpace(8, 4; chunks = (4, 2)))]
 
         # Behaviourally: every edge comes through `candidatechunks!` on the
         # source space's own chunk index, one query per destination cap, and
@@ -1090,8 +1066,8 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
 
         # And a cheap `chunkextent` agrees with the vector it is cheaper than.
         raster = misalignedraster(16, 8, 5, 3)
-        @test [GR.chunkextent(raster, c) for c in 1:nchunks(raster)] ==
-              GR.chunkextents(raster)
+        @test [chunkextent(raster, c) for c in 1:nchunks(raster)] ==
+              chunkextents(raster)
     end
 
     @testset "`refine` reaches the plan through `plan_regrid` only" begin

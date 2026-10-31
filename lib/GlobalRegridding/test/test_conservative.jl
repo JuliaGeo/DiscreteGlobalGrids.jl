@@ -1,6 +1,7 @@
 # Conservative weight construction.
 
 import ConservativeRegridding as CR
+import GridInterface as GrI
 import DimensionalData as DD
 import DiscreteGlobalGrids as DGG
 import GeometryOps: SpatialTreeInterface as STI
@@ -13,19 +14,16 @@ import Random
 A one-cell graticule box whose parallel edges have `n` segments, producing a
 non-convex spherical ring for clipping tests.
 """
-struct DensifiedCellSpace <: RegridSpace
+struct DensifiedCellSpace <: GrI.AbstractGrid
     lon::Tuple{Float64,Float64}
     lat::Tuple{Float64,Float64}
     n::Int
 end
 
-ncells(::DensifiedCellSpace) = 1
-nchunks(::DensifiedCellSpace) = 1
-ownedindices(::DensifiedCellSpace, ::Int) = 1:1
-manifold(::DensifiedCellSpace) = GOCore.Spherical(; radius = 1.0)
-celltree(space::DensifiedCellSpace) = GR.CellSpaceRTree(space, 1:1)
+GrI.ncells(::DensifiedCellSpace) = 1
+GOCore.best_manifold(::DensifiedCellSpace) = GOCore.Spherical(; radius = 1.0)
 
-function getcell(space::DensifiedCellSpace, i::Int)
+function GrI.cell_geometry(space::DensifiedCellSpace, i::Integer)
     i == 1 || throw(BoundsError(space, i))
     lon0, lon1 = space.lon
     lat0, lat1 = space.lat
@@ -43,12 +41,13 @@ end
 """
     CellCountSpace(space)
 
-Wrap a lon/lat space and count both restricted-tree builds and cell
-syntheses. The tile's tree is rooted at the wrapper and its node extents come
-from cell corners, so the count is exactly what a weight build synthesizes.
-Block builders may run on `Threads.@spawn` tasks, hence the atomic counters.
+Wrap a lon/lat grid and count both restricted-tree builds and cell
+syntheses. The tile's tree is the toy's quadtree, whose node extents come
+from the lattice's vertices, so the cell count is exactly what a weight build
+synthesizes. Block builders may run on `Threads.@spawn` tasks, hence the
+atomic counters.
 """
-struct CellCountSpace{S<:ToyLonLatSpace} <: RegridSpace
+struct CellCountSpace{S<:ToyLonLatSpace} <: GrI.AbstractWrappedGrid
     space::S
     cells::Threads.Atomic{Int}
     builds::Threads.Atomic{Int}
@@ -56,27 +55,21 @@ end
 
 CellCountSpace(space::ToyLonLatSpace) =
     CellCountSpace(space, Threads.Atomic{Int}(0), Threads.Atomic{Int}(0))
+Base.parent(cs::CellCountSpace) = cs.space
 
-ncells(cs::CellCountSpace) = ncells(cs.space)
-nchunks(cs::CellCountSpace) = nchunks(cs.space)
-ownedindices(cs::CellCountSpace, chunk::Int) = ownedindices(cs.space, chunk)
-manifold(cs::CellCountSpace) = manifold(cs.space)
-hascellchart(cs::CellCountSpace) = hascellchart(cs.space)
-cellcentroid(cs::CellCountSpace, i::Int) = cellcentroid(cs.space, i)
-cellat(cs::CellCountSpace, p) = cellat(cs.space, p)
-chunkextents(cs::CellCountSpace) = GR.chunkextents(cs.space)
+GrI.cell_geometry(cs::CellCountSpace, i::Integer) =
+    (Threads.atomic_add!(cs.cells, 1); GrI.cell_geometry(cs.space, i))
 
-getcell(cs::CellCountSpace, i::Int) =
-    (Threads.atomic_add!(cs.cells, 1); getcell(cs.space, i))
-
-celltree(cs::CellCountSpace) = _countedtree(cs, 1:ncells(cs.space))
-
-GR.subtree(cs::CellCountSpace, inds) =
-    (Threads.atomic_add!(cs.builds, 1); _countedtree(cs, inds))
-
-_countedtree(cs::CellCountSpace, inds) =
-    ToyCapTree(cs, collect(Int, inds),
-        [toy_cap(cellcorners(cs.space, Int(i))) for i in inds])
+GrI.subtree(cs::CellCountSpace, inds::AbstractVector{<:Integer}; kw...) =
+    (Threads.atomic_add!(cs.builds, 1); GrI.subtree(cs.space, inds; kw...))
+GrI.subtree(cs::CellCountSpace, s::GrI.Subset; kw...) =
+    (Threads.atomic_add!(cs.builds, 1); GrI.subtree(cs.space, s; kw...))
+GrI.treeify(cs::CellCountSpace; leaf_capacity = GrI.Balanced()) =
+    (Threads.atomic_add!(cs.builds, 1); GrI.treeify(cs.space; leaf_capacity))
+GrI.treeify(cs::CellCountSpace, hint::GrI.LeafHint) =
+    (Threads.atomic_add!(cs.builds, 1); GrI.treeify(cs.space, hint))
+GrI.treeify(cs::CellCountSpace, n::Integer) =
+    (Threads.atomic_add!(cs.builds, 1); GrI.treeify(cs.space, n))
 
 """
     T5PairOnly()
@@ -87,15 +80,15 @@ Methods that know nothing of locators: one supplies only the five-argument
 """
 struct T5PairOnly <: AbstractRegriddingMethod end
 
-GR.pairblock(::T5PairOnly, ::RegridSpace, dst_inds, ::RegridSpace, src_inds) =
+GR.pairblock(::T5PairOnly, dst, dst_inds, src, src_inds) =
     WeightBlock(fill(2.0, length(dst_inds), length(src_inds)), nothing)
 
 struct T5SeamOnly <: AbstractRegriddingMethod end
 
 GR.outputsampling(::T5SeamOnly) = DD.Lookups.Points()
 
-GR.weightblock(::DD.Lookups.Points, ::T5SeamOnly, ::RegridSpace, dst_inds,
-    ::RegridSpace, src_inds) =
+GR.weightblock(::DD.Lookups.Points, ::T5SeamOnly, dst, dst_inds,
+    src, src_inds) =
     WeightBlock(fill(3.0, length(dst_inds), length(src_inds)), nothing)
 
 # Helpers
@@ -109,7 +102,7 @@ conservative_block(dst, dst_inds, src, src_inds) =
 # The generic coordinate-list assembly, reached past a method's own `pairblock`.
 generic_pairblock(method, dst, dst_inds, src, src_inds) =
     invoke(GR.pairblock,
-        Tuple{AbstractRegriddingMethod,RegridSpace,Any,RegridSpace,Any},
+        Tuple{AbstractRegriddingMethod,Any,Any,Any,Any},
         method, dst, dst_inds, src, src_inds)
 
 cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in inds]
@@ -129,14 +122,14 @@ end
 T3AdoptMethod(inner::AbstractRegriddingMethod) =
     T3AdoptMethod(inner, Ref(0), Ref(0))
 
-function GR.pairblock(method::T3AdoptMethod, dst_space::RegridSpace, dst_inds,
-    src_space::RegridSpace, src_inds)
+function GR.pairblock(method::T3AdoptMethod, dst_space, dst_inds,
+    src_space, src_inds)
     method.builds[] += 1
     return GR.pairblock(method.inner, dst_space, dst_inds, src_space, src_inds)
 end
 
 function buildweights!(coo::WeightCOO, method::T3AdoptMethod,
-    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
+    dst_space, dst_inds, src_space, src_inds)
     method.fallbacks[] += 1
     return buildweights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
 end
@@ -155,7 +148,7 @@ end
 T3CooMethod(inner::AbstractRegriddingMethod) = T3CooMethod(inner, Ref(0))
 
 function buildweights!(coo::WeightCOO, method::T3CooMethod,
-    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
+    dst_space, dst_inds, src_space, src_inds)
     method.builds[] += 1
     return buildweights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
 end
@@ -283,8 +276,9 @@ end
         fine = ToyLonLatSpace(8, 4)
         dst_inds, src_inds = ownedindices(coarse, 1), ownedindices(fine, 1)
         block = conservative_block(coarse, dst_inds, fine, src_inds)
-        areas = CR.intersection_areas(manifold(coarse), GOCore.False(),
-            GR.subtree(coarse, dst_inds), GR.subtree(fine, src_inds); progress = false)
+        areas = CR.intersection_areas(manifold(coarse), GOCore.False(), coarse, fine;
+            dst_tree = subtree(coarse, dst_inds), src_tree = subtree(fine, src_inds),
+            progress = false)
         @test block.weights == areas
         # Denominators use the same stored entries.
         @test block.denom == vec(sum(areas; dims = 2))
@@ -293,7 +287,7 @@ end
     @testset "banded chunk extents" begin
         # Full-longitude row chunks retain bounded caps.
         banded = ToyLonLatSpace(16, 8; chunks = (16, 2))
-        caps = GR.chunkextents(banded)
+        caps = chunkextents(banded)
         @test all(cap.radius < Float64(pi) for cap in caps)
 
         # Caps cover geodesic edges, not only corners.
@@ -322,7 +316,7 @@ end
         # Regional chunks retain convex caps.
         region = ToyLonLatSpace(8, 4; lon = (-40.0, 40.0), lat = (-20.0, 20.0),
             chunks = (4, 2))
-        @test all(c -> c.radius < Float64(pi) / 2, GR.chunkextents(region))
+        @test all(c -> c.radius < Float64(pi) / 2, chunkextents(region))
     end
 
     @testset "threaded and serial builds agree bit for bit" begin
@@ -340,24 +334,24 @@ end
             GR.indexmap(1:ndst), GR.indexmap(1:nsrc))
         assemble(threaded) = WeightBlock(
             GR._fillcoo!(WeightCOO(ndst),
-                CR.intersection_areas(m, threaded,
-                    GR.subtree(dst, 1:ndst), GR.subtree(src, 1:nsrc);
+                CR.intersection_areas(m, threaded, dst, src;
+                    dst_tree = subtree(dst, 1:ndst), src_tree = subtree(src, 1:nsrc),
                     intersection_operator = blockop(), progress = false)),
             ndst, nsrc)
         reference = assemble(GOCore.False())
 
         # Sequential borrowers reuse retained, correctly typed buffers.
-        cache = GR._with_sparse_assembly_cache(Float64) do cache
+        cache = GR._with_sparse_scratch(Float64) do cache
             push!(cache.candidate_pairs, (0, 0))
             push!(cache.rows, 0); push!(cache.cols, 0); push!(cache.vals, 0.0)
             cache
         end
         buffers = (cache.candidate_pairs, cache.rows, cache.cols, cache.vals)
         production = GR._intersectionareas(m,
-            GR.subtree(dst, 1:ndst), GR.subtree(src, 1:nsrc), blockop())
+            dst, subtree(dst, 1:ndst), src, subtree(src, 1:nsrc), blockop())
         @test all(isempty, buffers)
         @test buffers === (cache.candidate_pairs, cache.rows, cache.cols, cache.vals)
-        @test cache === GR._with_sparse_assembly_cache(identity, Float64)
+        @test cache === GR._with_sparse_scratch(identity, Float64)
 
         # Two live borrowers can never own the same cache.  Holding both until
         # the parent observes them also proves an empty pool grows instead of
@@ -365,7 +359,7 @@ end
         ready = Channel{Any}(2)
         release = Channel{Nothing}(2)
         jobs = map(1:2) do _
-            Threads.@spawn GR._with_sparse_assembly_cache(Float64) do borrowed
+            Threads.@spawn GR._with_sparse_scratch(Float64) do borrowed
                 put!(ready, borrowed)
                 take!(release)
                 borrowed
@@ -377,18 +371,18 @@ end
         fetch.(jobs)
 
         # Pools are separated by the exact output value type.
-        cache32 = GR._with_sparse_assembly_cache(identity, Float32)
+        cache32 = GR._with_sparse_scratch(identity, Float32)
         @test eltype(cache32.vals) === Float32
         @test cache32 !== cache
 
         # A failed borrower returns its cache through the production helper's
         # `finally`, ready for the next acquire.
         failed = Ref{Any}()
-        @test_throws ErrorException GR._with_sparse_assembly_cache(Float64) do borrowed
+        @test_throws ErrorException GR._with_sparse_scratch(Float64) do borrowed
             failed[] = borrowed
             error("deliberate assembly failure")
         end
-        @test failed[] === GR._with_sparse_assembly_cache(identity, Float64)
+        @test failed[] === GR._with_sparse_scratch(identity, Float64)
 
         @test GR.SparseArrays.nnz(block.weights) > 2000
 
@@ -542,8 +536,8 @@ end
         ncell = Int(ncells(cells))
 
         # A raster cell is cheap to synthesize; an unknown space's is not.
-        @test !GR.expensivecellgeometry(raster)
-        @test GR.expensivecellgeometry(cells)
+        @test !GrI.cell_geometry_is_expensive(raster)
+        @test GrI.cell_geometry_is_expensive(cells)
         @test GR.preparesdestination(Conservative(), cells)
         @test !GR.preparesdestination(Conservative(), raster)
         @test !GR.preparesdestination(BarycentricPoint(), cells)
@@ -641,7 +635,6 @@ end
         src = ToyLonLatSpace(16, 8)
         inds, sinds = 1:Int(ncells(dst)), 1:Int(ncells(src))
         m = manifold(dst)
-        src_tree = GR.subtree(src, sinds)
 
         cache = GR.DestinationCache(dst, inds)
         pairs = [(i1, i2) for i1 in sinds, i2 in inds]
@@ -662,16 +655,18 @@ end
         sizehint!(vals, 8)
         item = (1, 1)
         # Warm both operators' memos and both vectors' capacity.
-        cachedop(rows, cols, vals, item, src_tree, cache.tree)
-        memoop(rows, cols, vals, item, src_tree, cache.tree)
-        cachedbytes = @allocated cachedop(rows, cols, vals, item, src_tree, cache.tree)
-        memobytes = @allocated memoop(rows, cols, vals, item, src_tree, cache.tree)
+        # The engine hands the operator the two grids; their trees only drive
+        # the candidate search.
+        cachedop(rows, cols, vals, item, src, dst)
+        memoop(rows, cols, vals, item, src, dst)
+        cachedbytes = @allocated cachedop(rows, cols, vals, item, src, dst)
+        memobytes = @allocated memoop(rows, cols, vals, item, src, dst)
         @test cachedbytes == 0
         @test cachedbytes <= memobytes
         @test length(rows) == 4
     end
 
-    @testset "packed cell fallback preserves indices and packing results" begin
+    @testset "a scattered index set's tree preserves indices and weights" begin
         space = ToyLonLatSpace(8, 4)
         inds = [1, 4, 7, 10, 13, 18, 23, 28, 31]
 
@@ -692,29 +687,33 @@ end
             return sort!(out)
         end
 
-        other = celltree(ToyLonLatSpace(16, 8))
+        other_space = ToyLonLatSpace(16, 8)
+        other = celltree(other_space)
+        # The grid's own restricted tree: its leaves emit exactly `inds`.
+        # On a structured grid that is the quadtree masked to `inds`, whose
+        # weights are its windows' (an upper bound on the members below).
+        tree = subtree(space, inds)
+        @test sort!(leafindices!(Int[], tree)) == sort(inds)
+        @test GrI.split_weight(tree) >= length(inds)
+        STI.isleaf(tree) || @test sum(GrI.split_weight, STI.getchild(tree)) ==
+                                  GrI.split_weight(tree)
+        reference_weights = CR.intersection_areas(manifold(space), GOCore.False(),
+            other_space, space; dst_tree = other, src_tree = tree, progress = false)
+        # The generic packed R-tree over the same cells, at any node capacity,
+        # names the same leaves and clips to the same weights.
         reference_pairs = nothing
-        reference_weights = nothing
         for capacity in (2, 3, 16)
-            tree = GR.CellSpaceRTree(space, inds; nodecapacity = capacity)
-            @test tree.space === space
-            @test tree.indices == inds
-            @test sort!(leafindices!(Int[], tree)) == sort(inds)
-            @test CR.Trees.ncells(tree) == length(inds)
-            @test CR.Trees.cell_index_count(tree) == ncells(space)
-            @test CR.Trees.split_weight(tree) == length(inds)
-            STI.isleaf(tree) || @test sum(CR.Trees.split_weight, STI.getchild(tree)) ==
-                                      CR.Trees.split_weight(tree)
-
-            pairs = candidates(tree, other)
-            weights = CR.intersection_areas(manifold(space), GOCore.False(), other, tree;
-                progress = false)
+            packed = GrI.fallback_subtree(manifold(space), space, inds, capacity)
+            @test sort!(leafindices!(Int[], packed)) == sort(inds)
+            @test GrI.split_weight(packed) == length(inds)
+            pairs = candidates(packed, other)
+            weights = CR.intersection_areas(manifold(space), GOCore.False(), other_space, space;
+                dst_tree = other, src_tree = packed, progress = false)
+            @test weights == reference_weights
             if reference_pairs === nothing
                 reference_pairs = pairs
-                reference_weights = weights
             else
                 @test pairs == reference_pairs
-                @test weights == reference_weights
             end
         end
     end
@@ -723,16 +722,16 @@ end
         dst = ToyLonLatSpace(8, 4)
         src = ToyLonLatSpace(16, 8)
         native_dst, native_src = celltree(dst), celltree(src)
-        fallback_dst = GR.CellSpaceRTree(dst, 1:ncells(dst); nodecapacity = 3)
-        fallback_src = GR.CellSpaceRTree(src, 1:ncells(src); nodecapacity = 2)
+        fallback_dst = GrI.fallback_subtree(manifold(dst), dst, 1:ncells(dst), 3)
+        fallback_src = GrI.fallback_subtree(manifold(src), src, 1:ncells(src), 2)
 
         m = manifold(dst)
-        reference = CR.intersection_areas(m, GOCore.False(), native_dst, native_src;
-            progress = false)
-        serial = CR.intersection_areas(m, GOCore.False(), fallback_dst, fallback_src;
-            progress = false)
-        threaded = CR.intersection_areas(m, GOCore.True(), fallback_dst, fallback_src;
-            progress = false)
+        reference = CR.intersection_areas(m, GOCore.False(), dst, src;
+            dst_tree = native_dst, src_tree = native_src, progress = false)
+        serial = CR.intersection_areas(m, GOCore.False(), dst, src;
+            dst_tree = fallback_dst, src_tree = fallback_src, progress = false)
+        threaded = CR.intersection_areas(m, GOCore.True(), dst, src;
+            dst_tree = fallback_dst, src_tree = fallback_src, progress = false)
         @test serial == reference
         @test threaded == serial
     end
@@ -741,14 +740,13 @@ end
         space = ToyLonLatSpace(16, 8)
         memo = GR._cellmemo(space, 1:ncells(space))
         @test memo isa GR.CellMemo
-        tree = GR.subtree(space, 1:ncells(space))
-        a = GR._memocell(memo, tree, 5)
-        @test a == CR.Trees.getcell(tree, 5)
+        a = GR._memocell(memo, space, 5)
+        @test a == getcell(space, 5)
         # A hit returns the stored object; a colliding key rebuilds.
-        @test GR._memocell(memo, tree, 5) === a
-        b = GR._memocell(memo, tree, 5 + length(memo.keys))
-        @test b == CR.Trees.getcell(tree, 5 + length(memo.keys))
-        @test GR._memocell(memo, tree, 5) == a
+        @test GR._memocell(memo, space, 5) === a
+        b = GR._memocell(memo, space, 5 + length(memo.keys))
+        @test b == getcell(space, 5 + length(memo.keys))
+        @test GR._memocell(memo, space, 5) == a
         # The memo-free operator spelling still assembles (covered above by the
         # threaded-vs-serial testset, whose reference uses it).
         @test GR.BlockAreaOperator(1, 2, 3).srcmemo === nothing
@@ -816,6 +814,23 @@ end
             @test all(pair.denom .=== reference.denom)
             @test pair.reference === pair.denom
         end
+    end
+
+    @testset "a plan resolves each space's chunk list once" begin
+        dst = CountingSpace(ToyLonLatSpace(8, 4; chunks = (4, 2)))
+        src = CountingSpace(ToyLonLatSpace(16, 8; chunks = (4, 4)))
+        plan = ChunkedPlan(Conservative(), Weighted(0.5), dst, src; storage = PerChunk())
+        bare = ChunkedPlan(Conservative(), Weighted(0.5), dst.space, src.space;
+            storage = PerChunk())
+        dst.chunkreads[] = src.chunkreads[] = 0
+        for d in 1:nchunks(dst.space), s in GR.sourcesof(GR.dependencies(plan), d)
+            pair = GR.buildblock(plan, d, Int(s))
+            reference = GR.buildblock(bare, d, Int(s))
+            @test pair.weights == reference.weights
+            @test all(pair.denom .=== reference.denom)
+        end
+        @test dst.chunkreads[] == 0
+        @test src.chunkreads[] == 0
     end
 
     @testset "a conservative pair assembles no coordinate list" begin
@@ -933,8 +948,8 @@ end
     end
 
     @testset "the analytic locator builds the tree locator's block" begin
-        healpix = DGG.DGGSpace(DGG.levelgrid(DGG.HEALPixSystem(), 3))
-        igeo7 = DGG.DGGSpace(DGG.levelgrid(DGG.IGeo7System(), 2))
+        healpix = DGG.levelgrid(DGG.HEALPixSystem(), 3)
+        igeo7 = DGG.levelgrid(DGG.IGeo7System(), 2)
         rng = Random.MersenneTwister(7)
 
         function identical(a, b)
@@ -1029,7 +1044,7 @@ end
                     @test walk != 0
                     @test walk == cellat(space, p)
                     if tree != walk
-                        @test tree in GR.cellneighbors(space, walk)
+                        @test tree in cellneighbors(space, walk)
                         @test GR._cellcontains(getcell(space, tree), p) === true
                     end
                     restricted = GR.locatecell(TreeLocator(), space, inds, p)
@@ -1043,18 +1058,18 @@ end
             end
         end
 
-        @testset "the ConservativeRegridding internals the walk assembles through" begin
-            # `_intersectionareas(::AnalyticLocator)` reaches past CR's public
-            # `intersection_areas` to its assembly, so a CR change must fail here.
-            Cache = CR.SparseMatrixAssemblyCache{Float64}
-            @test hasmethod(CR._assembly_cache, Tuple{Type{Float64},Cache})
-            @test hasmethod(CR._assemble_sparse, Tuple{CR.InPlace,Any,
-                Vector{Tuple{Int,Int}},Any,Any,GOCore.True,Int,Int,Cache})
-            @test hasmethod(CR._assemble_sparse, Tuple{CR.InPlace,Any,
-                Vector{Tuple{Int,Int}},Any,Any,GOCore.False,Int,Int,Cache})
-            @test hasmethod(CR.get_all_candidate_pairs,
-                Tuple{GOCore.True,typeof(GR.Extents.intersects),Any,Any})
-            @test hasmethod(CR.work_items, Tuple{Any,Vector{Tuple{Int,Int}}})
+        @testset "the walk assembles through ConservativeRegridding's public engine" begin
+            # `_intersectionareas(::AnalyticLocator)` hands the walked pairs to
+            # the positional-pairs form of CR's public `intersection_areas`, so
+            # nothing it reaches is private and a CR change must fail here.
+            for name in (:intersection_areas, :SparseMatrixAssemblyCache, :InPlace,
+                         :work_items, :output_matrix_size, :task_local_operator)
+                @test Base.ispublic(CR, name)
+            end
+            @test hasmethod(CR.intersection_areas, Tuple{GOCore.Spherical{Float64},
+                GOCore.True,Any,Any,Vector{Tuple{Int,Int}}})
+            @test hasmethod(CR.intersection_areas, Tuple{GOCore.Spherical{Float64},
+                GOCore.False,Any,Any,Vector{Tuple{Int,Int}}})
         end
 
         @testset "a method that knows no locator keeps its own build" begin
@@ -1081,8 +1096,8 @@ end
                         lat[2] - (lat[2] - lat[1]) / 2ny; length = ny)))))
             coarse = geographic(24, 12)
             fine = geographic(48, 24)
-            @test GR.hasanalyticlocation(coarse)
-            @test GR.hasanalyticlocation(fine)
+            @test hasanalyticlocation(coarse)
+            @test hasanalyticlocation(fine)
 
             # Two rasters: the coarser is walked, the finer supplies the seeds.
             @test GR._walksdestination(coarse, 1:ncells(coarse), fine, 1:ncells(fine))
@@ -1105,42 +1120,51 @@ end
                     GR.pairblock(Conservative(), dst, 1:ncells(dst), src, 1:ncells(src)))
             end
 
-            # The cap over the corners covers the ring the clipper measures.
+            # The cap over the corners covers the ring the clipper measures. A
+            # cell against a pole is a triangle with the pole as one corner.
+            polar(space, i) = any(p -> abs(p[3]) == 1.0, cellcorners(space, i))
             for space in (fine, geographic(12, 4; lat = (70.0, 90.0)),
                     geographic(12, 4; lat = (-90.0, -70.0)))
                 @test all(1:ncells(space)) do i
-                    cap = GR.cellcap(space, i)
+                    cap = cellcap(space, i)
                     all(GI.getpoint(getcell(space, i))) do q
                         GR.US._contains(cap, USPoint(GI.x(q), GI.y(q), GI.z(q)))
                     end
                 end
-                @test all(i -> length(GR.cellcorners(space, i)) == 4, 1:ncells(space))
+                @test all(i -> length(cellcorners(space, i)) == (polar(space, i) ? 3 : 4),
+                    1:ncells(space))
+                @test count(i -> polar(space, i), 1:ncells(space)) == (space === fine ? 96 : 12)
             end
 
             @testset "lattice neighbours" begin
                 nx, ny = 48, 24
                 interior = GR.localindex(fine, 5, 5)
-                ring = GR.cellneighbors(fine, interior)
+                ring = cellneighbors(fine, interior)
                 @test length(ring) == 8
                 @test Set(ring) == Set(GR.localindex(fine, 5 + dx, 5 + dy)
                     for dx in -1:1, dy in -1:1 if (dx, dy) != (0, 0))
-                @test length(GR.cellneighbors(fine, GR.localindex(fine, 5, 1))) == 5
-                corner = GR.cellneighbors(fine, GR.localindex(fine, 1, 1))
-                @test length(corner) == 5
+                # A polar cell touches every other cell of its row at the pole.
+                @test length(cellneighbors(fine, GR.localindex(fine, 5, 1))) == nx - 1 + 3
+                corner = cellneighbors(fine, GR.localindex(fine, 1, 1))
+                @test length(corner) == nx - 1 + 3
                 @test GR.localindex(fine, nx, 1) in corner
                 @test GR.localindex(fine, nx, 2) in corner
                 @test GR.localindex(fine, 1, 1) ∉ corner
-                @test all(i -> all(j -> i in GR.cellneighbors(fine, j), GR.cellneighbors(fine, i)),
+                @test all(i -> all(j -> i in cellneighbors(fine, j), cellneighbors(fine, i)),
                     1:ncells(fine))
-                f(s, i) = (GR.cellneighbors(s, i); @allocated GR.cellneighbors(s, i))
-                @test f(fine, interior) == 0 skip = VERSION < v"1.12"
+                f(s, i) = (cellneighbors(s, i); @allocated cellneighbors(s, i))
+                @test f(fine, interior) == 0
 
+                # Without the period the columns stop at the antimeridian, and
+                # these rows stop short of the poles: a corner cell has three
+                # neighbours.
                 open = RasterGrid(DD.DimArray(zeros(nx, ny),
                     (DD.X(range(-175, 175; length = nx)), DD.Y(range(-85, 85; length = ny))));
                     xperiod = nothing)
-                @test length(GR.cellneighbors(open, GR.localindex(open, 1, 1))) == 3
-                @test length(GR.cellneighbors(open, GR.localindex(open, nx, ny))) == 3
-                @test length(GR.cellneighbors(open, GR.localindex(open, 1, 5))) == 5
+                @test length(cellneighbors(open, GR.localindex(open, 1, 1))) == 3
+                @test length(cellneighbors(open, GR.localindex(open, nx, ny))) == 3
+                @test length(cellneighbors(open, GR.localindex(open, 1, 5))) == 5
+                @test GR.localindex(open, nx, 5) ∉ cellneighbors(open, GR.localindex(open, 1, 5))
             end
 
             @testset "locatecell agrees between locators" begin
@@ -1157,7 +1181,7 @@ end
                     @test walk != 0
                     @test walk == cellat(fine, p)
                     if tree != walk
-                        @test tree in GR.cellneighbors(fine, walk)
+                        @test tree in cellneighbors(fine, walk)
                         @test GR._cellcontains(getcell(fine, tree), p) === true
                     end
                     @test GR.locatecell(AnalyticLocator(), fine, inds, p) ==
@@ -1171,7 +1195,7 @@ end
                     (DD.X(range(-172.5, 172.5; length = 24)),
                         DD.Y(range(-82.5, 82.5; length = 12))));
                     unit_sphere_to_native = nothing)
-                @test !GR.hasanalyticlocation(blind)
+                @test !hasanalyticlocation(blind)
                 @test_throws ArgumentError GR.overlappairs(AnalyticLocator(),
                     blind, 1:ncells(blind), blind, 1:ncells(blind); threaded = false)
                 @test_throws ArgumentError GR.pairblock(Conservative(),

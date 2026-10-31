@@ -90,11 +90,12 @@ Conservative
 
 `locator` chooses how a build finds the source cells a destination cell may
 touch. The weights are the same whichever is used; only the discovery differs.
-`TreeLocator()` descends spatial trees and works for every space.
+`TreeLocator()` descends spatial trees and works for every grid.
 `AnalyticLocator()` locates points in closed form and walks cell
-neighbourhoods, and needs a side that answers `hasanalyticlocation`: every
-`DGGSpace`, and every `RasterGrid` with an inverse chart. When both sides do,
-the coarser side is walked and the finer side supplies the seeds.
+neighbourhoods, and needs a side whose `GridInterface.location_is_analytic` is
+`true`: every DGGS grid whose system locates points directly, and every
+`RasterGrid` with an inverse chart. When both sides do, the coarser side is
+walked and the finer side supplies the seeds.
 
 ```@docs
 TreeLocator
@@ -187,28 +188,41 @@ This comparison tests agreement with point samples of `peak`. Testing area
 averages would require averaging `peak` over each destination footprint.
 Use the test that matches the meaning of your data.
 
-## Implementing point interpolation for a source space
+## Implementing point interpolation for a source grid
 
-To add point interpolation to a `GlobalRegridding.RegridSpace`, describe the
-polygon of source sample sites surrounding a destination point. Implement
-these three hooks:
+`BarycentricPoint()` needs the polygon of source sample sites surrounding a
+destination point. A source grid supplies it in one of three ways:
 
-  - `GlobalRegridding.hasdualcells(space)` returns `true`. A space declaring
-    neither this nor `hascellchart` is refused rather than silently answering
-    every point with nothing.
-  - `GlobalRegridding.samplerstate(space)` returns whatever the lookup needs
-    prepared once — axis locators, topology tables. It is read concurrently
-    during a sweep and must not be written.
-  - `GlobalRegridding.dualcellat(sampler, p)` returns a
-    `GlobalRegridding.DualCell(indices, nodes, kind)`: the source *local*
-    indices of the sites in cyclic order, their coordinates in one plane, and a
-    `GlobalRegridding.BasisKind` — `Bilinear` for isoparametric Q1 on a
-    quadrilateral, `MeanValue` for a convex polygon, which on a triangle is that
-    triangle's barycentric coordinates. Return a cell with no nodes where none
-    contains `p`.
+  - A one-face `GridInterface.Structured` grid with face axes
+    (`Structured.hasfaceaxes`, `faceaxes`, `facecoords`, `faceperiod`) has a
+    cell chart. Its dual cells are the rectangles between neighbouring sample
+    sites, and it needs nothing more. A `RasterGrid` is one.
+  - A conforming grid (`GridInterface.conformity(grid) isa Conforming`) has
+    dual cells: the sites of the cells meeting at each vertex of the host cell
+    `cellat` finds, read off its `neighbors` rings and `cell_centroid`s. A
+    HEALPix or IGeo7 level grid is one.
+  - Any other grid, or a grid that wants its own algorithm, prepares a state of
+    its own through these execution hooks:
+      - `GlobalRegridding.samplerstate(method, grid)` returns whatever the
+        lookup needs prepared once — axis locators, topology tables. It is read
+        concurrently during a sweep and must not be written.
+      - `GlobalRegridding.dualcellat(sampler, p)` returns a
+        `GlobalRegridding.DualCell(indices, nodes, kind)`: the source grid's
+        positions of the sites in cyclic order, their coordinates in one plane,
+        and a `GlobalRegridding.BasisKind` — `Bilinear` for isoparametric Q1 on
+        a quadrilateral, `MeanValue` for a convex polygon, which on a triangle
+        is that triangle's barycentric coordinates. Return a cell with no nodes
+        where none contains `p`. `GlobalRegridding.chartat(sampler, p)` says
+        which plane the nodes are in. A state with a fused algorithm defines
+        `GlobalRegridding.weightsat!(row, sampler, p)` instead.
+      - `GlobalRegridding.supportradius(method, grid)` bounds how far past a
+        destination its stencil reaches, so chunk discovery searches that far.
 
-`sampler` is `GlobalRegridding.Sampler`, which those two dispatch on; it carries
-the space, its sample sites and that state. A space with a cell chart writes its
-nodes in that chart and needs nothing more; a space without one also defines
-`GlobalRegridding.chartat(sampler, p)` to say which plane the nodes are in.
+    Copernicus DEM's point grids answer `samplerstate`, `weightsat!` and
+    `supportradius` this way.
+
+`sampler` is `GlobalRegridding.Sampler`, which those hooks dispatch on; it
+carries the grid, its sample sites and that state. A grid with neither a cell
+chart, dual cells, nor a state of its own is refused rather than silently
+answering every point with nothing.
 Chunking is never an input: a stencil is built whole and partitioned afterwards.

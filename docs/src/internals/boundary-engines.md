@@ -98,7 +98,6 @@ DiscreteGlobalGrids.Fallbacks.ScanBorderEngine
 DiscreteGlobalGrids.Fallbacks.MortonCurve
 DiscreteGlobalGrids.Fallbacks.quadrant_step
 DiscreteGlobalGrids.face_orientation
-DiscreteGlobalGrids.Fallbacks.cells_cap
 ```
 
 ## Index

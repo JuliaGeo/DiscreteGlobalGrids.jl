@@ -23,7 +23,7 @@ package provides plotting with Makie.
 
 ## Quick start
 
-Use Julia 1.11 or later. In the REPL, install the package from this repository:
+Use Julia 1.11 or later; the allocation-free fast paths are guaranteed on 1.12 and later. In the REPL, install the package from this repository:
 
 ```julia
 using Pkg
@@ -133,8 +133,8 @@ Longitude/latitude entry points use degrees. For geodetic data, follow the
 
 The [tutorials](https://juliageo.org/DiscreteGlobalGrids.jl/dev/) cover regional statistics, neighborhood
 operations, regridding, and Zarr storage. Store I/O requires `using Zarr`.
-To add a grid, follow [Writing a grid system](https://juliageo.org/DiscreteGlobalGrids.jl/dev/extending/) and use the
-[conformance tests](lib/DiscreteGlobalGridsConformanceTesting/README.md).
+To add a grid, follow [Writing a grid system](https://juliageo.org/DiscreteGlobalGrids.jl/dev/extending/) and run
+GridInterface's conformance tests (`GridInterfaceConformance.test_grid` and `test_system`) on it.
 
 ## License and attribution
 

@@ -14,6 +14,7 @@ import GeometryOpsCore as GOCore
 import DimensionalData as DD
 import Extents
 import GlobalRegridding as GR
+import GridInterface
 
 const HP = HEALPixSystem()
 const COP = DGG.CopernicusDEMSystem(90)
@@ -86,17 +87,18 @@ boxlevel(φ) = argmin(l -> abs(log(4pi / (12 * 4^l)) - log((pi / 180)^2 * cosd(�
     @test levelfor(HP, r; over = EQUATOR) == 6
     @test levelfor(HP, grid; over = ARCTIC) == 7
     @test levelfor(HP, grid; over = EQUATOR) == 6
-    # A `RegridSpace` target — a raster space or a DGGSpace over the same
-    # cells — agrees with the raster and grid spellings.
-    for space in (GR.RasterGrid(r), DGG.DGGSpace(grid))
+    # A regrid-side spelling of the same cells — the raster's grid, or the
+    # grid chunked at another level — agrees with the raster and grid spellings.
+    for space in (GR.RasterGrid(r), GridInterface.mockchunks(grid, GridInterface.LevelChunks(0)))
         @test levelfor(HP, space; over = ARCTIC) == 7
         @test levelfor(HP, space; over = EQUATOR) == 6
     end
     @test cellsize(r; over = ARCTIC) < cellsize(r; over = EQUATOR)
     @test cellsize(GR.RasterGrid(r); over = ARCTIC) == cellsize(r; over = ARCTIC)
-    # A `DGGSpace` reads the grid it wraps, with an area of interest and without.
-    @test cellsize(DGG.DGGSpace(grid); over = ARCTIC) == cellsize(grid; over = ARCTIC)
-    @test cellsize(DGG.DGGSpace(grid)) == cellsize(grid)
+    # A chunked wrapper reads the grid it wraps, with an area of interest and without.
+    chunked = GridInterface.mockchunks(grid, GridInterface.LevelChunks(0))
+    @test cellsize(chunked; over = ARCTIC) == cellsize(grid; over = ARCTIC)
+    @test cellsize(chunked) == cellsize(grid)
 end
 
 @testset "a target in metres has one size everywhere" begin
@@ -130,7 +132,8 @@ end
     sub = PartialGrid(HP, 10, [cellindex(grid, 1)])
     @test length(query(sub, Intersects(world))) == 1
     @test cellsize(sub; over = world) == cellsize(sub)
-    @test cellsize(DGG.DGGSpace(sub); over = world) == cellsize(sub)
+    @test cellsize(GridInterface.mockchunks(sub, GridInterface.LevelChunks(0)); over = world) ==
+          cellsize(sub)
     @test levelfor(HP, sub; over = world) == 10
 
     band = PartialGrid(COP, 0, query(levelgrid(COP, 0), Intersects(ARCTIC)))

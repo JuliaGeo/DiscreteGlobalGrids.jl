@@ -102,9 +102,12 @@ descendant_range
 
 ## Trees over a grid
 
-[`treeify`](@ref ConservativeRegridding.Trees.treeify) exposes a grid as a spatial tree for queries and regridding.
-Hierarchical grids can use their existing parent/child structure and compute
-node geometry as the traversal needs it.
+[`treeify`](@ref) exposes a grid as a spatial tree for queries and regridding.
+A hierarchical grid's tree is its system's own hierarchy, built in O(1), with
+node geometry computed as the traversal reaches it. `treeify(grid, n)` puts up
+to `n` cells in a leaf, and GridInterface's `subtree(grid, cells)` restricts
+that tree to a subset by index spans. [Trees](../architecture.md#Trees)
+describes the hooks behind both.
 
 ```@docs
 treeify

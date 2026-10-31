@@ -13,7 +13,7 @@ const CellNode = GO.FlexibleRTrees.RTreeNode{CellTree,XYZExtent}
     IndexTree(grid)
 
 A spatial tree over grid indices, built from cell caps in `O(ncells)` time and
-memory. [`treeify`](@ref ConservativeRegridding.Trees.treeify) uses it only for grids without a hierarchy.
+memory. [`treeify`](@ref) uses it only for grids without a hierarchy.
 
 - `caps[i]` is the cap of grid index `i`; `rtree` is a
   `GeometryOps.FlexibleRTrees.RTree` over their boxes in STR order, and leaf
@@ -41,12 +41,12 @@ end
 
 IndexTreeNode(tree::IndexTree) = IndexTreeNode(tree, _root_node(tree.rtree))
 
-function IndexTree(grid::AbstractGrid)
+function IndexTree(grid::AbstractGrid; leafsize::Integer=INDEX_TREE_LEAF_SIZE)
     n = ncells(grid)
     caps = Cap[cell_cap(grid, cellindex(grid, i)) for i in 1:n]
     rtree = n == 0 ? _empty_cell_tree() :
             GO.FlexibleRTrees.RTree(GO.FlexibleRTrees.STR(), Base.OneTo(n);
-                nodecapacity=INDEX_TREE_LEAF_SIZE,
+                nodecapacity=max(2, Int(leafsize)),
                 extents=XYZExtent[convert(Extents.Extent, cap) for cap in caps])
     return IndexTree{typeof(grid)}(grid, caps, rtree)
 end
@@ -117,20 +117,21 @@ function STI.child_indices_extents(node::IndexTreeNode)
 end
 
 # --------------------------------------------------------------------------
-# ConservativeRegridding.Trees
+# The tree as a cell source, and the SpatialTreeInterface work verbs
 # --------------------------------------------------------------------------
 
 GOCore.best_manifold(node::IndexTreeNode) = GOCore.best_manifold(node.tree.grid)
 GOCore.best_manifold(tree::IndexTree) = GOCore.best_manifold(tree.grid)
 
 # Leaf indices are grid indices here, at every node — see the file header.
-Trees.ncells(node::IndexTreeNode) = ncells(node.tree.grid)
-Trees.getcell(node::IndexTreeNode, i::Int) = getcell(node.tree.grid, i)
-Trees.getcell(node::IndexTreeNode) = getcell(node.tree.grid)
+getcell(node::IndexTreeNode, i::Int) = getcell(node.tree.grid, i)
+getcell(node::IndexTreeNode) = getcell(node.tree.grid)
 
-# `Trees.ncells` answers for the whole grid, so the frontier's default estimate
-# would be wrong here; the node's leaf run is exact.
-Trees.split_weight(node::IndexTreeNode) = length(_leaf_range(node.node))
+# The node's leaf run is exact, and the grid indices in those slots are the
+# positions its leaves emit: a view of the packed index vector, not a copy.
+split_weight(node::IndexTreeNode) = length(_leaf_range(node.node))
+subtree_indices(node::IndexTreeNode) =
+    view(node.tree.rtree.indices, _leaf_range(node.node))
 
 # --------------------------------------------------------------------------
 # treeify
@@ -145,14 +146,42 @@ an `O(1)` [`HierarchicalGridCursor`](@ref); other grids receive an
 [`IndexTree`](@ref) built over every cell. The manifold overload supports
 callers that pass the grid's unit-sphere manifold.
 """
-treeify(grid::AbstractGrid) = treeify(GOCore.best_manifold(grid), grid)
+# The bare form is this package's own tree; the keyword is GridInterface's
+# intent layer, read only when a caller spells it.
+treeify(grid::AbstractGrid; leaf_capacity=nothing) =
+    leaf_capacity === nothing ? treeify(GOCore.best_manifold(grid), grid) :
+    treeify(grid, leaf_capacity)
 treeify(::GOCore.Manifold, grid::AbstractGrid) = _grid_tree(grid)
 
 _grid_tree(grid::AbstractGrid) = system(grid) === nothing ?
                                  IndexTreeNode(IndexTree(grid)) :
                                  HierarchicalGridCursor(grid)
 
-# Idempotent on the trees themselves, as `Trees.treeify` is for its own cursors.
+# GridInterface's intents and integer form, as provider overrides. The finest
+# tree is the one the bare form builds, so `ForQueries` is that; any other leaf
+# size is the same cursor with that many cells per leaf, or the index tree
+# with that node capacity where the grid has no hierarchy.
+treeify(grid::AbstractGrid, ::ForQueries) = treeify(grid)
+treeify(grid::AbstractGrid, hint::LeafHint) = treeify(grid, leaf_capacity(grid, hint))
+treeify(grid::AbstractGrid, n::Integer) = system(grid) === nothing ?
+                                          IndexTreeNode(IndexTree(grid; leafsize=Int(n))) :
+                                          HierarchicalGridCursor(grid; bucket_size=Int(n))
+# The sweep leaf: stop descent at `7^2` stored cells, two IGeo7 refinement
+# levels above the grid's own resolution. A cell budget, not a level count, so
+# a system of another aperture stops wherever 49 cells falls. With one-cell
+# leaves the dual search spends most of its visits on the bottom level (for an
+# IGeo7 level-12 column rooted at level 5, 823543 of the tree's 960799 nodes);
+# the bucketed leaf hands those cells back through `child_indices_extents`.
+# Measured on the CopDEM GLO-90 -> IGeo7 L12 column regrid, core-seconds per
+# column, serial:
+#
+#   column            leaf 1   leaf 8   leaf 49   leaf 343
+#   728                20.39    13.16     12.69      18.67
+#   98241 (all NaN)    18.27    11.66     10.97      16.60
+#   115426 (polar)     20.36    13.30     12.34      18.89
+leaf_capacity(::AbstractGrid, ::ForSweeps) = 49
+
+# Idempotent on the trees themselves, as a tree of a tree is the tree.
 treeify(::GOCore.Manifold, cursor::HierarchicalGridCursor) = cursor
 treeify(::GOCore.Manifold, node::IndexTreeNode) = node
 treeify(cursor::HierarchicalGridCursor) = cursor

@@ -23,8 +23,8 @@ The stencil is [`NearestCell`](@ref)'s exactly â€” one source cell, weight one â
 and so are the results, element for element, under either missing policy and
 with any nodata sentinel. What differs is that no `WeightCOO`, `WeightBlock` or
 sparse matrix is ever assembled: a plan holds only the
-two spaces, and the apply loop calls [`cellat`](@ref) per destination cell and
-copies the value across.
+two grids, and the apply loop calls `GridInterface.cellat` per destination
+cell and copies the value across.
 
 # Which of the two to use
 
@@ -54,11 +54,11 @@ struct DirectNearest <: AbstractRegriddingMethod end
 
 outputsampling(::DirectNearest) = DD.Lookups.Points()
 
-supportradius(::DirectNearest, ::RegridSpace) = 0.0
+supportradius(::DirectNearest, ::Any) = 0.0
 
 # The fallback route, so nothing that has not been specialized breaks.
-buildweights!(coo::WeightCOO, ::DirectNearest, dst_space::RegridSpace, dst_inds,
-    src_space::RegridSpace, src_inds) =
+buildweights!(coo::WeightCOO, ::DirectNearest, dst_space, dst_inds,
+    src_space, src_inds) =
     buildweights!(coo, NearestCell(), dst_space, dst_inds, src_space, src_inds)
 
 # --------------------------------------------------------------------------
@@ -73,7 +73,7 @@ are the two spaces, the policy, the nodata sentinel and the sampling override â€
 so building one costs nothing and allocates nothing per destination cell.
 """
 struct NearestDirectPlan{M<:DirectNearest,P<:AbstractMissingPolicy,
-                         D<:RegridSpace,S<:RegridSpace,V,
+                         D,S,V,
                          L<:Union{Nothing,DD.Lookups.Sampling}} <: AbstractRegriddingPlan
     method::M
     missingpolicy::P
@@ -96,13 +96,13 @@ The eager plan `method` wants. The default is one whole-domain
 method whose apply needs no weights returns a plan of its own here instead.
 """
 eagerplan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
-    dst_space::RegridSpace, src_space::RegridSpace, missingval, sampling,
+    dst_space, src_space, missingval, sampling,
     locator::CandidateLocator = TreeLocator()) =
     DirectPlan(method, missingpolicy, dst_space, src_space,
         wholeblock(method, dst_space, src_space, locator), missingval, sampling, locator)
 
 eagerplan(method::DirectNearest, missingpolicy::AbstractMissingPolicy,
-    dst_space::RegridSpace, src_space::RegridSpace, missingval, sampling,
+    dst_space, src_space, missingval, sampling,
     ::CandidateLocator = TreeLocator()) =
     NearestDirectPlan(method, missingpolicy, dst_space, src_space, missingval, sampling)
 
@@ -174,9 +174,9 @@ function applyplan!(out::AbstractMatrix, plan::NearestDirectPlan, src::AbstractM
 end
 
 @inline function _directcell!(out::AbstractMatrix, src::AbstractMatrix,
-    src_space::RegridSpace, sites, j::Int, blank, mv)
+    src_space, sites, j::Int, blank, mv)
     T = eltype(out)
-    i = cellat(src_space, @inbounds sites[j])
+    i = GridInterface.cellat(src_space, @inbounds sites[j])
     if i === nothing
         @inbounds for s in axes(out, 2)
             out[j, s] = blank
@@ -202,7 +202,7 @@ The chunked read for [`DirectNearest`](@ref). It reuses the executor's tiling,
 its dependency-relation reach check, its source hold and its chunk reads, and
 replaces the weight build and the matvec with two passes over the tile:
 
- 1. locate: one [`cellat`](@ref) per destination cell of the tile, giving the
+ 1. locate: one `GridInterface.cellat` per destination cell of the tile, giving the
     source cell it takes its value from and the source chunk that owns it. The
     ascending unique chunks are the tile's manifest â€” exactly what
     [`tileweights`](@ref) would have produced â€” and are checked against the
@@ -228,7 +228,8 @@ function _readdestination!(out::AbstractMatrix,
     hold = SourceHold(_emptybuffer(A), databudget(plan.budget), A.stats)
     srcchunks = Int[]
     srcranges = NTuple{NS,UnitRange{Int}}[]
-    slots = zeros(Int, Int(nchunks(src_space)))
+    ch = plan.held.src_chunks
+    slots = zeros(Int, Int(_nchunks(src_space, ch)))
     srcidx = Int[]
     chunkof = Int[]
     perm = Int[]
@@ -246,14 +247,14 @@ function _readdestination!(out::AbstractMatrix,
         # --- pass 1: locate ------------------------------------------------
         empty!(srcchunks)
         @inbounds for j in 1:nd
-            s = cellat(src_space, sites[Int(dinds[j])])
+            s = GridInterface.cellat(src_space, sites[Int(dinds[j])])
             if s === nothing
                 srcidx[j] = 0
                 chunkof[j] = 0
             else
                 si = Int(s)
                 srcidx[j] = si
-                c = Int(chunkat(src_space, si))
+                c = _chunkat(src_space, si, ch)
                 chunkof[j] = c
                 if slots[c] == 0
                     slots[c] = 1
@@ -304,7 +305,7 @@ function _readdestination!(out::AbstractMatrix,
             s = srcchunks[k]
             sr = srcranges[k]
             ncell = prod(map(length, sr))
-            cmap = indexmap(ownedindices(src_space, s))
+            cmap = indexmap(_ownedindices(src_space, s, ch))
             rng = starts[k]:(starts[k+1]-1)
             for (gi, gpos) in enumerate(groups)
                 gr = _grouprange(others, gpos)

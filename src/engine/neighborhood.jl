@@ -16,11 +16,11 @@ collection.
 
 `==`, `hash` and `convert(::Type{C})` delegate to the cell, so a handle
 compares and hashes as its cell; `show` prints the wrapper and the index
-as well. [`localindex`](@ref DiscreteGlobalGrids.localindex)`(h)` returns the stored index.
+as well. [`localindex`](@ref DGG.localindex)`(h)` returns the stored index.
 
 The read-only cell verbs — [`cell_boundary`](@ref), [`cell_centroid`](@ref),
 [`cell_polygon`](@ref), [`cell_area`](@ref), [`cell_extent`](@ref),
-[`node_extent`](@ref), [`localindex`](@ref DiscreteGlobalGrids.localindex), [`globalindex`](@ref DiscreteGlobalGrids.globalindex),
+[`node_extent`](@ref), [`localindex`](@ref DGG.localindex), [`globalindex`](@ref DGG.globalindex),
 [`neighbors`](@ref), [`ring`](@ref), [`neighborcount`](@ref),
 [`reindex`](@ref), [`level`](@ref) and [`rawid`](@ref) — accept a handle
 wherever they accept a cell, and answer for the cell.

@@ -3,6 +3,7 @@ module PartitionWorkerFixtures
 import DiscreteGlobalGrids as DGG
 import DimensionalData as DD
 import GlobalRegridding as GR
+import GridInterface as GrI
 
 partitioner_loaded() = any(name -> Base.get_extension(DGG, name) !== nothing,
     (:DiscreteGlobalGridsMetisExt, :DiscreteGlobalGridsKaHyParExt, :DiscreteGlobalGridsScotchExt))
@@ -28,8 +29,8 @@ end
 
 function regrid_fixture()
     system = DGG.S2System()
-    source = DGG.DGGSpace(DGG.levelgrid(system, 1); chunklevel=0)
-    destination = DGG.DGGSpace(DGG.levelgrid(system, 2); chunklevel=1)
+    source = GrI.mockchunks(DGG.levelgrid(system, 1), GrI.LevelChunks(0))
+    destination = GrI.mockchunks(DGG.levelgrid(system, 2), GrI.LevelChunks(1))
     data = Float64.(1:GR.ncells(source))
     plan = GR.ChunkedPlan(GR.NearestCell(), GR.Weighted(1.0), destination, source;
         dependencies=true)
@@ -41,10 +42,10 @@ function regrid_part(assignment, part)
     output = GR.regrid(data, plan)
     chunks = DGG.partchunks(assignment, part)
     indices = reduce(vcat,
-        [collect(GR.ownedindices(plan.dst_space, c)) for c in chunks]; init=Int[])
+        [collect(GR._ownedindices(plan.dst_space, c)) for c in chunks]; init=Int[])
     values = Float64[]
     for chunk in chunks
-        append!(values, output[GR.ownedindices(plan.dst_space, chunk)])
+        append!(values, output[GR._ownedindices(plan.dst_space, chunk)])
     end
     return (; indices, values, chunks,
         sources=DGG.partsources(assignment, part),

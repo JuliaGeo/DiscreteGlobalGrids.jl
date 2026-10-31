@@ -143,6 +143,12 @@ ncells(grid::PartialGrid) = length(grid.ids)
 cellindex(grid::PartialGrid, i::Int) = grid.ids[i]
 system(grid::PartialGrid) = grid.system
 level(grid::PartialGrid) = grid.level
+
+# To GridInterface a `PartialGrid` is a subset of its complete level: its
+# `globalindex` answers are positions in `parent(grid)`, which is what the
+# `Index(Global())` forms and the subset laws read.
+gridrelation(::PartialGrid) = GridInterface.ParentGrid()
+Base.parent(grid::PartialGrid) = grid.complete
 cell_boundary(grid::PartialGrid, c::AbstractCellIndex) = cell_boundary(grid.complete, c)
 cell_corners(grid::PartialGrid, c::AbstractCellIndex) = cell_corners(grid.complete, c)
 cell_centroid(grid::PartialGrid, c::AbstractCellIndex) = cell_centroid(grid.complete, c)
@@ -152,8 +158,6 @@ cell_centroid(grid::PartialGrid, c::AbstractCellIndex) = cell_centroid(grid.comp
 # not lost merely because its level is stored as a `PartialGrid`.
 Fallbacks.cell_cap(grid::PartialGrid, c::AbstractCellIndex) =
     Fallbacks.cell_cap(grid.complete, c)
-Fallbacks.cell_cap_is_cheap(grid::PartialGrid) =
-    Fallbacks.cell_cap_is_cheap(grid.complete)
 
 # Forwarded, not derived. The generic `cell_area` is the ring's polygon area,
 # right only where the ring IS the cell: HEALPix and ISEA4R have curvilinear

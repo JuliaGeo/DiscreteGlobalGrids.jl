@@ -15,6 +15,7 @@ import ..DiscreteGlobalGrids as DGG
 using ..ISEA
 
 import GeometryOps as GO
+import GridInterface
 
 import SmallCollections
 using SmallCollections: SmallVector
